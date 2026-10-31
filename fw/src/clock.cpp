@@ -72,14 +72,16 @@ static void pick_zone() {
 void clock_begin(Preferences& prefs) {
     nv = &prefs;
     pick_zone();
-    // A new firmware restarts the clock from its build time and trusts the date; WiFi corrects
-    // the few minutes it is off (and replaces a good time it threw away). A flat battery stops the
-    // oscillator: breaks still time from the restarted clock, but the date is a guess until WiFi,
-    // a parent (settings > SAAT) or the next flash sets it.
+    // A new firmware keeps a running clock (flashing must not undo WiFi or a parent's setting);
+    // it only restarts the clock from its build time when the clock is clearly behind it or had
+    // stopped. A flat battery stops the oscillator: breaks still time from the restarted clock,
+    // but the date is a guess until WiFi, a parent (settings > SAAT) or the next flash sets it.
     uint32_t build = build_local();
     bool fresh = prefs.getUInt("build", 0) != build, lost = rtc_lost();
-    if (lost || fresh) rtc_set(to_utc(build));
-    if (fresh) { prefs.putUInt("build", build); prefs.putBool("cal", true); }
+    uint32_t now = rtc_now();
+    bool seed = lost || (fresh && (!now || to_local(now) < build));
+    if (seed) rtc_set(to_utc(build));
+    if (fresh) { prefs.putUInt("build", build); if (seed) prefs.putBool("cal", true); }   // a kept clock keeps its trust
     else if (lost) prefs.putBool("cal", false);
     trusted = prefs.getBool("cal", false);
 }

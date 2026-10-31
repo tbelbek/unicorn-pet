@@ -72,6 +72,7 @@ API(up_volume) int up_volume() { return G.volume(); }
 API(up_brightness) int up_brightness() { return G.brightness(); }
 API(up_set_battery) void up_set_battery(int pct) { G.set_battery(pct); }
 API(up_set_plugged) void up_set_plugged(int usb) { G.set_plugged(usb != 0); }
+API(up_set_boot) void up_set_boot(int down) { G.set_boot(down != 0); }
 API(up_plugged) int up_plugged() { return G.plugged; }
 API(up_set_tilt) void up_set_tilt(int v) { G.set_tilt(v); }
 API(up_accessory) int up_accessory() { return G.s.accessory; }

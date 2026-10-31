@@ -111,7 +111,7 @@
       <div class="seg">
         <button class="b" id="shake">SALLA</button>
         <button class="b" id="timesup" title="Ekran süresini 10 dakikaya getirir (test)">10 DK DOLDU</button>
-        <button class="b" id="parent" title="Cihazda: BOOT tuşunu 5 sn basılı tut">EBEVEYN (BOOT 5 SN)</button>
+        <button class="b" id="parent" title="Cihazda: BOOT'a hızlıca 3 kez bas, üçüncüde 3 sn basılı tut">EBEVEYN (BOOT 3×, TUT)</button>
         <button class="b" id="power">GÜCÜ KES</button>
         <button class="b" id="size">BÜYÜT</button>
         <button class="b" id="shot">EKRAN GÖRÜNTÜSÜ</button>
@@ -130,7 +130,7 @@
         <span id="stage"></span></label>
       <p class="hint">Güç kesilince zaman durur (cihazdaki gibi); açınca son kayıttan devam eder.
         Unicorn'a dokununca sevilir (kalpler); üstteki isme dokununca bilgi ekranı açılır.
-        EBEVEYN düğmesi (cihazda BOOT 5 sn): kapıda unicorn'u geri çağırır, başka ekranlarda ebeveyn
+        EBEVEYN düğmesi (cihazda BOOT'a hızlıca 3 kez bas, üçüncüsünü 3 sn tut; buradaki BOOT da öyle çalışır): kapıda unicorn'u geri çağırır, başka ekranlarda ebeveyn
         ayarlarını açar (ses, oturum, mola, parlaklık, sakin mod, sallama). Telefonda gerçekten sallayabilirsin.</p>
     </section>
   </div>
@@ -211,7 +211,8 @@ function boot() {                                   // like the firmware: fresh 
   if (saved) {
     const bytes = Uint8Array.from(atob(saved), (c) => c.charCodeAt(0));
     new Uint8Array(w.memory.buffer, w.up_save_buf(), bytes.length).set(bytes);
-    if (!w.up_load(bytes.length)) localStorage.removeItem(KEY);
+    if (!w.up_load(bytes.length) && !localStorage.getItem(KEY + "-bad"))   // keep it, like the board
+      localStorage.setItem(KEY + "-bad", saved);
   }
   screenOn = true;
   blit();
@@ -263,6 +264,7 @@ function step(dt) {
   w.up_set_wall(wallNow(), 1);
   w.up_set_battery(+$("batt").value);               // like the board's PMU: level and USB power
   w.up_set_plugged($("plug").checked ? 1 : 0);
+  w.up_set_boot(bootDown ? 1 : 0);
   const t0 = performance.now();
   if (t0 - phoneAt < 300) w.up_set_tilt(Math.round(phoneTilt));
   else if (+$("tilt").value !== 0 || t0 - sliderAt < 300) w.up_set_tilt(+$("tilt").value);   // 0 is a real sample
@@ -304,11 +306,15 @@ canvas.addEventListener("pointerdown", (e) => {
   const r = canvas.getBoundingClientRect();
   input(IN.TOUCH, Math.round((e.clientX - r.left) * W / r.width), Math.round((e.clientY - r.top) * H / r.height));
 });
-$("boot").onclick = () => input(IN.NEXT);
+// BOOT is held, not clicked: the core turns presses into taps (and the grown-up gesture)
+let bootDown = false;
+const boot = (down) => { bootDown = down; $("boot").classList.toggle("down", down); };
+$("boot").onpointerdown = (e) => { e.preventDefault(); boot(true); };
+$("boot").onpointerup = $("boot").onpointerleave = () => boot(false);
 $("pwr").onclick = () => input(IN.SELECT);
 addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT") return;
-  if (e.key === "ArrowRight" || e.key === " ") { e.preventDefault(); flash("boot"); input(IN.NEXT); }
+  if (e.key === "ArrowRight" || e.key === " ") { e.preventDefault(); if (!e.repeat) boot(true); }
   if (e.key === "Enter") { e.preventDefault(); flash("pwr"); input(IN.SELECT); }
   if (e.key === "s" || e.key === "S") shake();
 });
@@ -327,6 +333,7 @@ addEventListener("devicemotion", (e) => {
   const g = Math.hypot(a.x, a.y, a.z) / 9.81;
   if (Math.abs(g - 1) > 1.2 && performance.now() - lastShake > 1500) { lastShake = performance.now(); shake(); }
 });
+addEventListener("keyup", (e) => { if (e.key === "ArrowRight" || e.key === " ") boot(false); });
 function flash(id) { $(id).classList.add("down"); setTimeout(() => $(id).classList.remove("down"), 120); }
 
 // ---- panel ----------------------------------------------------------------------------

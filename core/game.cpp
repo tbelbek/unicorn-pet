@@ -33,6 +33,8 @@ void Game::init(u32 seed) {
     s.version = SAVE_VERSION;
     s.character = (u8)(random() % 4);
     for (int i = 0; i < NSTATS; i++) s.stat[i] = 8000;
+    s.bed10 = BED_DEFAULT10;
+    s.wake10 = WAKE_DEFAULT10;
     scene = SC_EGG_PICK;                   // first: choose one of four eggs
     screen_on = 1;
     dirty = 1;
@@ -44,7 +46,8 @@ bool Game::load(const u8* data, u32 len) {
     // Older saves are prefixes of the current layout: copy what they have, zero the rest.
     if (!data || len < 1) return false;
     u32 size = data[0] == 1 ? SAVE_V1_SIZE : data[0] == 2 ? SAVE_V2_SIZE : data[0] == 3 ? SAVE_V3_SIZE
-             : data[0] == 4 ? SAVE_V4_SIZE : data[0] == 5 ? SAVE_V5_SIZE : data[0] == SAVE_VERSION ? SAVE_SIZE : 0;
+             : data[0] == 4 ? SAVE_V4_SIZE : data[0] == 5 ? SAVE_V5_SIZE : data[0] == 6 ? SAVE_V6_SIZE
+             : data[0] == SAVE_VERSION ? SAVE_SIZE : 0;
     if (!size || len < size) return false;
     u32 check;
     copy((u8*)&check, data + size - 4, 4);
@@ -53,10 +56,12 @@ bool Game::load(const u8* data, u32 len) {
     for (u32 i = 0; i < SAVE_SIZE; i++) ((u8*)&tmp)[i] = 0;
     copy((u8*)&tmp, data, size - 4);
     if (data[0] < 5) { tmp.birth_flags = BIRTH_CHOSEN; tmp.accessory = ACC_NONE; tmp.last_treat = 0; }
+    if (data[0] < 7) { tmp.bed10 = BED_DEFAULT10; tmp.wake10 = WAKE_DEFAULT10; tmp.tricks_seen = 0; }
     tmp.version = SAVE_VERSION;
     if (tmp.accessory >= ACC_COUNT || (tmp.birth_flags & ~BIRTH_CHOSEN) || tmp.last_treat > TREAT_COUNT)
         return false;
     if (tmp.character > 3 || tmp.care_days > CARE_DAYS_MAX || tmp.milestones >> MILESTONES) return false;
+    if (tmp.bed10 >= 144 || tmp.wake10 >= 144 || tmp.tricks_seen > TRICKS) return false;
     for (int i = 0; i < NSTATS; i++) if (tmp.stat[i] > MAX_STAT) return false;
     s = tmp;
     play_ms = (u32)s.play_s * 1000;
@@ -138,6 +143,7 @@ void Game::go(u8 sc) {
     visit_due = 0;
     greeting = 0;
     party = 0;
+    standing = 0;
     static const u8 DID_BY_SCENE[] = {0, 0, 0, DID_FEED, 0, DID_WASH, 0, 0, 0, DID_STARS, 0, 0, 0, 0, 0, 0, 0,
                                       DID_MUSIC, DID_CLOUD, DID_DRESS, 0, 0};   // indexed by Scene
     if (sc < sizeof DID_BY_SCENE) did |= DID_BY_SCENE[sc];
@@ -170,6 +176,7 @@ void Game::press(int item) {               // a menu button dips and pops back (
 
 int Game::recommended() const {
     const u16* v = s.stat;
+    if (bedtime() == BED_DROWSY) return MENU_SLEEP;   // bedtime: the moon button bounces
     if (v[HUNGER] < NEED_LOW) return MENU_FEED;
     if (v[ENERGY] < NEED_LOW) return MENU_SLEEP;
     if (v[CLEAN] < NEED_LOW) return MENU_WASH;
@@ -216,9 +223,15 @@ int Game::stage() const {
          : d >= YOUNG_DAYS ? STAGE_YOUNG : STAGE_FOAL;
 }
 
+//                                     hum bow twirl dance rainbow bubbles juggle balance magic show
+const u16 TRICK_DAYS[TRICKS] =        {  3,  5,    7,   14,     21,     30,    45,     60,  100,  200};
+const u16 TRICK_MS[TRICKS] =          {1200, 1000, 1200, 1600, 1600,  1400,  1600,   1800, 1400, 2400};
+const u8 TRICK_CALM[TRICKS] =         {  1,  1,    0,    0,      1,      1,     1,      0,    1,    0};
+
 int Game::tricks() const {
-    int d = s.care_days;
-    return d >= DANCE_DAYS ? 3 : d >= TWIRL_DAYS ? 2 : d >= HUM_DAYS ? 1 : 0;
+    int n = 0;
+    while (n < TRICKS && s.care_days >= TRICK_DAYS[n]) n++;
+    return n;
 }
 
 int Game::years() const {
@@ -305,7 +318,7 @@ void Game::plan_dreams() {
 }
 
 int Game::dream_ms() const {
-    if (scene != SC_SLEEP || !tucked_in() || scene_ms < DREAM_FIRST_MS) return -1;
+    if (scene != SC_SLEEP || !tucked_in() || standing || scene_ms < DREAM_FIRST_MS) return -1;
     u32 t = (scene_ms - DREAM_FIRST_MS) % DREAM_EVERY_MS;
     return t < DREAM_MS ? (int)t : -1;
 }
@@ -324,8 +337,54 @@ void Game::come_back() {                   // she walks in from the left
 }
 
 void Game::wake() {
+    if (scene == SC_SLEEP && bed_locked()) return;   // the night belongs to sleep: only morning wakes her
     go(SC_HOME);
     cue(SFX_WAKE);
+}
+
+// Rested enough to get up by herself: never during the night window.
+bool Game::rested() const {
+    return scene == SC_SLEEP && scene_ms >= TUCK_MS && s.stat[ENERGY] >= MAX_STAT && !bed_locked();
+}
+
+int Game::bedtime() const {
+    Cal c = today();
+    if (!c.known || (s.opts & OPT_NO_BEDTIME) || s.bed10 == s.wake10) return BED_NONE;
+    int bed = s.bed10 * 10, up = s.wake10 * 10, m = c.minute;
+    bool night = bed < up ? m >= bed && m < up : m >= bed || m < up;
+    if (!night) return BED_NONE;
+    return (m - bed + 1440) % 1440 < DROWSY_MIN ? BED_DROWSY : BED_SLEEP;
+}
+
+// Falls asleep by herself: on her feet if she was up and about, else lying down (her quilt over her).
+void Game::doze(bool on_her_feet) {
+    sleep_ms = 0;
+    napped = 0;
+    pet_x = 0;
+    facing = 1;
+    go(SC_SLEEP);
+    standing = on_her_feet;
+    tucked = 1;
+    tuck_ms = 0;
+    plan_dreams();
+    if (screen_on) cue(SFX_SLEEP);
+}
+
+// Every simulation step, from the wall clock (the platform's input), dark fast-forward included.
+void Game::check_bedtime() {
+    int b = bedtime();
+    bool first = !bed_seen && today().known;
+    if (today().known) bed_seen = 1;
+    if (scene == SC_SLEEP && night_sleep && b == BED_NONE && today().known) {   // good morning
+        night_sleep = 0;
+        go(SC_HOME);
+        if (screen_on) { cue(SFX_WAKE); greet(); }
+        return;
+    }
+    night_sleep = scene == SC_SLEEP && b != BED_NONE;
+    if (b != BED_SLEEP) return;
+    if (scene == SC_HOME && !party) { greeting = 0; doze(!first); }   // up past bedtime: asleep on her feet
+    else if (scene == SC_LOUNGE) doze(false);                          // on the lounger: just lies back
 }
 
 Mood Game::mood() const {
@@ -467,7 +526,8 @@ void Game::eat(int t) {                    // the chosen snack: all three nouris
 
 // Parent settings: BOOT (or tap) picks a row, PWR (or tap) changes it.
 void Game::settings_input(int type, int x, int y) {
-    if (set_page) { clock_input(type, x, y); return; }
+    if (set_page == 1) { clock_input(type, x, y); return; }
+    if (set_page == 2) { bed_input(type, x, y); return; }
     int row = set_row;
     if (type == IN_TOUCH) {
         if (y < SET_Y0) return;
@@ -505,7 +565,11 @@ void Game::settings_input(int type, int x, int y) {
     case SET_CALM:  s.opts ^= OPT_CALM; break;
     case SET_SHAKE: s.opts ^= OPT_NO_SHAKE; break;
     case SET_CLOCK: open_clock(); cue(SFX_TAP); return;
-    case SET_EXIT:  go(s.hatched ? SC_HOME : SC_EGG); break;
+    case SET_SLEEP: set_page = 2; set_row = 0; cue(SFX_TAP); dirty = 1; return;
+    case SET_EXIT:                         // back to sleep if that is where the grown-up found her
+        if (back_scene == SC_SLEEP) doze(false);
+        else go(s.hatched ? SC_HOME : SC_EGG);
+        break;
     }
     want_save = 1;
     dirty = 1;
@@ -533,6 +597,32 @@ void Game::open_clock() {                  // start from what the clock says (or
     set_page = 1;
     set_row = 0;
     dirty = 1;
+}
+
+void Game::bed_input(int type, int x, int y) {   // bedtime page: changes apply at once
+    int row = set_row, step = 1;
+    if (type == IN_TOUCH) {
+        if (y < SET_Y0) return;
+        row = (y - SET_Y0) / SET_ROW_H;
+        if (row >= BEDR_ROWS) return;
+        set_row = (u8)row;
+        step = x < SCREEN_W / 2 ? -1 : 1;
+    } else if (type == IN_NEXT) {
+        set_row = (u8)((set_row + 1) % BEDR_ROWS);
+        dirty = 1;
+        return;
+    } else if (type != IN_SELECT) {
+        return;
+    }
+    switch (row) {
+    case BEDR_ON:   s.opts ^= OPT_NO_BEDTIME; break;
+    case BEDR_BED:  s.bed10 = (u8)((s.bed10 + 144 + step) % 144); break;
+    case BEDR_WAKE: s.wake10 = (u8)((s.wake10 + 144 + step) % 144); break;
+    case BEDR_BACK: set_page = 0; set_row = SET_SLEEP; break;
+    }
+    want_save = 1;
+    dirty = 1;
+    cue(SFX_TAP);
 }
 
 void Game::clock_input(int type, int x, int y) {
@@ -707,6 +797,34 @@ void Game::set_plugged(bool usb) {
     if (!quiet) cue(SFX_CHARGE);
 }
 
+// BOOT, sampled every loop. Taps are counted and turned into IN_NEXT only when the sequence is
+// over; three quick presses with the last one held become IN_PARENT instead, with no cursor moves.
+void Game::set_boot(bool down) {
+    u32 now = clock_ms + acc_ms;
+    if (down != (bool)boot_down) {
+        if ((int)(now - boot_t) < KEY_BOUNCE_MS && boot_t) return;   // contact bounce
+        if (down && boot_taps && (int)(now - boot_t) > TAP_GAP_MS) {  // a late press: the old taps first
+            int n = boot_taps;
+            boot_taps = 0;
+            while (n--) input(IN_NEXT, 0, 0);
+        }
+        boot_down = down;
+        if (!down && !boot_fired) boot_taps++;
+        boot_fired = 0;
+        boot_t = now | 1;
+    }
+    if (boot_down && !boot_fired && boot_taps >= PARENT_TAPS - 1 && (int)(now - boot_t) >= PARENT_HOLD_MS) {
+        boot_fired = 1;                    // the grown-up gesture
+        boot_taps = 0;
+        input(IN_PARENT, 0, 0);
+    }
+    if (!boot_down && boot_taps && (int)(now - boot_t) >= TAP_GAP_MS) {   // just taps: move along
+        int n = boot_taps;
+        boot_taps = 0;
+        while (n--) input(IN_NEXT, 0, 0);
+    }
+}
+
 void Game::set_tilt(int v) {
     tilt = (i16)(v < -100 ? -100 : v > 100 ? 100 : v);
     tilt_at = clock_ms ? clock_ms : 1;
@@ -811,7 +929,8 @@ void Game::input(int type, int x, int y) {
         screen_on = 1;
         idle_ms = 0;
         if (scene == SC_AWAY || scene == SC_LEAVE) { away_ms = 0; come_back(); }
-        else if (scene == SC_HOME || scene == SC_EGG || scene == SC_INFO || scene == SC_LOUNGE) {
+        else if (scene == SC_HOME || scene == SC_EGG || scene == SC_INFO || scene == SC_LOUNGE || scene == SC_SLEEP) {
+            back_scene = scene;
             set_row = 0; set_page = 0; go(SC_SETTINGS);
         }
         return;
@@ -1003,6 +1122,11 @@ void Game::input(int type, int x, int y) {
             dirty = 1;
             break;
         }
+        if (bed_locked()) {                // night: a sleepy murmur, and she sleeps on
+            burst(P_NOTE, SCREEN_W / 2 + 60, standing ? 170 : 230, 1);
+            dirty = 1;
+            break;
+        }
         wake();
         break;
     case SC_REFUSE:                        // the big pillow: let her sleep right away
@@ -1074,20 +1198,27 @@ void Game::step() {
         if (party) changed = true;
         if (petting || greeting || party) break;
         Mood m = mood();
-        bool lively = m == M_HAPPY || m == M_IDLE;        // needy unicorns stay put and blink
+        bool lively = (m == M_HAPPY || m == M_IDLE) && !bedtime();   // needy or sleepy: stay put and blink
         if (!lively && idle_act >= IDLE_WALK) { idle_act = IDLE_NONE; changed = true; }
         // Every second lively idle moment can be a trick she has learned, taking turns, at most
-        // one per TRICK_GAP_MS. Calm mode keeps to humming (no hops, no spinning).
+        // one per TRICK_GAP_MS. A trick she has just learned comes first (with a burst of stars).
+        // Calm mode skips the hopping and spinning ones.
         // (Turning is drawn by render from idle_end; `facing` itself never changes during a trick.)
-        int known = calm() ? (tricks() ? 1 : 0) : tricks();
+        u8 can[TRICKS];
+        int known = 0;
+        for (int k = 0; k < tricks(); k++) if (!calm() || TRICK_CALM[k]) can[known++] = (u8)k;
         if (idle_act == IDLE_NONE && due(idle_next) && lively && known && !visitor && (++idle_count & 1) == 0 &&
             (!trick_at || (int)(clock_ms - trick_at) >= TRICK_GAP_MS)) {
-            static const u8 KIND[3] = {IDLE_HUM, IDLE_TWIRL, IDLE_DANCE};
-            static const u16 LEN[3] = {HUM_MS, TWIRL_MS, DANCE_MS};
             (void)crandom();               // the same random sequence as an ordinary idle moment
-            int k = trick_next++ % known;
-            idle_act = KIND[k];
-            idle_end = clock_ms + LEN[k];
+            int k = can[trick_next++ % known];
+            if (s.tricks_seen < tricks()) {        // show off the newest one first
+                for (int j = known - 1; j >= 0; j--) if (can[j] >= s.tricks_seen) { k = can[j]; break; }   // the newest
+                s.tricks_seen = (u8)tricks();
+                want_save = 1;
+                burst(P_STAR, SCREEN_W / 2 + pet_x, 150, 5);
+            }
+            idle_act = (u8)(IDLE_HUM + k);
+            idle_end = clock_ms + TRICK_MS[k];
             trick_at = clock_ms | 1;
             changed = true;
         } else if (idle_act == IDLE_NONE && due(idle_next)) {
@@ -1114,12 +1245,18 @@ void Game::step() {
             if (pet_x == walk_to) idle_act = IDLE_NONE;
             changed = true;
         } else if (idle_act >= IDLE_HUM && !due(idle_end)) {   // a trick in progress
-            static const u16 LEN[3] = {HUM_MS, TWIRL_MS, DANCE_MS};
-            u32 p = clock_ms - (idle_end - LEN[idle_act - IDLE_HUM]);
-            if (idle_act == IDLE_HUM && p % 400 == 0)   // notes from her mouth
-                burst(P_NOTE, SCREEN_W / 2 + pet_x + facing * 78, stage() == STAGE_FOAL ? 230 : 190, 1);
-            if (idle_act == IDLE_DANCE && (p == DANCE_MS / 2 - 100 || p == DANCE_MS - 200))
-                burst(P_SPARKLE, SCREEN_W / 2 + pet_x, 300, 3);
+            int k = idle_act - IDLE_HUM, len = TRICK_MS[k];
+            u32 p = clock_ms - (idle_end - len);
+            bool foal = stage() == STAGE_FOAL;
+            int mx = SCREEN_W / 2 + pet_x + facing * (foal ? 52 : 78), my = foal ? 230 : 190;   // her mouth
+            switch (idle_act) {
+            case IDLE_HUM:     if (p % 400 == 0) burst(P_NOTE, mx, my, 1); break;   // notes float up
+            case IDLE_BUBBLES: if (p % 200 == 0) burst(P_BUBBLE, mx, my + 10, 1); break;
+            case IDLE_BOW:     if (p == (u32)len - 200) burst(P_SPARKLE, mx, my + 40, 3); break;
+            case IDLE_DANCE:   if (p == (u32)len / 2 - 100 || p == (u32)len - 200) burst(P_SPARKLE, SCREEN_W / 2 + pet_x, 300, 3); break;
+            case IDLE_RAINBOW: if (p == (u32)len - 300) burst(P_SPARKLE, SCREEN_W / 2 + pet_x, 150, 4); break;
+            case IDLE_SHOW:    if (p == (u32)len / 2) burst(P_CONFETTI, SCREEN_W / 2 + pet_x, 200, 8); break;
+            }
             changed = true;
         } else if (idle_act != IDLE_NONE && due(idle_end)) {
             idle_act = IDLE_NONE;
@@ -1232,7 +1369,7 @@ void Game::advance(u32 ms) {
     while (minute_ms >= 60000) {
         minute_ms -= 60000;
         minute();
-        if (scene == SC_SLEEP && s.stat[ENERGY] >= MAX_STAT && scene_ms >= TUCK_MS) {   // rested
+        if (rested()) {                    // slept enough: wakes up by herself
             s.stat[HAPPY] = (u16)clamp(s.stat[HAPPY] + TREAT_HAPPY);
             want_save = 1;
             wake();
@@ -1246,7 +1383,7 @@ void Game::advance(u32 ms) {
             napped = 1;
             s.stat[ENERGY] = (u16)clamp(s.stat[ENERGY] + NAP_BONUS);
             dirty = 1;
-            if (s.stat[ENERGY] >= MAX_STAT) { want_save = 1; wake(); }
+            if (s.stat[ENERGY] >= MAX_STAT && !bed_locked()) { want_save = 1; wake(); }
         }
     }
 }
@@ -1264,13 +1401,13 @@ void Game::scene_timers() {
             burst(P_CONFETTI, SCREEN_W / 2, 180, 8);
         }
         break;
-    case SC_HOME:                          // enough screen time: she has things to do
-        if (play_ms >= play_limit_ms()) start_leave();
+    case SC_HOME:                          // enough screen time: she has things to do (or, at bedtime, sleep)
+        if (play_ms >= play_limit_ms()) { if (bedtime()) doze(true); else start_leave(); }
         else if (plugged && idle_ms >= LOUNGE_IDLE_MS && !party && !greeting && !memory_new && !petting)
             go(SC_LOUNGE);                 // still on the charger: back to the lounger
         break;
     case SC_LOUNGE:
-        if (play_ms >= play_limit_ms()) start_leave();
+        if (play_ms >= play_limit_ms()) { if (bedtime()) doze(false); else start_leave(); }
         break;
     case SC_LEAVE:
         if (scene_ms >= LEAVE_MS) {
@@ -1309,7 +1446,7 @@ void Game::scene_timers() {
     case SC_HATCH:  if (scene_ms >= HATCH_MS) go(SC_HOME); break;
     case SC_INFO:   if (scene_ms >= INFO_MS) go(SC_HOME); break;
     case SC_SLEEP:                          // rested (or topped up by the debug slider), once tucked in
-        if (scene_ms >= TUCK_MS && s.stat[ENERGY] >= MAX_STAT) { want_save = 1; wake(); }
+        if (rested()) { want_save = 1; wake(); }
         break;
     }
 }
@@ -1320,6 +1457,7 @@ void Game::scene_timers() {
 u32 Game::tick(u32 dt) {
     acc_ms += dt;
     while (acc_ms >= STEP_MS) {
+        if (s.hatched) check_bedtime();    // every step (dark fast-forward too): tick-size independent
         if (!screen_on && s.hatched && (scene == SC_HOME || scene == SC_SLEEP || scene == SC_AWAY ||
                                         scene == SC_LOUNGE)) {
             u32 n = acc_ms - acc_ms % STEP_MS;

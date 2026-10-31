@@ -258,9 +258,11 @@ static void battery_icon(const Game& g, int x0, int y0) {
     rrect(x0, y0, x0 + 30, y0 + 16, 4, BLACK, edge, 2);
     fill(x0 + 30, y0 + 5, x0 + 33, y0 + 11, edge);   // the nub
     for (int i = 0; i < bars && i < 4; i++) fill(x0 + 4 + i * 6, y0 + 4, x0 + 8 + i * 6, y0 + 12, c);
-    if (g.plugged) {                       // a little lightning bolt over the bars
-        static const i8 BX[7] = {9, 7, 5, 9, 7, 9, 7}, BY[7] = {-3, 0, 3, 3, 6, 9, 12};
-        for (int i = 0; i < 7; i++) fill(x0 + 4 + BX[i], y0 + BY[i], x0 + 9 + BX[i], y0 + BY[i] + 4, YELLOW);
+    if (g.plugged) {                       // a lightning bolt just left of the battery
+        static const char* BOLT[8] = {"...##", "..##.", ".##..", "#####", "..##.", ".##..", "##...", "#...."};
+        for (int r = 0; r < 8; r++)
+            for (int c = 0; c < 5; c++)
+                if (BOLT[r][c] == '#') fill(x0 - 15 + c * 2, y0 + r * 2, x0 - 13 + c * 2, y0 + r * 2 + 2, YELLOW);
     }
 }
 
@@ -321,8 +323,9 @@ static int SC = 6;
 static int P(int n) { return n * SC / 6; }
 
 // x of the sprite's left edge, following the unicorn as she wanders
+static int nudge;                           // a sideways sway (drowsy at bedtime, asleep on her feet)
 static int side_x(const Game& g) {
-    return (SCREEN_W - UP_SIDE_W * SC) / 2 + SC + burn_x(g) + g.pet_x + ahead(g.vel_x, g);
+    return (SCREEN_W - UP_SIDE_W * SC) / 2 + SC + burn_x(g) + g.pet_x + ahead(g.vel_x, g) + nudge;
 }
 static int side_y(const Game& g) { return 346 - UP_SIDE_FEET * SC + burn_y(g); }
 
@@ -685,6 +688,63 @@ static const int ALBUM_ICONS[ALBUM_PICS] = {IC_HEART, IC_APPLE, IC_STAR, IC_BUBB
 // every book's picture for day i of that book: the same twelve, shuffled differently per book
 static int album_icon(int book, int i) { return ALBUM_ICONS[(i + book * 5) % ALBUM_PICS]; }
 
+// Things a trick conjures around her. The rainbow stands behind her (drawn through `under`);
+// a star is tossed up in front of her nose, a ball bounces on her nose, magic rings her horn.
+static int rainbow_grow(const Game& g, u32 t) {   // 0..256, or -1 when no rainbow shows
+    if (g.idle_act != IDLE_RAINBOW && g.idle_act != IDLE_SHOW) return -1;
+    int len = TRICK_MS[g.idle_act - IDLE_HUM];
+    u32 q = t - (g.idle_end - len);
+    if (g.idle_act == IDLE_SHOW) { if (q < (u32)len / 2) return -1; q -= len / 2; }
+    return q > 600 ? 256 : (int)q * 256 / 600;
+}
+
+static u32 trick_t;                        // the frame's time, for the `under` hook
+static void rainbow_behind(const Game& g, int sx, int sy) {
+    (void)sy;
+    int grow = rainbow_grow(g, trick_t);
+    if (grow <= 0) return;
+    int cx = sx + UP_SIDE_W * SC / 2, base = 340;
+    for (int k = 0; k < 6; k++) {          // six bands of an arch over her, from the grass up
+        int rx = P(176 - k * 12) * grow / 256, ry = P(236 - k * 12) * grow / 256, in = P(12) * grow / 256;
+        for (int y = -ry; y <= 0; y++) {
+            int w = rx;
+            while (w > 0 && w * w * ry * ry + y * y * rx * rx > rx * rx * ry * ry) w--;
+            int x0 = w - in < 0 ? 0 : w - in;
+            if (base + y < HEADER_Y1) continue;
+            fill(cx - w, base + y, cx - x0, base + y + 1, RAINBOW[k]);
+            fill(cx + x0, base + y, cx + w + 1, base + y + 1, RAINBOW[k]);
+        }
+    }
+}
+
+static void trick_props(const Game& g, int dy, u32 t) {
+    int len = TRICK_MS[g.idle_act - IDLE_HUM];
+    u32 q = t - (g.idle_end - len);
+    bool flip = g.facing * turn < 0;
+    auto at_x = [&](int col) { return side_x(g) + (flip ? UP_SIDE_W - 1 - col : col) * SC; };
+    int nx = at_x(38), ny = side_y(g) + dy + 17 * SC;   // the tip of her nose
+    int hx = at_x(34), hy = side_y(g) + dy + 4 * SC;    // the tip of her horn
+    int ahead_x = flip ? -1 : 1;
+    switch (g.idle_act) {
+    case IDLE_JUGGLE: {                    // a star tossed up in front of her and caught, twice
+        int toss = (int)(q % (len / 2));
+        icon(IC_STAR, 3, nx + ahead_x * P(22) - 13, ny - P(20) + arc(toss, len / 2, P(46)));
+        break;
+    }
+    case IDLE_BALANCE:                     // a ball bouncing on the tip of her nose
+        icon(IC_BALL, 3, nx + ahead_x * P(4) - 13, ny - 24 + arc(q % 600, 600, P(40)));
+        break;
+    case IDLE_MAGIC: {                     // her horn glows and sparkles circle around it
+        ellipse(hx, hy, P(9), P(9), YELLOW);
+        for (int k = 0; k < 6; k++) {
+            int a = (int)(q / 30) + k * 64 / 6;
+            sparkle(hx + P(46) * sin64(a + 16) / 256, hy + P(26) * sin64(a) / 256 + P(10), 2, k & 1 ? PINK : INK);
+        }
+        break;
+    }
+    }
+}
+
 static void scene_home(const Game& g) {
     char day[32] = "BİRLİKTE ";             // days she was cared for, not powered hours
     int n = 0;
@@ -714,20 +774,49 @@ static void scene_home(const Game& g) {
         u32 p = t - (g.idle_end - 600);
         dy = arc(p, 600 - SQUASH_MS, 26);
         squash_now = squash_for(p, 600 - SQUASH_MS);
-    } else if (g.idle_act == IDLE_HUM) {                   // eyes closed, swaying to her own tune
-        state = ST_BLINK;
-        dy = wave(now(g), 600, 2) + 2;
-    } else if (g.idle_act == IDLE_TWIRL) {                 // little hops, turning each time
-        state = ST_HOP;
-        u32 q = t - (g.idle_end - TWIRL_MS), p = q % 300;
-        dy = arc(p, 300 - 60, 10);
-        turn = (q / 300) & 1 ? -1 : 1;
-    } else if (g.idle_act == IDLE_DANCE) {                 // two big hops, a turn in between
-        state = ST_HOP;
-        u32 q = t - (g.idle_end - DANCE_MS), p = q % (DANCE_MS / 2);
-        dy = arc(p, DANCE_MS / 2 - SQUASH_MS, 24);
-        turn = q >= DANCE_MS / 2 ? -1 : 1;
-        squash_now = squash_for(p, DANCE_MS / 2 - SQUASH_MS);
+    } else if (g.idle_act >= IDLE_HUM) {                   // a trick she has learned
+        int len = TRICK_MS[g.idle_act - IDLE_HUM];
+        u32 q = t - (g.idle_end - len);
+        switch (g.idle_act) {
+        case IDLE_HUM:                                     // eyes closed, swaying to her own tune
+        case IDLE_BUBBLES:
+            state = g.idle_act == IDLE_HUM ? ST_BLINK : M_HAPPY;
+            dy = wave(now(g), 600, 2) + 2;
+            break;
+        case IDLE_BOW:                                     // a deep bow, head down, and up again
+            state = q > 150 && q < (u32)len - 200 ? ST_EAT : M_HAPPY;
+            dy = 0;
+            break;
+        case IDLE_TWIRL:                                   // little hops, turning each time
+            state = ST_HOP;
+            dy = arc(q % 300, 300 - 60, 10);
+            turn = (q / 300) & 1 ? -1 : 1;
+            break;
+        case IDLE_DANCE:                                   // two big hops, a turn in between
+            state = ST_HOP;
+            dy = arc(q % (len / 2), len / 2 - SQUASH_MS, 24);
+            turn = q >= (u32)len / 2 ? -1 : 1;
+            squash_now = squash_for(q % (len / 2), len / 2 - SQUASH_MS);
+            break;
+        case IDLE_RAINBOW:                                 // a hop, and a rainbow grows over her
+            state = q < 500 ? ST_HOP : M_HAPPY;
+            dy = q < 500 ? arc(q, 500 - SQUASH_MS, 14) : 0;
+            break;
+        case IDLE_SHOW:                                    // the finale: a twirl, then a big hop
+            state = ST_HOP;
+            if (q < (u32)len / 2) { dy = arc(q % 300, 300 - 60, 10); turn = (q / 300) & 1 ? -1 : 1; }
+            else dy = arc(q - len / 2, len / 2 - SQUASH_MS, 30);
+            break;
+        default:                                           // juggle, balance, magic: she watches it
+            state = M_HAPPY;
+            dy = wave(now(g), 1200, 2) + 2;
+            break;
+        }
+    }
+    if (g.bedtime() == BED_DROWSY && !g.petting && !g.party && g.idle_act <= IDLE_BLINK) {
+        state = (now(g) / 3000) % 3 == 2 ? ST_BLINK : M_SLEEPY;   // heavy eyes, now and then closed
+        nudge = g.calm() ? 0 : wave(now(g), 2600, P(7));            // swaying on her feet
+        dy = 2;
     }
     if (g.greeting && !g.petting) {                        // hello after a break
         u32 p = GREET_MS - (u32)(g.greet_end - t > GREET_MS ? 0 : g.greet_end - t);
@@ -743,7 +832,13 @@ static void scene_home(const Game& g) {
         squash_now = squash_for(p, 700 - SQUASH_MS);
     }
     if (g.calm()) { dy = 0; squash_now = 0; }               // parent setting: calm motion
+    bool trick = g.idle_act >= IDLE_HUM && !g.petting && !g.greeting && !g.party;
+    trick_t = t;
+    if (trick) under = rainbow_behind;
     home_like(g, state, day, false, frame, dy);
+    under = 0;
+    nudge = 0;
+    if (trick) trick_props(g, dy, t);
     squash_now = 0;
     turn = 1;
     butterfly(g);
@@ -915,6 +1010,14 @@ static void dream_cloud(int cx, int cy, int grow, u16 c) {
 }
 
 static void scene_sleep(const Game& g) {
+    if (g.standing) {                      // fell asleep on her feet: eyes shut, a slow sway, Zz
+        nudge = g.calm() ? 0 : wave(now(g), 4200, P(4));
+        home_like(g, ST_BLINK, "AYAKTA UYUYAKALDI", true, 0, 2);
+        int sx = side_x(g), sy = side_y(g);
+        zz(sx + P(g.facing < 0 ? 0 : 220) + wave(now(g), 2600, 6), sy + P(40) - (int)(now(g) / 45 % 40));
+        nudge = 0;
+        return;
+    }
     int dy = g.calm() ? 2 : wave(now(g), 3200, 2) + 2;
     home_like(g, ST_SLEEP, "UYUYOR · İYİ GECELER", true, 0, dy);
     int sx = side_x(g), sy = side_y(g) + dy;
@@ -1031,7 +1134,6 @@ static void scene_refuse(const Game& g) {
     text("UYU", SCREEN_W / 2 + 40, 390, 2, INK);
 }
 
-// SC_SETTINGS: for grown-ups (BOOT held 5 s). Every value cycles on tap / PWR.
 // "07" style two-digit number into out (no libc)
 static void two(int v, char* out) { out[0] = (char)('0' + v / 10 % 10); out[1] = (char)('0' + v % 10); out[2] = 0; }
 static void cat(char* dst, const char* src) { while (*dst) dst++; while ((*dst++ = *src++)) {} }
@@ -1072,11 +1174,35 @@ static void scene_clock(const Game& g) {
     text("BOOT: SATIR · PWR: +1", SCREEN_W / 2, 420, 1, DIM);
 }
 
-// SC_SETTINGS: for grown-ups (BOOT held 5 s). Every value cycles on tap / PWR.
+static void hhmm(int tens, char* out) {    // tens of minutes after midnight -> "19:30"
+    char t[4];
+    out[0] = 0;
+    two(tens / 6, t); cat(out, t); cat(out, ":"); two(tens % 6 * 10, t); cat(out, t);
+}
+
+// SC_SETTINGS page 2: bedtime and wake-up time. Left half of a row: -10 min, right half: +10 min.
+static void scene_bedtime(const Game& g) {
+    static const char* names[BEDR_ROWS] = {"UYKU KURALI", "YATMA", "UYANMA", "GERİ"};
+    text("UYKU SAATİ", SCREEN_W / 2, 30, 2, YELLOW);
+    bool on = !(g.s.opts & OPT_NO_BEDTIME);
+    for (int i = 0; i < BEDR_ROWS; i++) {
+        char v[24] = "", t[8];
+        if (i == BEDR_ON) cat(v, on ? "AÇIK" : "KAPALI");
+        if (i == BEDR_BED || i == BEDR_WAKE) { hhmm(i == BEDR_BED ? g.s.bed10 : g.s.wake10, t); cat(v, "-  "); cat(v, t); cat(v, "  +"); }
+        settings_row(g, i, names[i], v, false);
+    }
+    const char* help[4] = {"YATMA SAATİNDE UYUMADIYSA SALLANIR,", "1 SAAT SONRA AYAKTA UYUYAKALIR.",
+                           "UYANMA SAATİNE KADAR UYANMAZ.", g.today().known ? "" : "(SAAT AYARLI DEĞİL: KURAL BEKLER)"};
+    for (int k = 0; k < 4; k++) text(help[k], SCREEN_W / 2, 230 + k * 18, 1, DIM);
+    text("BOOT: SATIR · PWR: +10 DK", SCREEN_W / 2, 420, 1, DIM);
+}
+
+// SC_SETTINGS: for grown-ups (BOOT: 3 quick presses, hold the last). Every value cycles on tap / PWR.
 static void scene_settings(const Game& g) {
-    if (g.set_page) { scene_clock(g); return; }
-    static const char* names[SET_ROWS] = {"SES", "OTURUM", "MOLA", "PARLAKLIK", "SAKİN MOD", "SALLAMA", "SAAT",
-                                          "ÇIKIŞ"};
+    if (g.set_page == 1) { scene_clock(g); return; }
+    if (g.set_page == 2) { scene_bedtime(g); return; }
+    static const char* names[SET_ROWS] = {"SES", "OTURUM", "MOLA", "PARLAKLIK", "SAKİN MOD", "SALLAMA", "UYKU",
+                                          "SAAT", "ÇIKIŞ"};
     static const char* vols[3] = {"NORMAL", "KISIK", "KAPALI"};
     text("EBEVEYN AYARLARI", SCREEN_W / 2, 30, 2, YELLOW);
     for (int i = 0; i < SET_ROWS; i++) {
@@ -1088,6 +1214,12 @@ static void scene_settings(const Game& g) {
         case SET_BRIGHT: utoa(g.brightness() * 100 / 255, v); cat(v, "%"); break;
         case SET_CALM:   cat(v, g.calm() ? "AÇIK" : "KAPALI"); break;
         case SET_SHAKE:  cat(v, (g.s.opts & OPT_NO_SHAKE) ? "KAPALI" : "AÇIK"); break;
+        case SET_SLEEP: {                  // "19:30 - 07:00 >"
+            if (g.s.opts & OPT_NO_BEDTIME) { cat(v, "KAPALI >"); break; }
+            char t[8];
+            hhmm(g.s.bed10, t); cat(v, t); cat(v, " - "); hhmm(g.s.wake10, t); cat(v, t); cat(v, " >");
+            break;
+        }
         case SET_CLOCK: {                  // "31.10.2026 14:05 >" or a nudge to set it
             Cal c = g.today();
             if (!c.known) { cat(v, "AYARLA >"); break; }
@@ -1104,8 +1236,8 @@ static void scene_settings(const Game& g) {
     }
     char v[8], line[40] = "PİL ";
     if (g.battery) { utoa(g.battery, v); cat(line, v); cat(line, "%"); } else cat(line, "?");
-    text(line, SCREEN_W / 2, 392, 1, DIM);
-    text("BOOT: SEÇ · PWR: DEĞİŞTİR", SCREEN_W / 2, 412, 1, DIM);
+    text(line, SCREEN_W / 2, 412, 1, DIM);
+    text("BOOT: SEÇ · PWR: DEĞİŞTİR", SCREEN_W / 2, 428, 1, DIM);
 }
 
 // LEAVE / AWAY / RETURN: she goes out to play with friends and hangs a sign on the door.

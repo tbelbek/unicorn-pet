@@ -1724,10 +1724,24 @@ TEST(warm_reunion_after_a_long_gap) {
 }
 
 TEST(save_layout_v6) {
-    EQ(SAVE_SIZE, 52);
+    EQ(SAVE_SIZE, 56);
     Save s;
-    EQ((int)((u8*)&s.memory_day - (u8*)&s), 36);   // v5 fields keep their place
-    EQ((int)((u8*)&s.check - (u8*)&s), 48);
+    EQ((int)((u8*)&s.memory_day - (u8*)&s), 36);   // older fields keep their place
+    EQ((int)((u8*)&s.bed10 - (u8*)&s), 47);        // v7's bedtime sits in v6's (zero) pad byte
+    EQ((int)((u8*)&s.check - (u8*)&s), 52);
+    Game g = hatched();                            // a v6 save (52 bytes) loads with the defaults
+    g.s.care_days = 20; g.s.party_year = 26;
+    u8 buf[SAVE_SIZE];
+    g.save(buf);
+    buf[0] = 6;
+    buf[47] = 0;
+    u32 c = 2166136261u;
+    for (int i = 0; i < SAVE_V6_SIZE - 4; i++) c = (c ^ buf[i]) * 16777619u;
+    std::memcpy(buf + SAVE_V6_SIZE - 4, &c, 4);
+    Game h; h.init(4);
+    CHECK(h.load(buf, SAVE_V6_SIZE));
+    EQ(h.s.care_days, 20); EQ(h.s.bed10, BED_DEFAULT10); EQ(h.s.wake10, WAKE_DEFAULT10); EQ(h.s.tricks_seen, 0);
+    EQ(h.tricks(), 4);                             // what she learned is still hers
 }
 
 TEST(a_foal_is_drawn_smaller) {
@@ -1740,7 +1754,7 @@ TEST(a_foal_is_drawn_smaller) {
     CHECK(foal * 10 < young * 7);          // about (4/6)^2 of the pixels
 }
 
-static int count_tricks(Game& g, int ms, int* kinds, u32* min_gap) {
+static int count_tricks(Game& g, int ms, int* kinds, u32* min_gap) {   // kinds: per trick
     int n = 0, last = IDLE_NONE;
     u32 prev = 0;
     for (int t = 0; t < ms / 100; t++) {
@@ -1757,42 +1771,62 @@ static int count_tricks(Game& g, int ms, int* kinds, u32* min_gap) {
 }
 
 TEST(tricks_learned_over_the_days) {
-    int days[4] = {2, 3, 7, 14}, known[4] = {0, 1, 2, 3};
-    for (int k = 0; k < 4; k++) {
+    int days[5] = {2, 3, 14, 60, 250}, known[5] = {0, 1, 4, 8, TRICKS};
+    for (int k = 0; k < 5; k++) {
         Game g = hatched(50 + k);
         g.hint_pet = 0;
         for (int i = 0; i < NSTATS; i++) g.set_stat(i, 9000);
         g.s.care_days = (u16)days[k];
+        g.s.tricks_seen = (u8)(known[k] > 2 ? known[k] - 2 : 0);   // the two newest not shown yet
         EQ(g.tricks(), known[k]);
-        int kinds[3] = {0, 0, 0};
+        int kinds[TRICKS] = {0}, first = -1;
         u32 gap = 1u << 30;
         int n = 0;
-        for (int r = 0; r < 20; r++) { g.input(IN_NEXT, 0, 0); n += count_tricks(g, 9000, kinds, &gap); }
+        for (int r = 0; r < 12 * TRICKS; r++) {
+            g.input(IN_NEXT, 0, 0);
+            n += count_tricks(g, 9000, kinds, &gap);
+            if (first < 0) for (int j = 0; j < TRICKS; j++) if (kinds[j]) first = j;
+        }
         if (!known[k]) { EQ(n, 0); continue; }
-        CHECK(n >= 4);
+        EQ(first, known[k] - 1);               // a newly learned trick is shown off first
+        EQ(g.s.tricks_seen, known[k]);
         CHECK(gap >= TRICK_GAP_MS);
-        for (int j = 0; j < 3; j++) CHECK(j < known[k] ? kinds[j] > 0 : kinds[j] == 0);
+        for (int j = 0; j < TRICKS; j++) CHECK(j < known[k] ? kinds[j] > 0 : kinds[j] == 0);
         CHECK(g.facing == 1 || g.facing == -1);
     }
-    Game c = hatched(60);                      // calm mode: humming only, no spinning or hops
-    c.s.opts |= OPT_CALM; c.s.care_days = 20; c.hint_pet = 0;
+    Game c = hatched(60);                      // calm mode: no hopping or spinning tricks
+    c.s.opts |= OPT_CALM; c.s.care_days = 250; c.s.tricks_seen = TRICKS; c.hint_pet = 0;
     for (int i = 0; i < NSTATS; i++) c.set_stat(i, 9000);
-    int kinds[3] = {0, 0, 0};
+    int kinds[TRICKS] = {0};
     u32 gap = 1u << 30;
-    for (int r = 0; r < 20; r++) { c.input(IN_NEXT, 0, 0); count_tricks(c, 9000, kinds, &gap); }
-    CHECK(kinds[0] > 0); EQ(kinds[1], 0); EQ(kinds[2], 0);
+    for (int r = 0; r < 12 * TRICKS; r++) { c.input(IN_NEXT, 0, 0); count_tricks(c, 9000, kinds, &gap); }
+    for (int j = 0; j < TRICKS; j++) CHECK(TRICK_CALM[j] ? kinds[j] > 0 : kinds[j] == 0);
     Game h = hatched(61);                      // hungry: no tricks, just blinking
-    h.s.care_days = 20; h.set_stat(HUNGER, 500);
-    kinds[0] = kinds[1] = kinds[2] = 0;
+    h.s.care_days = 250; h.set_stat(HUNGER, 500);
+    int none[TRICKS] = {0};
     int n = 0;
-    for (int r = 0; r < 10; r++) { h.input(IN_NEXT, 0, 0); n += count_tricks(h, 9000, kinds, &gap); }
+    for (int r = 0; r < 10; r++) { h.input(IN_NEXT, 0, 0); n += count_tricks(h, 9000, none, &gap); }
     EQ(n, 0);
     Game a = hatched(62), b = hatched(62);     // tricks keep the tick-size independence
-    a.s.care_days = b.s.care_days = 20;
+    a.s.care_days = b.s.care_days = 250;
     for (int i = 0; i < NSTATS; i++) { a.set_stat(i, 9000); b.set_stat(i, 9000); }
     a.tick(60000);
     for (int i = 0; i < 600; i++) b.tick(100);
     EQ(a.idle_act, b.idle_act); EQ(a.pet_x, b.pet_x); EQ(a.facing, b.facing); EQ(a.trick_next, b.trick_next);
+    for (int k = 0; k < TRICKS; k++) {         // every trick draws inside the screen, both ways, foal too
+        for (int f = 0; f < 4; f++) {
+            Game r = hatched(80 + k);
+            r.s.care_days = f & 2 ? 2 : 250; r.hint_pet = 0;
+            r.facing = (i8)(f & 1 ? -1 : 1);
+            r.idle_act = (u8)(IDLE_HUM + k); r.idle_end = r.clock_ms + TRICK_MS[k];
+            for (int s = 0; s < TRICK_MS[k] / 100; s += 3) { r.tick(100); render(r, fb); r.idle_act = (u8)(IDLE_HUM + k); }
+        }
+    }
+    u8 buf[SAVE_SIZE];                         // what she learned survives a power cut (or a reflash)
+    a.s.tricks_seen = 7;
+    a.save(buf);
+    Game l; l.init(1);
+    CHECK(l.load(buf, SAVE_SIZE)); EQ(l.tricks(), TRICKS); EQ(l.s.tricks_seen, 7);
 }
 
 static void open_clock_page(Game& g) {
@@ -1982,6 +2016,155 @@ TEST(charging_at_night_and_elsewhere) {
     EQ(l.scene, SC_LEAVE);
 }
 
+static void at_time(Game& g, int h, int m) { g.set_wall(at(2026, 11, 3, h, m)); }
+
+TEST(bedtime_sways_then_sleeps_on_her_feet) {
+    Game g = hatched();
+    for (int i = 0; i < NSTATS; i++) g.set_stat(i, 9000);
+    at_time(g, 19, 0); settle(g); run(g, 300);
+    EQ(g.bedtime(), BED_NONE); EQ(g.scene, SC_HOME);
+    at_time(g, 19, 30); run(g, 300);           // bedtime: drowsy, the moon button bounces
+    EQ(g.bedtime(), BED_DROWSY); EQ(g.recommended(), MENU_SLEEP); EQ(g.scene, SC_HOME);
+    g.s.care_days = 250;                       // no tricks or walks while drowsy
+    int busy = 0;
+    for (int i = 0; i < 300; i++) { g.tick(100); if (g.idle_act >= IDLE_WALK) busy++; if (i % 50 == 0) g.input(IN_NEXT, 0, 0); }
+    EQ(busy, 0);
+    at_time(g, 20, 29); run(g, 300); EQ(g.scene, SC_HOME);
+    at_time(g, 20, 30); run(g, 300);           // an hour later, still up: asleep on her feet
+    EQ(g.scene, SC_SLEEP); EQ(g.standing, 1);
+    render(g, fb); CHECK(lit_pixels(0, 100, SCREEN_W, 350) > 8000);
+    g.input(IN_TOUCH, 184, 200);               // touches do not wake her
+    g.input(IN_SELECT, 0, 0); g.input(IN_SHAKE, 0, 0);
+    EQ(g.scene, SC_SLEEP);
+    g.set_stat(ENERGY, MAX_STAT); run(g, 3 * 60000);   // nor does being fully rested
+    EQ(g.scene, SC_SLEEP);
+    u32 saves = 0;
+    for (int i = 0; i < 100; i++) if (g.tick(100) & F_SAVE) saves++;
+    CHECK(saves <= 1);                         // and it does not hammer the flash all night
+    at_time(g, 6, 59); run(g, 300); EQ(g.scene, SC_SLEEP);
+    at_time(g, 7, 0); run(g, 300);             // morning: up she gets
+    EQ(g.scene, SC_HOME); EQ(g.standing, 0);
+}
+
+TEST(put_to_bed_stays_asleep_till_morning) {
+    Game g = hatched();
+    at_time(g, 19, 45); settle(g);
+    g.set_stat(ENERGY, 9000);
+    tap_menu(g, MENU_SLEEP);                   // put to bed at bedtime: the usual quilt ritual
+    run(g, TUCK_MS + 200);
+    EQ(g.scene, SC_SLEEP); EQ(g.standing, 0);
+    g.input(IN_TOUCH, 184, 200);
+    EQ(g.scene, SC_SLEEP);
+    at_time(g, 23, 0); run(g, 60 * 60000);
+    EQ(g.scene, SC_SLEEP);
+    at_time(g, 7, 10); run(g, 300);
+    EQ(g.scene, SC_HOME);
+    Game n = hatched();                        // an afternoon nap is not locked
+    at_time(n, 15, 0); settle(n);
+    tap_menu(n, MENU_SLEEP); run(n, TUCK_MS + 200);
+    n.input(IN_TOUCH, 184, 200);
+    EQ(n.scene, SC_HOME);
+    Game r = hatched();                        // a nap that rolls into bedtime stays asleep
+    at_time(r, 19, 20); settle(r);
+    tap_menu(r, MENU_SLEEP); run(r, TUCK_MS + 200);
+    at_time(r, 19, 31); run(r, 300);
+    r.input(IN_TOUCH, 184, 200);
+    EQ(r.scene, SC_SLEEP);
+}
+
+TEST(bedtime_is_tick_size_independent) {
+    Game a = hatched(), b = hatched();
+    at_time(a, 21, 0); at_time(b, 21, 0);
+    a.s.opts |= OPT_NO_BEDTIME; b.s.opts |= OPT_NO_BEDTIME;   // set up on the info screen first
+    tap_header(a); tap_header(b);
+    a.s.opts &= ~OPT_NO_BEDTIME; b.s.opts &= ~OPT_NO_BEDTIME;
+    a.tick(INFO_MS + 1000);
+    for (int i = 0; i < (INFO_MS + 1000) / 100; i++) b.tick(100);
+    EQ(a.scene, b.scene); EQ(a.standing, b.standing);
+    EQ(a.scene, SC_SLEEP);
+}
+
+TEST(bedtime_edges) {
+    Game g = hatched();                        // power-up in the middle of the night: lying asleep
+    for (int i = 0; i < NSTATS; i++) g.set_stat(i, 9000);
+    u8 buf[SAVE_SIZE]; g.save(buf);
+    Game b; b.init(3); CHECK(b.load(buf, SAVE_SIZE));
+    at_time(b, 23, 0); b.tick(100);
+    EQ(b.scene, SC_SLEEP); EQ(b.standing, 0); EQ(b.greeting, 0);
+    b.set_wall(at(2026, 11, 3, 23, 30), false);   // the clock stops being trusted: she can be woken
+    b.input(IN_TOUCH, 184, 200);
+    EQ(b.scene, SC_HOME);
+    Game l = hatched();                        // time's up at bedtime: to sleep, not out with friends
+    at_time(l, 19, 40); settle(l);
+    l.play_ms = l.play_limit_ms(); run(l, 300);
+    EQ(l.scene, SC_SLEEP); EQ(l.standing, 1);
+    Game o = hatched();                        // bedtime off: nothing happens
+    o.s.opts |= OPT_NO_BEDTIME;
+    at_time(o, 22, 0); run(o, 300);
+    EQ(o.scene, SC_HOME);
+    Game w = hatched();                        // a bedtime after midnight works too (01:00 - 09:00)
+    w.s.bed10 = 6; w.s.wake10 = 54;
+    at_time(w, 0, 50); run(w, 300); EQ(w.bedtime(), BED_NONE);
+    at_time(w, 1, 30); run(w, 300); EQ(w.bedtime(), BED_DROWSY);
+    at_time(w, 8, 0); run(w, 300); EQ(w.scene, SC_SLEEP);
+    at_time(w, 9, 0); run(w, 300); EQ(w.scene, SC_HOME);
+    Game s = hatched();                        // the parent page: on/off, -10/+10 minutes
+    s.input(IN_PARENT, 0, 0);
+    s.input(IN_TOUCH, 300, SET_Y0 + SET_SLEEP * SET_ROW_H + 18);
+    EQ(s.set_page, 2);
+    s.input(IN_TOUCH, 60, SET_Y0 + BEDR_BED * SET_ROW_H + 18);     // 19:30 -> 19:20
+    s.input(IN_TOUCH, 300, SET_Y0 + BEDR_WAKE * SET_ROW_H + 18);   // 07:00 -> 07:10
+    EQ(s.s.bed10, BED_DEFAULT10 - 1); EQ(s.s.wake10, WAKE_DEFAULT10 + 1);
+    s.input(IN_TOUCH, 300, SET_Y0 + BEDR_ON * SET_ROW_H + 18);
+    CHECK(s.s.opts & OPT_NO_BEDTIME);
+    render(s, fb); CHECK(lit_pixels(0, 0, SCREEN_W, SCREEN_H) > 2000);
+    s.input(IN_TOUCH, 300, SET_Y0 + BEDR_BACK * SET_ROW_H + 18);
+    EQ(s.set_page, 0); EQ(s.set_row, SET_SLEEP);
+    Game p = hatched();                        // a grown-up opens the settings while she sleeps at night
+    at_time(p, 22, 0); p.tick(100); run(p, 300);
+    EQ(p.scene, SC_SLEEP);
+    p.input(IN_PARENT, 0, 0); EQ(p.scene, SC_SETTINGS);
+    p.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    EQ(p.scene, SC_SLEEP); EQ(p.standing, 0);  // and closes them: she is still asleep, lying down
+}
+
+// BOOT pressed for `hold` ms, then released, sampled every 10 ms like a firmware loop
+static void boot_press(Game& g, int hold, int gap_after = 100) {
+    for (int t = 0; t < hold; t += 10) { g.set_boot(true); g.tick(10); }
+    for (int t = 0; t < gap_after; t += 10) { g.set_boot(false); g.tick(10); }
+}
+
+TEST(boot_taps_and_the_grown_up_gesture) {
+    Game g = hatched();
+    EQ(g.menu, 0);
+    boot_press(g, 80, 500);                    // one tap: the cursor moves once, after the tap
+    EQ(g.menu, 1);
+    boot_press(g, 80, 150); boot_press(g, 80, 500);   // two quick taps: twice
+    EQ(g.menu, 3);
+    boot_press(g, 5000, 500);                  // a long press alone is just a tap (no secret door)
+    EQ(g.scene, SC_HOME); EQ(g.menu, 0);
+    boot_press(g, 80, 150); boot_press(g, 80, 150);   // the gesture: tap, tap, press and hold...
+    for (int t = 0; t < PARENT_HOLD_MS - 100; t += 10) { g.set_boot(true); g.tick(10); }
+    EQ(g.scene, SC_HOME);
+    for (int t = 0; t < 200; t += 10) { g.set_boot(true); g.tick(10); }
+    EQ(g.scene, SC_SETTINGS);                  // ...opens the settings
+    EQ(g.menu, 0);                             // and the menu cursor did not move on the way
+    for (int t = 0; t < 600; t += 10) { g.set_boot(false); g.tick(10); }
+    EQ(g.scene, SC_SETTINGS); EQ(g.set_row, 0);   // letting go adds no stray tap
+    boot_press(g, 80, 150); boot_press(g, 80, 150); boot_press(g, 80, 600);   // three plain taps: rows
+    EQ(g.set_row, 3); EQ(g.scene, SC_SETTINGS);
+    Game b = hatched();                        // contact bounce is one press, not three
+    for (int i = 0; i < 3; i++) { b.set_boot(true); b.tick(5); b.set_boot(false); b.tick(5); }
+    b.set_boot(true); b.tick(80);
+    for (int t = 0; t < 500; t += 10) { b.set_boot(false); b.tick(10); }
+    EQ(b.menu, 1);
+    Game d = hatched();                        // on the door the gesture calls her back
+    d.play_ms = d.play_limit_ms(); run(d, LEAVE_MS + 300); EQ(d.scene, SC_AWAY);
+    boot_press(d, 80, 150); boot_press(d, 80, 150);
+    for (int t = 0; t < PARENT_HOLD_MS + 100; t += 10) { d.set_boot(true); d.tick(10); }
+    EQ(d.scene, SC_RETURN);
+}
+
 // ---- rendering --------------------------------------------------------------------------------
 
 TEST(every_scene_renders_for_every_character) {
@@ -2049,7 +2232,9 @@ int main() {
         T(she_grows_up_and_never_back), T(milestones_celebrate_once), T(birthday_once_a_year),
         T(warm_reunion_after_a_long_gap), T(save_layout_v6), T(a_foal_is_drawn_smaller),
         T(tricks_learned_over_the_days), T(parent_sets_the_clock), T(parent_sets_the_birthday),
-        T(charging_on_the_sun_lounger), T(charging_at_night_and_elsewhere), T(album_opens_from_the_info_screen),
+        T(charging_on_the_sun_lounger), T(charging_at_night_and_elsewhere),
+        T(bedtime_sways_then_sleeps_on_her_feet), T(put_to_bed_stays_asleep_till_morning), T(bedtime_edges),
+        T(bedtime_is_tick_size_independent), T(boot_taps_and_the_grown_up_gesture), T(album_opens_from_the_info_screen),
         T(every_scene_renders_for_every_character),
     };
     for (auto& t : tests) {

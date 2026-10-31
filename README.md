@@ -95,11 +95,22 @@ night costs nothing.
 - Only one celebration shows at a time, never on the door while she is away, and each is marked
   done as it starts, so a reboot does not repeat it.
 
-- **Tricks she learns:** from day 3 she hums (eyes closed, notes floating up, no sound), from day 7
-  she twirls (little hops, turning each time) and from day 14 she dances (two big hops with a turn
-  and sparkles). Every second lively idle moment can be one of them, taking turns, at most one
-  every 12 s; never when she needs something, never while the butterfly visits. Calm mode keeps to
-  humming.
+- **Tricks she learns:** ten of them, one after another over the days together: humming (day 3,
+  notes float up, no sound), a bow (5), a twirl (7), a dance (14), a rainbow arching behind her
+  (21), blowing bubbles (30), tossing a star and catching it (45), a ball bouncing on her nose (60),
+  magic sparkles round her horn (100) and a grand show (200). A trick she has just learned is shown
+  off first, with a burst of stars; after that they take turns. At most one every 12 s, every
+  second lively idle moment; never when she needs something, never at bedtime, never while the
+  butterfly visits. Calm mode leaves out the hopping and spinning ones. What she has learned comes
+  from the days together in the save, so a power cut or a new firmware does not take it away.
+- **Bedtime:** the parent sets a bedtime and a wake-up time (settings > **UYKU**, default 19:30 to
+  07:00, 10-minute steps, can be switched off). At bedtime, if she is still up, she gets drowsy:
+  heavy eyes, swaying on her feet, and the moon button bounces. An hour later, still up, she falls
+  asleep standing. Asleep in that window, whether put to bed or not, she cannot be woken (a touch
+  just gets a sleepy murmur, being rested does not count) until the wake-up time, when she gets up
+  with a stretch. If her time is up at bedtime she goes to sleep instead of out with friends.
+  Switched on in the middle of the night, she is found asleep lying down. It needs a trusted clock:
+  without one the rule waits (and a clock that stops being trusted lets her be woken).
 
 The day comes from the wall clock. On the board the RTC keeps UTC, and the firmware turns it into
 local time with the time zone's rules, so summer time switches by itself, even offline. With WiFi
@@ -144,7 +155,7 @@ pulling the power is no shortcut. The break is timed by the board's **PCF85063 R
 running while the board is off, so a break that passed overnight is over in the morning; if there
 is no trustworthy clock (it lost power and restarted, or went backwards) the game falls back to
 counting powered time from what was left. Only the break uses the wall clock: needs still freeze
-while the board is off. The emulator has an RTC checkbox and a "10 DK DOLDU" test button. Grown-ups can call her back early by holding BOOT for 5 s on
+while the board is off. The emulator has an RTC checkbox and a "10 DK DOLDU" test button. Grown-ups can call her back early with the grown-up gesture (below) on
 the door (the emulator has a button for it). Limits are `PLAY_LIMIT_MS` / `AWAY_MS` in
 `core/unicorn.h`.
 
@@ -175,7 +186,10 @@ of `core/unicorn.h`.
 - **A warm goodbye:** a friend arrives ("HADİ!"), they hug, and walk off together.
 - **Game feel:** buttons dip and pop, she stretches on take-off and squashes on landing, popped
   stars leave an expanding ring; a new sound cuts the previous one short on both platforms.
-- **Parent settings** (hold BOOT 5 s, or the EBEVEYN button in the emulator): volume
+- **Parent settings** (the grown-up gesture: press BOOT three times quickly and hold the third for
+  3 s; or the EBEVEYN button in the emulator, whose BOOT key works the same way). A child is
+  unlikely to do that by chance, and the presses on the way never move the menu cursor: a short
+  BOOT press counts once it is over (0.4 s later). Volume
   (normal / low / off), session length (5/10/15/20 min), break length (15/30/45/60 min),
   brightness, calm mode (no bobbing or hops, fewer particles), shake on/off, the battery %, and
   the date and time ("AYARLA" when the clock is not trusted). **SAAT** opens a second page: year, month, day, hour, minute and her
@@ -195,13 +209,23 @@ peak-end, fairness, need-satisfaction, Zeigarnik and one-thing-to-remove audits
 
 ```sh
 make -C test               # host: every event, mini-game, petting, idle life, particles, sound,
-                           # screen-time limit and the door, RTC breaks, saves v1..v5->v6, calendar, album,
+                           # screen-time limit and the door, RTC breaks, saves v1..v6->v7, calendar, album,
                            # interpolation,
                            # save/load, screen-off, tick-size independence, a week of neglect;
                            # dumps a screenshot per event to test/out/*.png
 make -C test wasm          # the same events through emu/unicorn.wasm in Node
 make -C test record        # scripted play-through from the real core -> design/gameplay.gif
 ```
+
+## Flashing keeps her
+
+Her save lives in NVS (the `unicorn` namespace), which `pio run -d fw -t upload` leaves alone: a
+new firmware finds her as she was, with every day together, album page, birthday and trick. Older
+saves are migrated forward (v1 to v7). A save the firmware cannot read (a newer firmware's, or a
+bad write) is copied to `save_bad` before a new egg could overwrite it. A running clock is kept
+too: a new build only resets it from its build time if the clock is behind that or had stopped.
+Things that do wipe her: "Erase Flash" in an IDE, `pio run -t erase`, or changing the partition
+table or the NVS names.
 
 ## WiFi and location
 
@@ -237,9 +261,9 @@ pio run -d fw -t upload    # flash over USB-C
 - **Screen off:** the panel is switched off and the ESP32 light-sleeps, woken by touch or BOOT
   at once and every 200 ms to poll PWR (the key sits on the IO expander, which has no wake line).
 - **Sound:** ES8311 codec over I2S; the speaker amp is only enabled while a tune plays.
-- **Clock:** the PCF85063 holds UTC (`fw/src/clock.cpp` converts). Every new build sets it from
-  `__DATE__`/`__TIME__` on its first boot, so it is off by however long it was between building
-  and flashing, until WiFi corrects it. A stopped
+- **Clock:** the PCF85063 holds UTC (`fw/src/clock.cpp` converts). A new build sets it from
+  `__DATE__`/`__TIME__` on its first boot only if the clock is behind that or had stopped (then it
+  is off by however long it was between building and flashing, until WiFi corrects it). A stopped
   oscillator (flat battery) marks the calendar untrusted in NVS until a parent sets the clock in
   the settings (the core returns `F_CLOCK`; the firmware writes `Game::wall_s` to the RTC) or the
   next flash.

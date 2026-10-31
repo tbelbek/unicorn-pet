@@ -16,7 +16,7 @@ inline int iabs(int v) { return v < 0 ? -v : v; }
 
 // Platform -> core
 enum Input { IN_NEXT = 1, IN_SELECT = 2, IN_TOUCH = 3, IN_SHAKE = 4,
-             IN_PARENT = 5 };   // platform: BOOT held PARENT_HOLD_MS (door: recall; else: settings)
+             IN_PARENT = 5 };   // the grown-up gesture on BOOT (see set_boot): door: recall; else: settings
 // Core -> platform, returned by Game::tick
 enum Flags { F_REDRAW = 1, F_SCREEN_ON = 2, F_SAVE = 4, F_SOUND = 8,   // F_SOUND: call take_sfx()
              F_CLOCK = 16 };   // a parent set the clock: write Game::wall_s (local) to the RTC
@@ -56,12 +56,27 @@ enum { LIFE_ADOPTED = 1, MILESTONES = 4 };      // from the wall clock; unknown 
 enum Mood { M_IDLE, M_HAPPY, M_HUNGRY, M_SLEEPY, M_SAD };
 enum Menu { MENU_FEED, MENU_PLAY, MENU_SLEEP, MENU_WASH, MENU_COUNT };
 enum Treat { TREAT_APPLE, TREAT_STRAWBERRY, TREAT_CARROT, TREAT_COUNT };
-enum Idle { IDLE_NONE, IDLE_BLINK, IDLE_WALK, IDLE_HOP, IDLE_HUM, IDLE_TWIRL, IDLE_DANCE };   // last 3: tricks
+enum Idle { IDLE_NONE, IDLE_BLINK, IDLE_WALK, IDLE_HOP,
+            // tricks, in the order she learns them (TRICK_DAYS)
+            IDLE_HUM, IDLE_BOW, IDLE_TWIRL, IDLE_DANCE, IDLE_RAINBOW, IDLE_BUBBLES, IDLE_JUGGLE, IDLE_BALANCE,
+            IDLE_MAGIC, IDLE_SHOW, IDLE_END };
+enum { TRICKS = IDLE_END - IDLE_HUM };
+// care days to learn each trick, how long it lasts, and whether calm mode allows it (no hops/spins)
+extern const u16 TRICK_DAYS[TRICKS], TRICK_MS[TRICKS];
+extern const u8 TRICK_CALM[TRICKS];
 enum Particle { P_NONE, P_HEART, P_SPARKLE, P_BUBBLE, P_CRUMB, P_STAR, P_CONFETTI, P_RING, P_NOTE };
 // Parent settings (stored in the save; 0 always means "default")
 enum Volume { VOL_NORMAL, VOL_LOW, VOL_OFF };
-enum Opt { OPT_CALM = 1, OPT_NO_SHAKE = 2 };      // calm: no bobbing/hops, fewer particles
-enum SettingRow { SET_VOLUME, SET_LIMIT, SET_BREAK, SET_BRIGHT, SET_CALM, SET_SHAKE, SET_CLOCK, SET_EXIT, SET_ROWS };
+enum Opt { OPT_CALM = 1, OPT_NO_SHAKE = 2,        // calm: no bobbing/hops, fewer particles
+           OPT_NO_BEDTIME = 4 };                  // the parent switched the bedtime off
+// Bedtime: an hour of drowsy swaying, then she falls asleep (standing, if still up); asleep in the
+// night window she cannot be woken until the wake-up time. Needs a trusted calendar.
+enum Bedtime { BED_NONE, BED_DROWSY, BED_SLEEP };
+enum { BED_DEFAULT10 = 117, WAKE_DEFAULT10 = 42, DROWSY_MIN = 60 };   // 19:30, 07:00 (tens of minutes)
+enum SettingRow { SET_VOLUME, SET_LIMIT, SET_BREAK, SET_BRIGHT, SET_CALM, SET_SHAKE, SET_SLEEP, SET_CLOCK, SET_EXIT,
+                  SET_ROWS };
+// third settings page: bedtime on/off, bedtime, wake-up time (left half -1, right half +1: 10 minutes)
+enum BedRow { BEDR_ON, BEDR_BED, BEDR_WAKE, BEDR_BACK, BEDR_ROWS };
 // second settings page: the date and time, and her birthday (left half of a row: -1, right: +1)
 enum ClockRow { CLK_YEAR, CLK_MONTH, CLK_DAY, CLK_HOUR, CLK_MIN, CLK_BMONTH, CLK_BDAY, CLK_SAVE, CLK_BACK, CLK_ROWS };
 
@@ -85,7 +100,10 @@ enum {
     LEAVE_MS = 4600, RETURN_MS = 3000,
     STEP_MS = 100,                       // simulation step; render interpolates between steps
     WALK_RANGE = 40, WALK_SPEED = 2,     // px from centre / px per step (20 px/s)
-    PARENT_HOLD_MS = 5000,               // BOOT held this long: door -> call her back, else settings
+    // BOOT: a short press is IN_NEXT, sent once the press is over (TAP_GAP_MS later, so it can still
+    // turn out to be the grown-up gesture). The gesture: PARENT_TAPS quick presses, the last one held
+    // PARENT_HOLD_MS. Hard for a child to hit by chance, and it never moves the menu cursor.
+    TAP_GAP_MS = 400, PARENT_TAPS = 3, PARENT_HOLD_MS = 3000, KEY_BOUNCE_MS = 30,
     NAP_MS = 60000, NAP_BONUS = 2500,    // a one-minute nap is enough to play again
     FEED_PICK_MS = 8000,                 // snack choice waits this long, then takes the highlighted one
     PRESS_MS = 260, SQUASH_MS = 140,     // button press pop / landing squash
@@ -107,11 +125,10 @@ enum {
     YOUNG_DAYS = 7, GROWN_DAYS = 30, STORYKEEPER_DAYS = 100,   // care days; also milestones, with 365
     PARTY_MS = 4000, MILESTONE_MS = 3000,
     REUNION_DAYS = 7, REUNION_NEED = 8000,   // back after a week or more: a welcome, needs topped up
-    DARK_FLOOR = 1500,
+    DARK_FLOOR = 1500,                   // with the screen dark, needs never drop below this
     LOUNGE_IDLE_MS = 10000,              // plugged in at home: back to the lounger after this long
     PLUG_QUIET_MS = 5000,                // re-plugged this soon (a loose cable): no fanfare
-    HUM_DAYS = 3, TWIRL_DAYS = 7, DANCE_DAYS = 14,   // tricks she learns over the days together
-    HUM_MS = 1200, TWIRL_MS = 1200, DANCE_MS = 1600, TRICK_GAP_MS = 12000,                       // with the screen dark, needs never drop below this
+    TRICK_GAP_MS = 12000,                // at most one trick this often
     NPART = 16,
 };
 
@@ -134,11 +151,15 @@ struct Save {
     u16 seen_day;             //     local day of the last care, for a warm reunion after a long gap
     u8 party_year;            //     years since 2000 of the last birthday party
     u8 milestones;            //     care-day milestones already celebrated (bit per MILESTONE_DAYS)
-    u8 life_flags, pad;       //     LIFE_ADOPTED: hatch_day is the first trusted day, not the real one
+    u8 life_flags;            //     LIFE_ADOPTED: hatch_day is the first trusted day, not the real one
+    u8 bed10;                 // v7 (was v6's pad): bedtime in tens of minutes after midnight (117 = 19:30)
+    u8 wake10;                //     wake-up time, the same way (42 = 07:00)
+    u8 tricks_seen;           //     tricks she has shown off already (a newly learned one comes first)
+    u8 spare[2];
     u32 check;                // FNV-1a over everything above
 };
-enum { SAVE_VERSION = 6, SAVE_SIZE = sizeof(Save), SAVE_V1_SIZE = 24, SAVE_V2_SIZE = 28, SAVE_V3_SIZE = 32,
-       SAVE_V4_SIZE = 40, SAVE_V5_SIZE = 40, BIRTH_CHOSEN = 1 };
+enum { SAVE_VERSION = 7, SAVE_SIZE = sizeof(Save), SAVE_V1_SIZE = 24, SAVE_V2_SIZE = 28, SAVE_V3_SIZE = 32,
+       SAVE_V4_SIZE = 40, SAVE_V5_SIZE = 40, SAVE_V6_SIZE = 52, BIRTH_CHOSEN = 1 };
 
 // Local calendar from the wall clock (local seconds since 2000-01-01 00:00, 0 = unknown).
 struct Cal { u16 day; u16 minute; u16 year; u8 month, mday, wday, known; };   // wday: 0 = Monday
@@ -181,7 +202,11 @@ struct Game {
     u8 party, party_arg;                  // a celebration on the home screen right now (Party)
     u8 idle_count, trick_next;            // every second idle moment may be a trick, in turn
     u32 trick_at;                         // when the last trick started (0 = none yet)
-    u8 set_page, want_clock;              // settings page (0 main, 1 clock); F_CLOCK pending
+    u8 boot_down, boot_taps, boot_fired;  // the BOOT key's state machine (set_boot)
+    u32 boot_t;                           // time of its last edge
+    u8 set_page, want_clock;              // settings page (0 main, 1 clock, 2 bedtime); F_CLOCK pending
+    u8 standing, night_sleep, bed_seen;   // asleep on her feet; asleep in the night window; checked once
+    u8 back_scene;                        // where the settings were opened from
     u16 ed_year;                          // the clock page's fields while a parent edits them
     u8 ed_month, ed_day, ed_hour, ed_min, ed_bmonth, ed_bday;
     u32 party_end;
@@ -203,6 +228,7 @@ struct Game {
     void set_battery(int percent) { battery = (u8)(percent < 0 ? 0 : percent > 100 ? 100 : percent); }
     void set_tilt(int v);                        // -100..100 from the IMU (or a slider); cloud game only
     void set_plugged(bool usb);                  // USB power present, sampled about once a second
+    void set_boot(bool down);                    // the BOOT key, raw: call every loop (taps, gesture)
 
     // effective parent settings
     u32 play_limit_ms() const { return (s.limit_min ? s.limit_min : PLAY_LIMIT_MS / 60000) * 60000u; }
@@ -222,7 +248,9 @@ struct Game {
     int garden(int pot) const;                   // the open book's garden: 0 seed .. 4 bloom, per pot
     int stage() const;                           // Stage, from the care days
     int years() const;                           // birthdays she has had (0 = unknown or none yet)
-    int tricks() const;                          // tricks learned so far: 0..3 (hum, twirl, dance)
+    int tricks() const;                          // tricks learned so far: 0..TRICKS
+    int bedtime() const;                         // Bedtime: none, drowsy hour, or time to sleep
+    bool bed_locked() const { return bedtime() != BED_NONE; }   // asleep now = asleep till morning
 
     Mood mood() const;
     int messes() const;                          // rainbow messes on the floor, 0..3
@@ -265,6 +293,10 @@ private:
     void remember();
     void plan_dreams();
     void check_life();
+    void check_bedtime();
+    void doze(bool on_her_feet);
+    bool rested() const;
+    void bed_input(int type, int x, int y);
     void burst(int kind, int x, int y, int n);
     void cue(int id) { sfx = (u8)id; }
     u32 random();

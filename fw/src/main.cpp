@@ -93,20 +93,6 @@ static bool edge(bool down, bool* last, uint32_t* t, uint32_t debounce) {
     return false;
 }
 
-static bool boot_pressed() {
-    static bool last; static uint32_t t;
-    return edge(digitalRead(KEY_BOOT) == LOW, &last, &t, 30);
-}
-
-// BOOT held for PARENT_HOLD_MS: a grown-up calls the unicorn back from her friends early.
-static bool boot_held_long() {
-    static uint32_t since; static bool fired;
-    if (digitalRead(KEY_BOOT) != LOW) { since = 0; fired = false; return false; }
-    if (!since) since = millis();
-    if (!fired && millis() - since >= up::PARENT_HOLD_MS) { fired = true; return true; }
-    return false;
-}
-
 static bool pwr_pressed() {
     static bool last; static uint32_t t;
     int v = tca_read(0x00);
@@ -166,11 +152,14 @@ static void save_game() {
 }
 
 static void load_game() {
-    uint8_t buf[64];                          // older saves are shorter: read whatever is there
+    static uint8_t buf[512];                  // older saves are shorter, a newer firmware's longer
     size_t len = prefs.getBytesLength("save");
     size_t n = len && len <= sizeof buf ? prefs.getBytes("save", buf, len) : 0;
-    if (n && game.load(buf, n)) Serial.println("save loaded");
-    else Serial.println("no valid save: new egg");
+    if (n && game.load(buf, n)) { Serial.println("save loaded"); return; }
+    Serial.println("no valid save: new egg");
+    // Keep an unreadable save (a newer firmware's, or a bad write) instead of overwriting it with
+    // the new egg: a later firmware can still read it back from "save_bad".
+    if (n && !prefs.isKey("save_bad")) prefs.putBytes("save_bad", buf, n);
 }
 
 // ---- power ---------------------------------------------------------------------------------
@@ -234,8 +223,7 @@ void loop() {
     last = now;
 
     int x, y;
-    if (boot_pressed()) game.input(up::IN_NEXT, 0, 0);
-    if (boot_held_long()) game.input(up::IN_PARENT, 0, 0);
+    game.set_boot(digitalRead(KEY_BOOT) == LOW);   // taps, and the grown-up gesture (3 presses, hold the last)
     if (pwr_pressed()) game.input(up::IN_SELECT, 0, 0);
     if (touch_read(&x, &y)) game.input(up::IN_TOUCH, x, y);
     read_accel();
