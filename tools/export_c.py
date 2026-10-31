@@ -20,7 +20,8 @@ SIDE_STATES = [("stand", m) for m in MOODS] + [("sleep", "idle"), ("eat", "idle"
                                                ("play", "idle"), ("wash", "idle"),
                                                ("walk", "idle"), ("stand", "blink"), ("hop", "idle"),
                                                ("walk2", "idle")]
-ICONS = ["apple", "heart", "star", "bubble", "moon", "ball", "strawberry", "carrot", "hand"]
+ICONS = ["apple", "heart", "star", "bubble", "moon", "ball", "strawberry", "carrot", "hand",
+         "note", "cloud", "mirror", "house", "bow", "flower", "tiara"]
 GLYPHS = [chr(c) for c in range(32, 127)] + list("ÇçĞğİıÖöŞşÜü·×")
 
 palette = ["#000000"]          # slot 0 = transparent
@@ -95,12 +96,15 @@ OVERRIDES = {"İ": ["...##...", ".######.", "...##...", "...##...", "...##...", 
 def main():
     parts = []
     side = bytearray()
-    for key in CHARS:
+    heads = []                             # accessory anchor per side state and frame (same for all)
+    for ci, key in enumerate(CHARS):
         p = S.PALETTES[key]
         for pose, mood in SIDE_STATES:
             for f in (0, 1):
                 cells = S.with_props(S.build(p, mood, f, pose), pose, f)
                 side += cells_to_bytes(cells, S.W, S.H)
+                if ci == 0:
+                    heads += list(S.HEAD)
     front = bytearray()
     for key in CHARS:
         for mood in MOODS:
@@ -138,6 +142,10 @@ def main():
     cps = ", ".join(str(ord(ch)) for ch in GLYPHS)
     parts.append(f"static const unsigned short UP_FONT_CP[{len(GLYPHS)}] = {{ {cps} }};\n")
     parts.append(f"static const unsigned char UP_ACCENT[{len(CHARS)}] = {{ {', '.join(map(str, accents))} }};\n")
+    manes = ", ".join("{" + ", ".join(str(idx(c)) for c in S.PALETTES[k]["mane"]) + "}" for k in CHARS)
+    parts.append(f"static const unsigned char UP_MANE[{len(CHARS)}][6] = {{ {manes} }};\n")
+    hs = ", ".join("{{%d, %d}, {%d, %d}}" % tuple(heads[i:i + 4]) for i in range(0, len(heads), 4))
+    parts.append(f"static const signed char UP_HEAD[{len(SIDE_STATES)}][2][2] = {{ {hs} }};\n")
     parts.append("static const char* const UP_NAMES[%d] = { %s };\n"
                  % (len(names), ", ".join('"%s"' % n.upper() for n in names)))
     assert len(palette) <= 256, len(palette)

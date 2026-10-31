@@ -11,6 +11,11 @@ test: out
 out:
 	mkdir -p out
 
+# The firmware's time-zone helpers (fw/src/tz.h), with real POSIX summer-time rules.
+tz: out
+	$(CXX) $(CXXFLAGS) test_tz.cpp -o out/test_tz
+	./out/test_tz
+
 # Same events through the WebAssembly build the browser emulator uses.
 wasm:
 	../emu/build.sh
@@ -23,6 +28,6 @@ record: out
 	./out/record
 	cd .. && uv run --quiet --with pillow python tools/make_gif.py
 
-all: test wasm
+all: test tz wasm
 
-.PHONY: test wasm all record
+.PHONY: test tz wasm all record

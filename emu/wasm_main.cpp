@@ -59,8 +59,19 @@ API(up_melody_len) int up_melody_len(int sfx) { int n; melody(sfx, &n); return n
 API(up_muted) int up_muted() { return G.s.muted; }
 API(up_play_ms) u32 up_play_ms() { return G.play_ms; }
 API(up_away_ms) u32 up_away_ms() { return G.away_ms; }
-API(up_set_wall) void up_set_wall(u32 epoch_s) { G.set_wall(epoch_s); }
+API(up_set_wall) void up_set_wall(u32 local_s, int calendar) { G.set_wall(local_s, calendar != 0); }
+API(up_phase) int up_phase() { return G.phase(); }
+API(up_wall) u32 up_wall() { return G.wall_s; }
+API(up_stage) int up_stage() { return G.stage(); }
+API(up_care_days) int up_care_days() { return G.s.care_days; }
+API(up_set_care_days) void up_set_care_days(int d) { G.s.care_days = (u16)(d < 0 ? 0 : d > CARE_DAYS_MAX ? CARE_DAYS_MAX : d); }
+API(up_greeting) int up_greeting() { return G.greeting; }
+API(up_dream) int up_dream() { return G.dream(); }
 API(up_set_play_ms) void up_set_play_ms(u32 ms) { G.play_ms = ms; }       // test button
 API(up_volume) int up_volume() { return G.volume(); }
 API(up_brightness) int up_brightness() { return G.brightness(); }
 API(up_set_battery) void up_set_battery(int pct) { G.set_battery(pct); }
+API(up_set_plugged) void up_set_plugged(int usb) { G.set_plugged(usb != 0); }
+API(up_plugged) int up_plugged() { return G.plugged; }
+API(up_set_tilt) void up_set_tilt(int v) { G.set_tilt(v); }
+API(up_accessory) int up_accessory() { return G.s.accessory; }

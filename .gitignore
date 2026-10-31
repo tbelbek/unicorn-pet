@@ -2,3 +2,4 @@ test/out/
 fw/.pio/
 emu/unicorn.wasm
 __pycache__/
+fw/src/secrets.h

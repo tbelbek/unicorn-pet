@@ -21,15 +21,36 @@ static const Note POP[] = {{G6, 25}, {C7, 45}};
 static const Note BYE[] = {{G5, 120}, {E5, 120}, {REST, 60}, {C5, 120}, {G4, 260}};          // "bye-bye!"
 static const Note KNOCK[] = {{G4, 40}, {REST, 90}, {G4, 40}};                                // knock knock
 static const Note HELLO[] = {{C5, 80}, {G5, 80}, {REST, 40}, {E5, 80}, {C6, 240}};
+static const Note NOTE1[] = {{C5, 120}};                                   // music garden flowers
+static const Note NOTE2[] = {{E5, 120}};
+static const Note NOTE3[] = {{G5, 120}};
+static const Note CHOOSE[] = {{C5, 60}, {E5, 60}, {G5, 60}};                 // "this egg is mine"
+static const Note LAND[] = {{G5, 60}};                                       // a feather lands on the cloud
+static const Note DRESS[] = {{E5, 60}, {G5, 100}};
+static const Note CHARGE[] = {{C5, 60}, {E5, 60}, {G5, 60}, {C6, 140}};
 static const Note CHEER[] = {{C5, 70}, {E5, 70}, {G5, 70}, {C6, 70}, {E6, 70}, {REST, 40}, {C6, 90}, {E6, 220}};
+
+static Note ECHO[2 * NOTES];                 // filled by set_echo(): note, rest, note, rest...
+static int echo_len;
+
+void set_echo(const u8* flowers, int n) {
+    static const u16 HZ[3] = {C5, E5, G5};
+    echo_len = 0;
+    for (int i = 0; i < n && i < NOTES; i++) {
+        ECHO[echo_len++] = Note{HZ[flowers[i] % 3], 120};
+        if (i + 1 < n) ECHO[echo_len++] = Note{REST, ECHO_GAP_MS - 120};
+    }
+}
 
 #define TUNE(t) {t, (int)(sizeof(t) / sizeof(t[0]))}
 static const struct { const Note* notes; int count; } TUNES[SFX_COUNT] = {
     {0, 0}, TUNE(TAP), TUNE(HATCH), TUNE(EAT), TUNE(PLAY), TUNE(WASH), TUNE(SLEEP), TUNE(WAKE),
     TUNE(REFUSE), TUNE(INFO), TUNE(PET), TUNE(POP), TUNE(CHEER), TUNE(BYE), TUNE(KNOCK), TUNE(HELLO),
+    TUNE(NOTE1), TUNE(NOTE2), TUNE(NOTE3), TUNE(CHOOSE), TUNE(LAND), TUNE(DRESS), {0, 0}, TUNE(CHARGE),
 };
 
 const Note* melody(int sfx, int* count) {
+    if (sfx == SFX_ECHO) { *count = echo_len; return echo_len ? ECHO : 0; }
     if (sfx <= SFX_NONE || sfx >= SFX_COUNT) { *count = 0; return 0; }
     *count = TUNES[sfx].count;
     return TUNES[sfx].notes;

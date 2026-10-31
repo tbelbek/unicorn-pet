@@ -8,7 +8,7 @@
 #include "rtc.h"
 
 static const uint8_t ADDR = 0x51, REG_SECONDS = 0x04;
-static bool present;
+static bool present, lost;
 
 static uint8_t bcd(uint8_t v) { return (uint8_t)((v >> 4) * 10 + (v & 0x0F)); }
 static uint8_t to_bcd(uint8_t v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
@@ -34,15 +34,26 @@ static bool read_regs(uint8_t* r) {
 bool rtc_begin() {
     uint8_t r[7];
     present = read_regs(r);
-    if (!present) return false;
-    if (r[0] & 0x80) {                     // oscillator stopped: start over at 2026-01-01 00:00:00
-        Wire.beginTransmission(ADDR);
-        Wire.write(REG_SECONDS);
-        const uint8_t t[7] = {0x00, 0x00, 0x00, to_bcd(1), 4, to_bcd(1), to_bcd(26)};   // clears OS
-        Wire.write(t, sizeof t);
-        Wire.endTransmission();
-    }
-    return true;
+    lost = present && (r[0] & 0x80);       // oscillator stopped: the time is meaningless
+    return present;
+}
+
+bool rtc_lost() { return lost; }
+
+void rtc_set(uint32_t t) {                 // UTC seconds since 2000-01-01; also clears OS
+    if (!present) return;
+    uint32_t d = t / 86400, s = t % 86400;
+    int y = 2000, m = 1;                   // walk the calendar: runs once per flash, not per frame
+    for (;;) { int n = (y % 4 == 0 && (y % 100 || y % 400 == 0)) ? 366 : 365; if (d < (uint32_t)n) break; d -= n; y++; }
+    static const uint8_t DAYS[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    for (;; m++) { int n = DAYS[m - 1] + (m == 2 && y % 4 == 0 && (y % 100 || y % 400 == 0)); if (d < (uint32_t)n) break; d -= n; }
+    Wire.beginTransmission(ADDR);
+    Wire.write(REG_SECONDS);
+    const uint8_t v[7] = {to_bcd(s % 60), to_bcd(s / 60 % 60), to_bcd(s / 3600), to_bcd(d + 1), 0,
+                          to_bcd(m), to_bcd(y - 2000)};
+    Wire.write(v, sizeof v);
+    Wire.endTransmission();
+    lost = false;
 }
 
 uint32_t rtc_now() {

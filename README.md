@@ -38,13 +38,99 @@ Needs Homebrew `llvm` and `lld` (`brew install llvm lld`); no emscripten.
 
 | Event | What happens |
 |---|---|
+| Egg pick | four eggs (one per character) wobble in a nest; tap one to lift it, tap it again or the heart to keep it. The choice is saved, and an old save keeps its unicorn |
 | Egg | every tap wobbles it and a crack spreads; after five taps (or shakes), or one minute, the shell splits, confetti flies and her face grows in |
 | Besle (feed) | apple, strawberry and carrot in turn, eaten from a bowl bite by bite with flying crumbs: hunger +35%, happiness +3% |
-| Oyna (play), or shake the toy | **Yıldız yakala**: 15 s of popping big rising stars (touch, PWR on the selected star, or a shake), then she jumps after a ball and the stars are counted. Happiness +30% guaranteed, +1% per star (max +15%); energy −10%, a bit hungrier and dirtier; refuses below 15% energy |
-| Uyut (sleep) | lies down, the screen turns to night colours; energy refills in ~2 h, wakes by herself, on touch or on a shake |
-| Yıka (wash) | bubbles rise, the rainbow messes on the floor dissolve, a sparkle at the end: clean 100%, happiness +3% |
+| Oyna (play) | a toy box with four pictures and a house: stars, the music garden, the cloud and the mirror. Every mode has the house button and ends by itself (time's up, or 12 s with nobody playing) |
+| Music garden | three singing flowers (C, E, G). Tap up to six; after a short pause she sings your tune back as one melody, with notes floating up |
+| Cloud | tilt the toy (or the emulator's slider / a phone) to steer her cloud under six falling feathers for 15 s; touching the left/right third works too |
+| Mirror | try on a bow, flower or tiara; it follows her head through every pose and is saved |
+| Stars, or shake the toy | **Yıldız yakala**: 15 s of popping big rising stars (touch, PWR on the selected star, or a shake), then she jumps after a ball and the stars are counted. Happiness +30% whatever the score (stars are for fun, not a grade); energy −10%, a bit hungrier and dirtier; refuses below 15% energy |
+| Uyut (sleep) | lies down, the screen turns to night colours and a folded patchwork quilt waits: the first touch (or shake, or PWR) pulls it over her up to her chin, otherwise she tucks herself in after 4 s. While anyone is looking she dreams, a little animated cloud every 8 s: the first dream is something she did that day (her snack, bath bubbles, stars, songs, the cloud ride, her bow or tiara, hearts, the butterfly), the others anything from 14 dreams (a rainbow, a friend, the ball, the moon, the egg she came from, her garden...), never the same twice in a night. Energy refills in ~2 h; she wakes by herself, or on the next touch or shake |
+| Yıka (wash) | bubbles rise, the rainbow messes on the floor dissolve, a sparkle at the end: clean 100%, happiness +3%. Three foam puffs can be popped by touch; pop all three for a bubble crown (the wash ends the same either way) |
+| Butterfly | now and then a butterfly visits the home screen and lands on her; purely to look at, no sound, gone when the screen sleeps |
 | Tap the unicorn | petting: hearts float up and she beams; happiness +2% at most every 2 s |
 | Tap the name/status bar | front-face info screen with all needs, and the sound on/off switch |
+
+### Her day, and the days you spent together
+
+None of this asks anything of the child, and nothing is lost by missing it.
+
+- **Day and night:** the home screens show a sun and a cloud by day (07:00-17:00), a low orange
+  sun in the evening (17:00-20:00) and the stars and moon at night. The colours never send her to
+  bed and never change her needs.
+- **Hello again:** after a real break (15 minutes with the screen dark) or on power-up she greets
+  you for 2 s, with a stretch by day, a smile in the evening or a yawn at night, plus a speech
+  bubble with a heart and the snack you last gave her. It does not use up screen time and makes no
+  sound.
+- **Memory album:** the first care of each new day (feeding, washing, petting or bedtime) adds a
+  picture. It floats up to her name, and the book on the info screen (tap the name) bounces until
+  you look. Each book holds 12 days, and a new one starts after that. Old books stay full and can
+  be paged through with the arrows (or BOOT). Empty spots are blank paper, not locked shapes.
+  There are no streaks: a skipped week just means the next picture.
+- **Her garden:** every book has three pots that grow from seed to bloom over that book's days
+  (pot 1 on days 1-4, pot 2 on 5-8, pot 3 on 9-12) and never wilt. Every three books the garden
+  changes: flowers, then heart flowers, then autumn leaves, then stars.
+
+### She never dies, so she grows up
+
+Her life is counted in **days together**: distinct days on which she was cared for (the home
+screen shows "BİRLİKTE N. GÜN"). Powered hours no longer count, so switching the toy off at
+night costs nothing.
+
+- **Growing up:** she is a foal at first (drawn a size smaller, x4 instead of x6), young from day 7,
+  grown from day 30 and a "storykeeper" from day 100. Grown-ups get a sparkle on the flank (three
+  for a storykeeper), and her portrait on the info screen gets stars. Stages only ever add; neglect never takes them away,
+  and every toy is open from day one.
+- **Milestones:** days 7, 30, 100 and 365 each get one 3 s celebration ("BÜYÜDÜM!", "1 YIL!"). If
+  several are crossed at once, there is one party for the biggest.
+- **Birthday:** the day she hatched is her birthday (an older unicorn adopts the first day the
+  clock knows). On the first visit on or after the anniversary there is a 4 s party with a cake
+  and a candle for each year (up to five). After a long absence there is one party, never a
+  backlog. A 29 February birthday is celebrated on the 28th in other years.
+- **Long gaps:** after a week or more without care she greets you with "ÖZLEDİM!" and her needs
+  are topped up to 80%: a welcome, never a reproach.
+- **Left alone:** while the screen is dark her needs never drop below 15%. She is peckish in the
+  morning (a gentle reason to feed her), never miserable.
+- Only one celebration shows at a time, never on the door while she is away, and each is marked
+  done as it starts, so a reboot does not repeat it.
+
+- **Tricks she learns:** from day 3 she hums (eyes closed, notes floating up, no sound), from day 7
+  she twirls (little hops, turning each time) and from day 14 she dances (two big hops with a turn
+  and sparkles). Every second lively idle moment can be one of them, taking turns, at most one
+  every 12 s; never when she needs something, never while the butterfly visits. Calm mode keeps to
+  humming.
+
+The day comes from the wall clock. On the board the RTC keeps UTC, and the firmware turns it into
+local time with the time zone's rules, so summer time switches by itself, even offline. With WiFi
+(see "WiFi and location" below) the clock sets itself about twice a day. Without it, the RTC is
+set from the firmware's build time on the first boot after flashing. If the battery runs completely flat the
+clock restarts at that build time: breaks still work, but the date is a guess, so the day and
+evening skies, the album and the garden pause until a parent sets the clock (settings > **SAAT**)
+or the firmware is flashed again.
+In the emulator, the **Saat** field sets the clock, and the speed buttons move the clock too, so days
+(and album pictures) pass in minutes.
+
+### Battery and charging
+
+- **Battery indicator:** top right on the home screens and the info screen: four bars that turn
+  from green to yellow to red, a yellow bolt while the cable is in, and a blinking red outline
+  below 10% when unplugged. Hidden while the level is unknown.
+- **Plugged in:** at home she lies down on a striped sun lounger. By day and in the evening she
+  sunbathes with sunglasses on ("GÜNEŞLENİYOR · ŞARJ OLUYOR"), at night she rests with a pink
+  sleep mask, and if she is tired at night she goes to bed properly (the quilt and dreams). The
+  sun charges her as well: on the lounger her energy refills like in sleep, and her other needs
+  slow down. Touch her and she waves hearts; the menu and the header work as at home. Unplugging
+  brings her back up with a stretch. While the cable stays in she returns to the lounger after
+  10 s at home with nothing going on.
+- **What the cable never does:** wake her from sleep, light the screen at night, knock on the
+  door while she is out, or touch the egg or the settings. Plugging in counts only after two
+  matching readings (a loose connector), booting on the charger is not a "plug-in", and a re-plug
+  within 5 s makes no sound.
+
+The board reads USB power (AXP2101 `isVbusIn()`, not `isCharging()`, which stops at 100%) every
+second and the battery level every 30 s. The emulator has a battery slider and a "şarjda" box
+(they follow the computer's own battery until you move them).
 
 ### Screen time: she has things to do
 
@@ -91,8 +177,12 @@ of `core/unicorn.h`.
   stars leave an expanding ring; a new sound cuts the previous one short on both platforms.
 - **Parent settings** (hold BOOT 5 s, or the EBEVEYN button in the emulator): volume
   (normal / low / off), session length (5/10/15/20 min), break length (15/30/45/60 min),
-  brightness, calm mode (no bobbing or hops, fewer particles), shake on/off, plus battery % and
-  whether the RTC is running. Stored in the save (v4; older saves load with defaults).
+  brightness, calm mode (no bobbing or hops, fewer particles), shake on/off, the battery %, and
+  the date and time ("AYARLA" when the clock is not trusted). **SAAT** opens a second page: year, month, day, hour, minute and her
+  birthday (month and day, once she has hatched). Tap the left half of a row for -1 and the right
+  half for +1, or use BOOT for the next row and PWR for +1; every value wraps around. KAYDET sets
+  the clock and the birthday. A birthday set to today gets its party today, and one already past
+  this year does not throw a late party. Stored in the save (v4; older saves load with defaults; v6 adds the album, which starts empty).
 
 The game design was worked out together with Codex: an independent design scan, then audits
 using game-design skills from the most-starred skill repos — game-feel and game-ui-ux
@@ -105,13 +195,34 @@ peak-end, fairness, need-satisfaction, Zeigarnik and one-thing-to-remove audits
 
 ```sh
 make -C test               # host: every event, mini-game, petting, idle life, particles, sound,
-                           # screen-time limit and the door, RTC breaks, saves v1/v2->v3,
+                           # screen-time limit and the door, RTC breaks, saves v1..v5->v6, calendar, album,
                            # interpolation,
                            # save/load, screen-off, tick-size independence, a week of neglect;
                            # dumps a screenshot per event to test/out/*.png
 make -C test wasm          # the same events through emu/unicorn.wasm in Node
 make -C test record        # scripted play-through from the real core -> design/gameplay.gif
 ```
+
+## WiFi and location
+
+The toy uses WiFi only for its clock. Copy `fw/src/secrets.example.h` to `fw/src/secrets.h` and
+list your networks there. Git ignores `secrets.h`, so the passwords never reach this public repo.
+Without the file, the firmware builds without WiFi.
+
+- **Time:** about 3 s after power-up, then every 12 h (or 30 min after a failed try), a short task
+  joins the first network it can, asks NTP (`pool.ntp.org`, `time.google.com`) for the time, and
+  switches the radio off again. The main loop then writes the RTC, so the touch, IMU and PMU never
+  share the I2C bus with another task, and the board stays awake while the task runs.
+- **Location:** `TIMEZONE` in `fw/src/config.h` is the toy's location. Leave it empty for
+  automatic: then the toy asks [ip-api.com](https://ip-api.com) which time zone its internet
+  connection is in. It asks only when no zone is known yet, and again once a week (to follow a
+  holiday trip); it sends nothing but the request itself (your IP address) and keeps only the
+  zone name. To skip that, set a zone instead: an IANA name from the list in `fw/src/tz.h`
+  (`"Europe/Stockholm"`, `"Europe/Istanbul"`, ...) or a POSIX rule. Until a zone is known it uses
+  `TIMEZONE_FALLBACK` (Stockholm). A zone that is not in the list gets its current fixed offset,
+  so it can be an hour off across a summer-time change until the next weekly lookup.
+- `make -C test tz` checks the zone table, the reply parser and the summer-time switches on the
+  host. The emulator has an **EŞİTLE** button that sets its clock to the computer's.
 
 ## Firmware
 
@@ -126,6 +237,12 @@ pio run -d fw -t upload    # flash over USB-C
 - **Screen off:** the panel is switched off and the ESP32 light-sleeps, woken by touch or BOOT
   at once and every 200 ms to poll PWR (the key sits on the IO expander, which has no wake line).
 - **Sound:** ES8311 codec over I2S; the speaker amp is only enabled while a tune plays.
+- **Clock:** the PCF85063 holds UTC (`fw/src/clock.cpp` converts). Every new build sets it from
+  `__DATE__`/`__TIME__` on its first boot, so it is off by however long it was between building
+  and flashing, until WiFi corrects it. A stopped
+  oscillator (flat battery) marks the calendar untrusted in NVS until a parent sets the clock in
+  the settings (the core returns `F_CLOCK`; the firmware writes `Game::wall_s` to the RTC) or the
+  next flash.
 
 Pins, addresses and the IO-expander reset sequence come from Waveshare's own Arduino examples.
 Still to check on a real board (marked `VERIFY`): touch axis orientation (`fw/src/main.cpp`), and

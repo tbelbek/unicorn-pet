@@ -85,6 +85,9 @@
       <h2>ZAMAN</h2>
       <div class="seg" id="speeds"></div>
       <p class="hint">600× ile 1 saatlik oyun 6 saniyede geçer.</p>
+      <label class="stat" style="grid-template-columns:auto 1fr 46px"><span>Eğim</span>
+        <input type="range" id="tilt" min="-100" max="100" value="0"><output id="tiltv">0</output></label>
+      <p class="hint">Bulut oyununda cihazı eğmek yerine (telefonda gerçekten eğebilirsin).</p>
     </section>
     <section>
       <h2>DURUM</h2>
@@ -116,6 +119,15 @@
       </div>
       <label class="stat" style="grid-template-columns:auto 1fr"><input type="checkbox" id="rtc" checked>
         <span>Saat yongası (RTC): güç kapalıyken de dışarıdaki mola süresi işler</span></label>
+      <label class="stat" style="grid-template-columns:auto 1fr auto">
+        <span>Saat</span><input type="datetime-local" id="clock" step="60">
+        <span><span id="phase"></span> <button class="b" id="ntp" title="Cihazda: WiFi varsa NTP ile kendisi yapar">EŞİTLE</button></span></label>
+      <label class="stat" style="grid-template-columns:auto 1fr auto">
+        <span>Pil</span><input type="range" id="batt" min="1" max="100" value="80">
+        <span><input type="checkbox" id="plug"> şarjda</span></label>
+      <label class="stat" style="grid-template-columns:auto 1fr auto">
+        <span>Birlikte gün</span><input type="number" id="days" min="0" max="9999" step="1">
+        <span id="stage"></span></label>
       <p class="hint">Güç kesilince zaman durur (cihazdaki gibi); açınca son kayıttan devam eder.
         Unicorn'a dokununca sevilir (kalpler); üstteki isme dokununca bilgi ekranı açılır.
         EBEVEYN düğmesi (cihazda BOOT 5 sn): kapıda unicorn'u geri çağırır, başka ekranlarda ebeveyn
@@ -128,11 +140,12 @@
 const W = 368, H = 448, KEY = "unicorn-pet-save", WALL_KEY = "unicorn-pet-wall-offset";
 const SCENES = ["Yumurta", "Çıkıyor", "Ev", "Yemek", "Kutlama", "Banyo", "Uyku", "Bilgi (yüz)", "Çok yorgun",
                 "Yıldız yakala", "Dışarı çıkıyor", "Dışarıda (kapı)", "Eve dönüyor", "Yiyecek seçiyor",
-                "Ebeveyn ayarları"];
+                "Ebeveyn ayarları", "Yumurta seçiyor", "Oyuncak kutusu", "Müzik bahçesi", "Tüy yakala (bulut)",
+                "Ayna", "Anı defteri", "Şezlong (şarjda)"];
 const MOODS = ["Normal", "Mutlu", "Aç", "Uykulu", "Üzgün"];
 const CHARS = ["Pamuk", "Gece Yıldızı", "Şeker", "Deniz"];
 const STATS = ["Tokluk", "Mutluluk", "Enerji", "Temizlik"];
-const IN = { NEXT: 1, SELECT: 2, TOUCH: 3, SHAKE: 4, PARENT: 5 }, F = { REDRAW: 1, SCREEN_ON: 2, SAVE: 4, SOUND: 8 };
+const IN = { NEXT: 1, SELECT: 2, TOUCH: 3, SHAKE: 4, PARENT: 5 }, F = { REDRAW: 1, SCREEN_ON: 2, SAVE: 4, SOUND: 8, CLOCK: 16 };
 
 const { instance } = await WebAssembly.instantiateStreaming(fetch("unicorn.wasm"), {});
 const w = instance.exports;
@@ -143,7 +156,36 @@ let speed = 1, powered = true, screenOn = true;
 // A virtual wall clock playing the board's RTC: it follows the speed buttons and keeps running
 // while the power is cut; its lead over real time survives page reloads.
 let wallMs = Date.now() + Number(localStorage.getItem(WALL_KEY) || 0);
-const wallNow = () => ($("rtc").checked ? Math.floor(wallMs / 1000) : 0);
+// the board's RTC holds local time, as seconds since 2000-01-01 (no DST handling, like the board)
+const LOCAL_2000 = Date.UTC(2000, 0, 1);
+const localMs = () => wallMs - new Date(wallMs).getTimezoneOffset() * 60000;
+const wallNow = () => ($("rtc").checked ? Math.floor((localMs() - LOCAL_2000) / 1000) : 0);
+const PHASES = ["gündüz", "akşam", "gece"], STAGES = ["tay", "genç", "büyük", "hikâyeci"];
+// the computer's own battery as a start, until a battery control is touched by hand (once, not per boot)
+let hostBattery = true;
+$("batt").oninput = $("plug").onchange = () => { hostBattery = false; };
+navigator.getBattery?.().then((b) => {
+  const sync = () => {
+    if (!hostBattery) return;
+    $("batt").value = Math.max(1, Math.round(b.level * 100));
+    $("plug").checked = b.charging;
+  };
+  sync();
+  b.addEventListener("levelchange", sync);
+  b.addEventListener("chargingchange", sync);
+});
+$("days").onchange = () => { w.up_set_care_days(+$("days").value); save(); };   // test: grow her up
+function showClock() {
+  if (document.activeElement !== $("clock")) $("clock").value = new Date(localMs()).toISOString().slice(0, 16);
+  $("phase").textContent = PHASES[w.up_phase()] || "";
+  if (document.activeElement !== $("days")) $("days").value = w.up_care_days();
+  $("stage").textContent = STAGES[w.up_stage()] || "";
+}
+$("ntp").onclick = () => { wallMs = Date.now(); $("rtc").checked = true; save(); };   // like a WiFi sync
+$("clock").onchange = () => {              // jump the virtual clock (the value is local time)
+  const t = new Date($("clock").value).getTime();
+  if (!isNaN(t)) { wallMs = t; save(); }
+};
 
 function blit() {
   const fb = new Uint16Array(w.memory.buffer, w.up_fb(), W * H), d = img.data;
@@ -164,8 +206,7 @@ function save() {
 }
 function boot() {                                   // like the firmware: fresh state, then NVS
   w.up_init((Math.random() * 2 ** 32) >>> 0);
-  w.up_set_wall(wallNow());                         // like the firmware: read the RTC before NVS
-  navigator.getBattery?.().then((b) => w.up_set_battery(Math.round(b.level * 100)));
+  w.up_set_wall(wallNow(), 1);                         // like the firmware: read the RTC before NVS
   const saved = localStorage.getItem(KEY);
   if (saved) {
     const bytes = Uint8Array.from(atob(saved), (c) => c.charCodeAt(0));
@@ -209,9 +250,29 @@ function play(id) {
 function silenceIfOff() {
   if (w.up_volume() === 2 && voices.length) { for (const o of voices) try { o.stop(); } catch {} voices = []; }
 }
+// tilt sources: a phone's orientation events, or the slider; each sample is fresh or not sent at all,
+// so the core's stale timeout (500 ms) can hand control back to touch and buttons
+let phoneTilt = 0, phoneAt = 0, sliderAt = 0;
+addEventListener("deviceorientation", (e) => {
+  if (e.gamma == null) return;
+  phoneTilt = Math.max(-100, Math.min(100, e.gamma * 100 / 35));
+  phoneAt = performance.now();
+});
+$("tilt").oninput = () => { $("tiltv").textContent = $("tilt").value; sliderAt = performance.now(); };
 function step(dt) {
-  w.up_set_wall(wallNow());
+  w.up_set_wall(wallNow(), 1);
+  w.up_set_battery(+$("batt").value);               // like the board's PMU: level and USB power
+  w.up_set_plugged($("plug").checked ? 1 : 0);
+  const t0 = performance.now();
+  if (t0 - phoneAt < 300) w.up_set_tilt(Math.round(phoneTilt));
+  else if (+$("tilt").value !== 0 || t0 - sliderAt < 300) w.up_set_tilt(+$("tilt").value);   // 0 is a real sample
   const f = w.up_tick(Math.max(0, dt) >>> 0);
+  if (f & F.CLOCK) {                              // a parent set the clock: move the virtual RTC
+    const local = LOCAL_2000 + w.up_wall() * 1000;
+    wallMs = local + new Date(local).getTimezoneOffset() * 60000;
+    $("rtc").checked = true;
+    save();
+  }
   if (f & F.SAVE) save();
   if (f & F.SOUND) play(w.up_take_sfx());
   silenceIfOff();
@@ -234,6 +295,7 @@ function frame(now) {
   wallMs += raw * speed;                          // the RTC runs on, powered or not
   if (powered) step(Math.round(real * speed));
   if (powered) panel();
+  if (Math.floor(now / 500) !== Math.floor((now - raw) / 500)) showClock();
   requestAnimationFrame(frame);
 }
 

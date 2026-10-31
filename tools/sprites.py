@@ -119,6 +119,7 @@ WALK_LEGS = [
 POSES["walk"] = dict(POSES["stand"], legs=WALK_LEGS[0], legs_f1=STAND_LEGS)
 POSES["walk2"] = dict(POSES["stand"], legs=WALK_LEGS[1], legs_f1=STAND_LEGS)
 POSES["hop"] = dict(POSES["play"])           # the jump without the ball: idle joy
+HEAD = (0, 0)
 POSE_MOOD = {"sleep": "sleepy", "eat": "eating", "play": "happy", "wash": "happy", "hop": "happy"}
 
 
@@ -201,6 +202,8 @@ def build(p, mood="idle", frame=0, pose="stand"):
             if below is None or right is None or below in ("far", "hoof"):
                 px[(x, y)] = p["shade"]
 
+    global HEAD                            # where accessories sit: just above the ear
+    HEAD = (23 + hx, 2 + OY + hy)
     face(px, p, mood, 0, hx, hy, frame)
     if p["sparkle"]:
         for (x, y), k in list(kind.items()):

@@ -10,7 +10,7 @@ const w = new WebAssembly.Instance(mod, {}).exports;
 
 const W = 368, H = 448;
 const SC = { EGG: 0, HATCH: 1, HOME: 2, EAT: 3, PLAY: 4, WASH: 5, SLEEP: 6, INFO: 7, REFUSE: 8, GAME: 9,
-             FEED: 13, SETTINGS: 14 };
+             FEED: 13, SETTINGS: 14, EGG_PICK: 15, TOYS: 16, MUSIC: 17, CLOUD: 18, DRESS: 19 };
 const IN = { NEXT: 1, SELECT: 2, TOUCH: 3 };
 const ST = { HUNGER: 0, HAPPY: 1, ENERGY: 2, CLEAN: 3 };
 const fb = () => new Uint16Array(w.memory.buffer, w.up_fb(), W * H);
@@ -28,7 +28,10 @@ function test(name, fn) {
 }
 
 test("egg renders and hatches with taps", () => {
+  assert.equal(w.up_scene(), SC.EGG_PICK, "a new game starts by choosing an egg");
+  w.up_input(IN.TOUCH, 268, 310); w.up_input(IN.TOUCH, 268, 310);   // highlight, then choose
   assert.equal(w.up_scene(), SC.EGG);
+  assert.equal(w.up_character(), 3);
   assert.ok(lit() > 5000);
   for (let i = 0; i < 5; i++) w.up_input(IN.TOUCH, 184, 200);
   assert.equal(w.up_scene(), SC.HATCH);
@@ -36,7 +39,7 @@ test("egg renders and hatches with taps", () => {
   assert.equal(w.up_scene(), SC.HOME);
 });
 
-const hatch = () => { for (let i = 0; i < 5; i++) w.up_input(IN.SELECT, 0, 0); run(3100); };
+const hatch = () => { for (let i = 0; i < 6; i++) w.up_input(IN.SELECT, 0, 0); run(3100); };   // choose + 5 taps
 
 test("feed", () => {
   hatch();
@@ -59,13 +62,16 @@ test("play and refuse", () => {
   w.up_input(IN.NEXT, 0, 0);
   assert.equal(w.up_menu(), 1);
   w.up_input(IN.SELECT, 0, 0);
-  assert.equal(w.up_scene(), SC.GAME, "play opens the star mini-game");
+  assert.equal(w.up_scene(), SC.TOYS, "play opens the toy box");
+  w.up_input(IN.SELECT, 0, 0);
+  assert.equal(w.up_scene(), SC.GAME, "first card: the star game");
   w.up_input(IN.SELECT, 0, 0);                         // PWR pops the selected star
   run(15100);
   assert.equal(w.up_scene(), SC.PLAY, "celebration");
   run(3100);
   w.up_set_stat(ST.ENERGY, 1000);
   tapMenu(1);
+  w.up_input(IN.TOUCH, 116, 148);
   assert.equal(w.up_scene(), SC.REFUSE);
 });
 
@@ -77,7 +83,7 @@ test("sleep at night and wake rested", () => {
   assert.equal(w.up_scene(), SC.SLEEP);
   // moon pixels in the sky
   const p = fb(); let moon = 0;
-  for (let y = 100; y < 150; y++) for (let x = 278; x < 328; x++) moon += p[y * W + x] !== 0;
+  for (let y = 100; y < 150; y++) for (let x = 40; x < 90; x++) moon += p[y * W + x] !== 0;
   assert.ok(moon > 100, "moon drawn");
   let minutes = 0;
   while (w.up_scene() === SC.SLEEP && minutes < 200) { w.up_tick(60000); minutes++; }
@@ -153,6 +159,8 @@ test("shake plays, and wakes a sleeping unicorn", () => {
   assert.equal(w.up_scene(), SC.GAME);
   run(18200);
   tapMenu(2);
+  w.up_input(4, 0, 0);                             // the first shake tucks her in
+  assert.equal(w.up_scene(), SC.SLEEP);
   w.up_input(4, 0, 0);
   assert.equal(w.up_scene(), SC.HOME);
 });
@@ -190,10 +198,31 @@ test("parent settings from the BOOT long-press", () => {
   hatch();
   w.up_input(IN.PARENT ?? 5, 0, 0);
   assert.equal(w.up_scene(), SC.SETTINGS);
-  w.up_input(IN.TOUCH, 184, 70 + 0 * 44 + 20);        // volume: normal -> low
+  w.up_input(IN.TOUCH, 184, 64 + 0 * 38 + 18);        // volume: normal -> low
   assert.equal(w.up_volume(), 1);
-  w.up_input(IN.TOUCH, 184, 70 + 3 * 44 + 20);        // brightness steps
+  w.up_input(IN.TOUCH, 184, 64 + 3 * 38 + 18);        // brightness steps
   assert.notEqual(w.up_brightness(), 180);
+});
+
+test("toy box: music, tilt-a-cloud and the mirror", () => {
+  hatch();
+  tapMenu(1);
+  assert.equal(w.up_scene(), SC.TOYS);
+  w.up_input(IN.TOUCH, 252, 148);
+  assert.equal(w.up_scene(), SC.MUSIC);
+  w.up_input(IN.TOUCH, 64, 270);
+  assert.ok(w.up_tick(0) & 8, "a flower sings");
+  w.up_input(IN.TOUCH, 320, 40);
+  tapMenu(1);
+  w.up_input(IN.TOUCH, 116, 264);
+  assert.equal(w.up_scene(), SC.CLOUD);
+  for (let i = 0; i < 10; i++) { w.up_set_tilt(100); w.up_tick(100); }
+  w.up_input(IN.TOUCH, 320, 40);
+  tapMenu(1);
+  w.up_input(IN.TOUCH, 252, 264);
+  assert.equal(w.up_scene(), SC.DRESS);
+  w.up_input(IN.TOUCH, 24 + 3 * 86 + 39, 390);
+  assert.equal(w.up_accessory(), 3, "wearing the tiara");
 });
 
 console.log(`\n${passed} wasm tests passed`);

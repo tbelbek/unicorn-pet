@@ -17,12 +17,14 @@
 #include "../../core/unicorn.h"
 #include "audio.h"
 #include "rtc.h"
+#include "clock.h"
 
 static const int LCD_CS = 12, LCD_SCLK = 11, LCD_D0 = 4, LCD_D1 = 5, LCD_D2 = 6, LCD_D3 = 7;
 static const int I2C_SDA = 15, I2C_SCL = 14, TP_INT = 21, KEY_BOOT = 0;
 static const uint8_t TCA9554_ADDR = 0x20, FT3168_ADDR = 0x38;
 static const uint8_t EXIO_PWR = 4;                        // PWR key reads HIGH while held
 static const bool TOUCH_SWAP_XY = false, TOUCH_FLIP_X = false, TOUCH_FLIP_Y = false;   // VERIFY
+static const bool TILT_FLIP = false;                      // VERIFY: tilting right moves the cloud right
 static const uint8_t BRIGHTNESS = 180;                    // indoor toy: no need for full AMOLED
 static const uint32_t SLEEP_POLL_US = 200000;             // light-sleep wake to poll PWR (no GPIO wake)
 static const float SHAKE_G = 1.2f;                        // |a| - 1 g beyond this counts as a jolt
@@ -132,11 +134,17 @@ static bool touch_read(int* x, int* y) {
 
 // Shake = two jolts within 500 ms while awake; any single jolt while the screen is off
 // (we only sample every SLEEP_POLL_US then). 1.5 s cool-down so one shake is one event.
+static float acc_x, acc_y, acc_z;
+static bool acc_fresh;
+
+static void read_accel() {                // once per loop; shake and tilt both use it
+    acc_fresh = imu_ok && imu.getDataReady() && imu.getAccelerometer(acc_x, acc_y, acc_z);
+}
+
 static bool shaken() {
     static uint32_t first_jolt, cooldown_until;
-    if (!imu_ok || millis() < cooldown_until) return false;
-    float x, y, z;
-    if (!imu.getDataReady() || !imu.getAccelerometer(x, y, z)) return false;
+    if (!acc_fresh || millis() < cooldown_until) return false;
+    float x = acc_x, y = acc_y, z = acc_z;
     float g = sqrtf(x * x + y * y + z * z);
     if (fabsf(g - 1.0f) < SHAKE_G) return false;
     uint32_t now = millis();
@@ -213,7 +221,8 @@ void setup() {
 
     prefs.begin("unicorn", false);
     game.init(esp_random());
-    game.set_wall(rtc_now());                 // before the save, so time spent off counts
+    clock_begin(prefs);
+    game.set_wall(clock_local(), clock_trusted());   // before the save, so time spent off counts
     load_game();
     push_frame();
 }
@@ -229,11 +238,23 @@ void loop() {
     if (boot_held_long()) game.input(up::IN_PARENT, 0, 0);
     if (pwr_pressed()) game.input(up::IN_SELECT, 0, 0);
     if (touch_read(&x, &y)) game.input(up::IN_TOUCH, x, y);
+    read_accel();
     if (shaken()) game.input(up::IN_SHAKE, 0, 0);
+    // tilt-a-cloud: sideways tilt at ~10 Hz, only while that game is open (VERIFY axis and sign)
+    static uint32_t last_tilt;
+    if (game.scene == up::SC_CLOUD && acc_fresh && now - last_tilt >= 100) {
+        last_tilt = now;
+        int t = (int)(acc_x * 200.0f);        // ~0.5 g of tilt = full deflection
+        game.set_tilt(TILT_FLIP ? -t : t);
+    }
 
     static uint32_t last_rtc, last_batt;
-    if (now - last_rtc >= 1000) { last_rtc = now; game.set_wall(rtc_now()); }
-    if (now - last_batt >= 30000 || !last_batt) {        // battery % for the parent settings screen
+    if (now - last_rtc >= 1000) {
+        last_rtc = now;
+        game.set_wall(clock_local(), clock_trusted());
+        if (pmu_ok) game.set_plugged(pmu.isVbusIn());   // USB power, not isCharging(): that ends at 100%
+    }
+    if (now - last_batt >= 30000 || !last_batt) {        // battery % for the indicator
         last_batt = now ? now : 1;
         if (pmu_ok && pmu.isBatteryConnect()) game.set_battery(pmu.getBatteryPercent());
     }
@@ -243,6 +264,8 @@ void loop() {
 
     uint32_t f = game.tick(dt);
     if (f & up::F_SAVE) save_game();
+    if (f & up::F_CLOCK) clock_set_local(game.wall_s);   // a parent set the date and time
+    clock_poll(now);                          // WiFi time (and zone) sync, about twice a day
     if (f & up::F_SOUND) audio_play(game.take_sfx());
     panel_power(f & up::F_SCREEN_ON);
     // the core asks for a frame on every call while something moves; cap pushes at ~30 fps
@@ -255,6 +278,6 @@ void loop() {
         pending = false;
     }
 
-    if (panel_on || audio_busy()) delay(5);
+    if (panel_on || audio_busy() || clock_busy()) delay(5);
     else nap();
 }
