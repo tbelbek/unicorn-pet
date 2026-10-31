@@ -6,6 +6,8 @@ A Tamagotchi-style pixel-art unicorn for the **Waveshare ESP32-S3-Touch-AMOLED-1
 One game core runs in three places: the firmware, a browser emulator (WebAssembly) and host
 tests, so what you play in the browser is what runs on the board.
 
+![gameplay](design/gameplay.gif)
+
 ![showcase](design/showcase.png)
 
 ```
@@ -36,23 +38,32 @@ Needs Homebrew `llvm` and `lld` (`brew install llvm lld`); no emscripten.
 
 | Event | What happens |
 |---|---|
-| Egg | five taps (or shakes), or one minute, and she hatches with a fanfare |
-| Besle (feed) | eats from a bowl: hunger +35%, happiness +3% |
-| Oyna (play), or shake the toy | jumps after a ball: happiness +30%, energy −10%, a bit hungrier and dirtier; refuses below 15% energy |
+| Egg | every tap wobbles it and a crack spreads; after five taps (or shakes), or one minute, the shell splits, confetti flies and her face grows in |
+| Besle (feed) | apple, strawberry and carrot in turn, eaten from a bowl bite by bite with flying crumbs: hunger +35%, happiness +3% |
+| Oyna (play), or shake the toy | **Yıldız yakala**: 15 s of popping big rising stars (touch, PWR on the selected star, or a shake), then she jumps after a ball and the stars are counted. Happiness +30% guaranteed, +1% per star (max +15%); energy −10%, a bit hungrier and dirtier; refuses below 15% energy |
 | Uyut (sleep) | lies down, the screen turns to night colours; energy refills in ~2 h, wakes by herself, on touch or on a shake |
-| Yıka (wash) | bubbles: clean 100%, happiness +3% |
-| Tap the unicorn | front-face info screen with all needs, and the sound on/off switch |
+| Yıka (wash) | bubbles rise, the rainbow messes on the floor dissolve, a sparkle at the end: clean 100%, happiness +3% |
+| Tap the unicorn | petting: hearts float up and she beams; happiness +2% at most every 2 s |
+| Tap the name/status bar | front-face info screen with all needs, and the sound on/off switch |
 
-Needs drain over ~8–17 h of powered time. She never dies: low needs only change her face.
+When nobody is playing she lives on her own: blinks, wanders left and right (mirrored), hops when
+she is happy. A hungry, tired or sad unicorn stays put. Low cleanliness leaves little rainbow messes
+on the floor. Needs drain over ~8–17 h of powered time. She never dies: low needs only change her face.
+
 The screen goes dark after 20 s; the first touch only wakes it. Tunables are the enum at the top
 of `core/unicorn.h`.
+
+The game design was worked out together with Codex (an independent design scan and a review of
+the implementation).
 
 ## Tests
 
 ```sh
-make -C test               # host: every event, sound cues, shake, mute, save/load, screen-off,
-                           # a week of neglect; dumps a screenshot per event to test/out/*.png
+make -C test               # host: every event, mini-game, petting, idle life, particles, sound,
+                           # save/load, screen-off, tick-size independence, a week of neglect;
+                           # dumps a screenshot per event to test/out/*.png
 make -C test wasm          # the same events through emu/unicorn.wasm in Node
+make -C test record        # scripted play-through from the real core -> design/gameplay.gif
 ```
 
 ## Firmware

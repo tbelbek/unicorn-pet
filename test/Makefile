@@ -16,6 +16,13 @@ wasm:
 	../emu/build.sh
 	node test_wasm.mjs
 
+# Scripted play-through from the real core -> design/gameplay.gif
+record: out
+	mkdir -p out/rec && rm -f out/rec/*.ppm
+	$(CXX) -std=c++17 -O2 record.cpp ../core/game.cpp ../core/render.cpp ../core/sound.cpp -o out/record
+	./out/record
+	cd .. && uv run --quiet --with pillow python tools/make_gif.py
+
 all: test wasm
 
-.PHONY: test wasm all
+.PHONY: test wasm all record

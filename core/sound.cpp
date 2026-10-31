@@ -5,7 +5,7 @@
 namespace up {
 
 enum { C4 = 262, E4 = 330, G4 = 392, A4 = 440, C5 = 523, D5 = 587, E5 = 659, G5 = 784, A5 = 880,
-       C6 = 1047, D6 = 1175, E6 = 1319, G6 = 1568, REST = 0 };
+       C6 = 1047, D6 = 1175, E6 = 1319, G6 = 1568, C7 = 2093, REST = 0 };
 
 static const Note TAP[] = {{C6, 40}};
 static const Note HATCH[] = {{C5, 90}, {E5, 90}, {G5, 90}, {C6, 90}, {REST, 40}, {G5, 80}, {C6, 220}};
@@ -16,11 +16,14 @@ static const Note SLEEP[] = {{G5, 180}, {E5, 180}, {C5, 180}, {G4, 360}};
 static const Note WAKE[] = {{G4, 90}, {C5, 90}, {E5, 90}, {G5, 200}};
 static const Note REFUSE[] = {{E4, 160}, {C4, 280}};
 static const Note INFO[] = {{A5, 60}, {D6, 90}};
+static const Note PET[] = {{C6, 60}, {E6, 110}};
+static const Note POP[] = {{G6, 25}, {C7, 45}};
+static const Note CHEER[] = {{C5, 70}, {E5, 70}, {G5, 70}, {C6, 70}, {E6, 70}, {REST, 40}, {C6, 90}, {E6, 220}};
 
 #define TUNE(t) {t, (int)(sizeof(t) / sizeof(t[0]))}
 static const struct { const Note* notes; int count; } TUNES[SFX_COUNT] = {
     {0, 0}, TUNE(TAP), TUNE(HATCH), TUNE(EAT), TUNE(PLAY), TUNE(WASH), TUNE(SLEEP), TUNE(WAKE),
-    TUNE(REFUSE), TUNE(INFO),
+    TUNE(REFUSE), TUNE(INFO), TUNE(PET), TUNE(POP), TUNE(CHEER),
 };
 
 const Note* melody(int sfx, int* count) {

@@ -9,7 +9,7 @@ assert.equal(WebAssembly.Module.imports(mod).length, 0, "core must not import an
 const w = new WebAssembly.Instance(mod, {}).exports;
 
 const W = 368, H = 448;
-const SC = { EGG: 0, HATCH: 1, HOME: 2, EAT: 3, PLAY: 4, WASH: 5, SLEEP: 6, INFO: 7, REFUSE: 8 };
+const SC = { EGG: 0, HATCH: 1, HOME: 2, EAT: 3, PLAY: 4, WASH: 5, SLEEP: 6, INFO: 7, REFUSE: 8, GAME: 9 };
 const IN = { NEXT: 1, SELECT: 2, TOUCH: 3 };
 const ST = { HUNGER: 0, HAPPY: 1, ENERGY: 2, CLEAN: 3 };
 const fb = () => new Uint16Array(w.memory.buffer, w.up_fb(), W * H);
@@ -56,8 +56,11 @@ test("play and refuse", () => {
   w.up_input(IN.NEXT, 0, 0);
   assert.equal(w.up_menu(), 1);
   w.up_input(IN.SELECT, 0, 0);
-  assert.equal(w.up_scene(), SC.PLAY);
-  run(4100);
+  assert.equal(w.up_scene(), SC.GAME, "play opens the star mini-game");
+  w.up_input(IN.SELECT, 0, 0);                         // PWR pops the selected star
+  run(15100);
+  assert.equal(w.up_scene(), SC.PLAY, "celebration");
+  run(3100);
   w.up_set_stat(ST.ENERGY, 1000);
   tapMenu(1);
   assert.equal(w.up_scene(), SC.REFUSE);
@@ -87,9 +90,14 @@ test("wash", () => {
   assert.equal(w.up_stat(ST.CLEAN), w.up_max_stat());
 });
 
-test("info face on tapping the unicorn", () => {
+test("tapping the unicorn pets her; the header opens the info face", () => {
   hatch();
-  w.up_input(IN.TOUCH, 184, 220);
+  run(2100);
+  const before = w.up_stat(ST.HAPPY);
+  w.up_input(IN.TOUCH, 184, 230);
+  assert.equal(w.up_scene(), SC.HOME);
+  assert.ok(w.up_stat(ST.HAPPY) > before, "petting cheers her up");
+  w.up_input(IN.TOUCH, 184, 60);
   assert.equal(w.up_scene(), SC.INFO);
 });
 
@@ -138,8 +146,8 @@ test("shake plays, and wakes a sleeping unicorn", () => {
   hatch();
   w.up_set_stat(ST.ENERGY, 6000);
   w.up_input(4, 0, 0);
-  assert.equal(w.up_scene(), SC.PLAY);
-  run(4100);
+  assert.equal(w.up_scene(), SC.GAME);
+  run(18200);
   tapMenu(2);
   w.up_input(4, 0, 0);
   assert.equal(w.up_scene(), SC.HOME);
@@ -147,7 +155,7 @@ test("shake plays, and wakes a sleeping unicorn", () => {
 
 test("mute toggle on the info screen", () => {
   hatch();
-  w.up_input(IN.TOUCH, 184, 220);
+  w.up_input(IN.TOUCH, 184, 60);
   w.up_input(IN.TOUCH, 300, 26);
   assert.equal(w.up_muted(), 1);
   w.up_input(IN.TOUCH, 184, 300);

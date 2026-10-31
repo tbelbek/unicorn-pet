@@ -17,8 +17,9 @@ CHARS = ["pamuk", "gece", "seker", "deniz"]
 MOODS = ["idle", "happy", "hungry", "sleepy", "sad"]
 # side states: the five moods standing, then the four event poses (props baked in)
 SIDE_STATES = [("stand", m) for m in MOODS] + [("sleep", "idle"), ("eat", "idle"),
-                                               ("play", "idle"), ("wash", "idle")]
-ICONS = ["apple", "heart", "star", "bubble", "moon", "ball"]
+                                               ("play", "idle"), ("wash", "idle"),
+                                               ("walk", "idle"), ("stand", "blink"), ("hop", "idle")]
+ICONS = ["apple", "heart", "star", "bubble", "moon", "ball", "strawberry", "carrot"]
 GLYPHS = [chr(c) for c in range(32, 127)] + list("ÇçĞğİıÖöŞşÜü·×")
 
 palette = ["#000000"]          # slot 0 = transparent

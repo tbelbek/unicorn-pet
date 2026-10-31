@@ -108,7 +108,16 @@ POSES = {
                  legs=STAND_LEGS, tail=TAIL,
                  wings=[(9, 13), (8.5, 16.5), (9.5, 20)], wroot=(17.5, 22)),
 }
-POSE_MOOD = {"sleep": "sleepy", "eat": "eating", "play": "happy", "wash": "happy"}
+# walking: near legs swing forward/back, far legs opposite; the second frame swaps them
+WALK_LEGS = [
+    [((11, 29), (9, 35.5), 3, True), ((22, 29), (24, 35.5), 3, True),
+     ((14, 30), (16, 36.5), 3, False), ((25, 30), (23, 36.5), 3, False)],
+    [((11, 29), (13, 35.5), 3, True), ((22, 29), (20, 35.5), 3, True),
+     ((14, 30), (12, 36.5), 3, False), ((25, 30), (27, 36.5), 3, False)],
+]
+POSES["walk"] = dict(POSES["stand"], legs=WALK_LEGS[0], legs_f1=WALK_LEGS[1])
+POSES["hop"] = dict(POSES["play"])           # the jump without the ball: idle joy
+POSE_MOOD = {"sleep": "sleepy", "eat": "eating", "play": "happy", "wash": "happy", "hop": "happy"}
 
 
 def build(p, mood="idle", frame=0, pose="stand"):
@@ -120,7 +129,9 @@ def build(p, mood="idle", frame=0, pose="stand"):
             px[c] = colour
             kind[c] = k
 
-    P = POSES[pose]
+    P = dict(POSES[pose])
+    if frame == 1 and "legs_f1" in P:
+        P["legs"] = P["legs_f1"]
     mood = POSE_MOOD.get(pose, mood)
     bob = 1 if frame == 1 else 0           # breathing: body dips one pixel
     lift = P["lift"] + (3 if pose == "play" and frame == 1 else 0)   # jump apex vs landing
@@ -218,10 +229,7 @@ def with_props(cells, pose, frame=0, outline="#2A1F4A"):
         for y, x0, x1, col in [(36, 30, 39, "#FF8FC4"), (37, 31, 38, "#E0559A"), (38, 32, 37, "#C9407F")]:
             for x in range(x0, x1 + 1):
                 prop[(x, y + OY)] = col
-        heap = [(32, 35), (33, 35), (34, 35), (35, 35), (36, 35), (37, 35), (33, 34), (34, 34),
-                (35, 34), (36, 34)]
-        for i, (x, y) in enumerate(heap[: 10 - 3 * frame]):          # the heap shrinks as she eats
-            prop[(x, y + OY)] = "#FF5C6E" if i % 3 else "#5EE07A"
+        # the food itself (apple / strawberry / carrot) is drawn by the game on top of the bowl
     if pose == "play":
         cx, cy = (35.5, 3.5) if frame == 0 else (34.5, 8.5)
         for x, y in _disc(cx, cy, 2.8):
@@ -255,12 +263,12 @@ def face(px, p, mood, bob, hx=0, hy=0, frame=0):
     elif mood in ("happy", "eating"):                 # ^ ^ closed smiling eye
         for x, y in [(28, 13), (29, 12), (30, 12), (31, 13)]:
             dot(x, y, p["eye"])
-    elif mood == "sleepy":                            # closed eye line
+    elif mood in ("sleepy", "blink"):                 # closed eye line
         for x in (28, 29, 30, 31):
             dot(x, 13, p["eye"])
     dot(30, 16, p["blush"]); dot(31, 16, p["blush"])
     dot(34, 17, p["shade"])                          # nostril
-    if mood == "idle":
+    if mood in ("idle", "blink"):
         dot(32, 19, p["shade"]); dot(33, 19, p["shade"])
     if mood == "sad":                                 # frown + a tear
         for x, y in [(31, 20), (32, 19), (33, 19), (34, 20)]:

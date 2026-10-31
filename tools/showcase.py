@@ -35,9 +35,13 @@ ICONS = {
               "mmmm...m.", ".mmmmmmm.", "..mmmmm.."],
     "ball":  ["..ppppp..", ".pwppppp.", "ppppppppp", "yyyyyyyyy", "ppppppppp",
               "ppppppppp", ".ppppppp.", "..ppppp.."],
+    "strawberry": ["...ggg...", "..ggggg..", ".rrrrrrr.", ".ryrrryr.", ".rrrrrrr.",
+                   "..ryrrr..", "...rrr...", "....r...."],
+    "carrot": ["......gg.", ".....g.g.", "....ooo..", "...oooo..", "..oooo...",
+               ".oooo....", ".oo......", "o........"],
 }
 ICON_COL = {"g": "#5EE07A", "r": "#FF5C6E", "w": "#FFFFFF", "h": "#FF5C9C", "y": "#FFD84D",
-            "b": "#6FD6FF", "m": "#C9B8FF", "p": "#4CC9F0"}
+            "b": "#6FD6FF", "m": "#C9B8FF", "p": "#4CC9F0", "o": "#FF9F43"}
 
 
 def icon(name, scale):
