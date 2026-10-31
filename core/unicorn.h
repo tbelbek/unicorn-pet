@@ -19,7 +19,8 @@ enum Input { IN_NEXT = 1, IN_SELECT = 2, IN_TOUCH = 3, IN_SHAKE = 4,
              IN_PARENT = 5 };   // the grown-up gesture on BOOT (see set_boot): door: recall; else: settings
 // Core -> platform, returned by Game::tick
 enum Flags { F_REDRAW = 1, F_SCREEN_ON = 2, F_SAVE = 4, F_SOUND = 8,   // F_SOUND: call take_sfx()
-             F_CLOCK = 16 };   // a parent set the clock: write Game::wall_s (local) to the RTC
+             F_CLOCK = 16,     // a parent set the clock: write Game::wall_s (local) to the RTC
+             F_WIFI = 32 };    // a WiFi setup request: read Game::wifi_req (and wifi_arg)
 
 // Sound cues. The melodies live in sound.cpp so the board and the emulator play the same notes.
 enum Sfx { SFX_NONE, SFX_TAP, SFX_HATCH, SFX_EAT, SFX_PLAY, SFX_WASH, SFX_SLEEP, SFX_WAKE, SFX_REFUSE,
@@ -77,6 +78,15 @@ enum SettingRow { SET_VOLUME, SET_LIMIT, SET_BREAK, SET_BRIGHT, SET_CALM, SET_SH
                   SET_ROWS };
 // third settings page: bedtime on/off, bedtime, wake-up time (left half -1, right half +1: 10 minutes)
 enum BedRow { BEDR_ON, BEDR_BED, BEDR_WAKE, BEDR_BACK, BEDR_ROWS };
+// Settings pages, and the WiFi setup flow (the toy shows a QR code for a temporary network of its
+// own; the parent picks the home network and types its password on the phone).
+enum SetPage { PG_MAIN, PG_CLOCK, PG_BED, PG_HUB, PG_WIFI, PG_WSTART, PG_WSESSION, PG_WHELP, PG_WLIST, PG_WFORGET };
+enum HubRow { HUB_CLOCK, HUB_WIFI, HUB_BACK, HUB_ROWS };
+enum WifiRow { WF_ADD, WF_LIST, WF_BACK, WF_ROWS };
+enum WifiStage { WST_OFF, WST_STARTING, WST_WAIT, WST_PHONE, WST_JOIN, WST_ADDR, WST_CLOCK,   // under way
+                 WST_OK, WST_OK_NOCLOCK, WST_BAD_PASS, WST_NOT_FOUND, WST_FULL, WST_TIMEOUT };   // results
+enum WifiReq { WREQ_NONE, WREQ_START, WREQ_STOP, WREQ_RETRY, WREQ_FORGET };
+enum { WIFI_LIST_MAX = 8, WIFI_SAVED_MAX = 5, WIFI_NAME = 33 };
 // second settings page: the date and time, and her birthday (left half of a row: -1, right: +1)
 enum ClockRow { CLK_YEAR, CLK_MONTH, CLK_DAY, CLK_HOUR, CLK_MIN, CLK_BMONTH, CLK_BDAY, CLK_SAVE, CLK_BACK, CLK_ROWS };
 
@@ -165,6 +175,7 @@ enum { SAVE_VERSION = 7, SAVE_SIZE = sizeof(Save), SAVE_V1_SIZE = 24, SAVE_V2_SI
 struct Cal { u16 day; u16 minute; u16 year; u8 month, mday, wday, known; };   // wday: 0 = Monday
 Cal calendar(u32 local_s);
 
+enum { QR_MAX_SIDE_ = 37 };                       // = QR_MAX_SIDE below (version 5)
 struct Part { i16 x, y; i8 vx, vy; u8 kind, life, col, pad; };
 struct Target { i16 x, y; i8 vy; u8 alive; };
 
@@ -202,6 +213,12 @@ struct Game {
     u8 party, party_arg;                  // a celebration on the home screen right now (Party)
     u8 idle_count, trick_next;            // every second idle moment may be a trick, in turn
     u32 trick_at;                         // when the last trick started (0 = none yet)
+    // WiFi setup: the platform runs the radio and reports back; the core draws every screen
+    u8 wifi_stage, wifi_req, wifi_arg, wifi_count, wifi_sel, qr_side;
+    u16 wifi_fixed;                       // bit i: list entry i is built in (secrets.h), read-only
+    char wifi_ap[WIFI_NAME], wifi_pass[24], wifi_net[WIFI_NAME];   // the toy's network, the home one
+    char wifi_names[WIFI_LIST_MAX][WIFI_NAME];
+    u8 qr[QR_MAX_SIDE_ * QR_MAX_SIDE_];
     u8 boot_down, boot_taps, boot_fired;  // the BOOT key's state machine (set_boot)
     u32 boot_t;                           // time of its last edge
     u8 set_page, want_clock;              // settings page (0 main, 1 clock, 2 bedtime); F_CLOCK pending
@@ -229,6 +246,12 @@ struct Game {
     void set_tilt(int v);                        // -100..100 from the IMU (or a slider); cloud game only
     void set_plugged(bool usb);                  // USB power present, sampled about once a second
     void set_boot(bool down);                    // the BOOT key, raw: call every loop (taps, gesture)
+    // WiFi setup, platform -> core: the toy's own network is up; progress and results; saved networks
+    void wifi_session(const char* ap, const char* pass);
+    void wifi_status(int stage, const char* network);
+    void wifi_list_clear() { wifi_count = 0; wifi_fixed = 0; dirty = 1; }
+    void wifi_list_add(const char* name, bool built_in);
+    bool wifi_busy() const { return wifi_stage != WST_OFF; }   // a session is open (radio in use)
 
     // effective parent settings
     u32 play_limit_ms() const { return (s.limit_min ? s.limit_min : PLAY_LIMIT_MS / 60000) * 60000u; }
@@ -297,6 +320,8 @@ private:
     void doze(bool on_her_feet);
     bool rested() const;
     void bed_input(int type, int x, int y);
+    void wifi_input(int type, int x, int y);
+    void wifi_request(int req, int arg = 0);
     void burst(int kind, int x, int y, int n);
     void cue(int id) { sfx = (u8)id; }
     u32 random();
@@ -305,11 +330,18 @@ private:
 
 void render(const Game& g, u16* fb);             // fb = SCREEN_W * SCREEN_H RGB565
 
+// QR code (version <= QR_MAX_VERSION, medium error correction) as side*side bytes of 0/1.
+// Returns the side, or 0 if the text does not fit.
+enum { QR_MAX_VERSION = 5, QR_MAX_SIDE = 4 * QR_MAX_VERSION + 17 };
+static_assert(QR_MAX_SIDE == QR_MAX_SIDE_, "QR buffer size");
+int qr_encode(const char* text, u8* modules, int max_side);
+
 // Hit boxes shared by input handling and rendering.
 enum { MENU_Y0 = 368, MENU_Y1 = 434, MENU_X0 = 10, MENU_STEP = 92, MENU_BTN_W = 72 };
 enum { PET_X0 = 64, PET_Y0 = 100, PET_X1 = 304, PET_Y1 = 350 };   // shifted by Game::pet_x
 enum { HEADER_Y1 = 92 };
-enum { SET_Y0 = 64, SET_ROW_H = 38 };             // settings rows (both pages)                          // status bar + name: opens the info screen
+enum { SET_Y0 = 64, SET_ROW_H = 38 };             // settings rows (both pages)
+enum { WBTN_Y0 = 384, WBTN_Y1 = 440 };            // WiFi pages: two big buttons along the bottom                          // status bar + name: opens the info screen
 enum { SOUND_X0 = 236, SOUND_Y1 = 48 };          // info screen: sound on/off toggle, top right
 enum { BOOK_X1 = 132, BOOK_Y1 = 56 };            // info screen: the album, top left
 enum { TARGET_HIT = 36 };                         // mini-game star hit box half-size (72 px)

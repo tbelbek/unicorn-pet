@@ -6,6 +6,11 @@ A Tamagotchi-style pixel-art unicorn for the **Waveshare ESP32-S3-Touch-AMOLED-1
 One game core runs in three places: the firmware, a browser emulator (WebAssembly) and host
 tests, so what you play in the browser is what runs on the board.
 
+**Every feature in one captioned tour** (2 min 20 s, recorded from the real core with
+`make -C test tour`):
+
+![a tour of every feature](design/tour.gif)
+
 ![gameplay](design/gameplay.gif)
 
 ![showcase](design/showcase.png)
@@ -214,6 +219,7 @@ make -C test               # host: every event, mini-game, petting, idle life, p
                            # save/load, screen-off, tick-size independence, a week of neglect;
                            # dumps a screenshot per event to test/out/*.png
 make -C test wasm          # the same events through emu/unicorn.wasm in Node
+make -C test all           # all of it, plus the time-zone, portal and emulator-script checks
 make -C test record        # scripted play-through from the real core -> design/gameplay.gif
 ```
 
@@ -229,9 +235,30 @@ table or the NVS names.
 
 ## WiFi and location
 
-The toy uses WiFi only for its clock. Copy `fw/src/secrets.example.h` to `fw/src/secrets.h` and
-list your networks there. Git ignores `secrets.h`, so the passwords never reach this public repo.
-Without the file, the firmware builds without WiFi.
+The toy uses WiFi only for its clock. Networks come from two places, and both are tried:
+
+- **Added on the toy, with a phone** (no tiny keyboard): parent settings > SAAT > WIFI > AĞ EKLE >
+  BAŞLAT. The toy opens a short-lived network of its own (`Unicorn-XXXX`, a fresh random password
+  every time) and shows it as a **QR code**: the phone camera joins it, the setup page opens (or
+  type `http://192.168.4.1`; YARDIM on the toy shows the name and password). On the phone, pick
+  the home network and type its password. Both the phone and the toy show the steps (joining,
+  address, clock) and a plain result: connected and clock set; saved but the clock later; wrong
+  password or router security; network not found (the ESP32-S3 sees **2.4 GHz only**). OYUNA DÖN
+  lets the child play on while it runs (a small WiFi badge shows it). Up to 5 networks are kept
+  (NVS namespace `wifi`, one blob); KAYITLI AĞLAR lists them and forgets one. The toy's network
+  closes after 5 minutes, and the radio goes off again when the setup is done.
+- **Built in** through `fw/src/secrets.h` (copy `secrets.example.h`): git ignores it, so the
+  passwords never reach this public repo. They show as SABİT (read-only) in the list.
+
+Safety: the setup page only answers phones on the toy's own network (not the home LAN), names are
+shown with `textContent` only, passwords are never logged or sent back, the WiFi driver is told
+not to keep its own copy (`WiFi.persistent(false)`), and the QR code is made by
+[qrcodegen](https://github.com/nayuki/QR-Code-generator) inside the game core, so the emulator
+draws the same code. The phone page is `fw/src/portal.html` (embedded by `tools/embed_portal.py`;
+`make -C test portal` checks it is current). In the emulator, AĞ EKLE opens a pretend phone beside
+the toy with that same page; the password `yanlis123` shows the failure path.
+
+![WiFi setup in the emulator](design/wifi-setup.png)
 
 - **Time:** about 3 s after power-up, then every 12 h (or 30 min after a failed try), a short task
   joins the first network it can, asks NTP (`pool.ntp.org`, `time.google.com`) for the time, and
@@ -286,4 +313,5 @@ uv run --with pillow python tools/showcase.py      # regenerate design sheets
 - Press Start 2P font, SIL Open Font License 1.1 (`assets/fonts/OFL.txt`); glyphs are baked into
   `core/assets.gen.h`.
 - ES8311 codec driver by Espressif Systems, Apache-2.0 (`fw/lib/es8311`).
+- QR Code generator library by Project Nayuki, MIT (`core/third_party/qrcodegen*`).
 - Libraries fetched by PlatformIO: GFX Library for Arduino, XPowersLib, SensorLib.

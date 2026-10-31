@@ -18,6 +18,7 @@
 #include "audio.h"
 #include "rtc.h"
 #include "clock.h"
+#include "wifi_setup.h"
 
 static const int LCD_CS = 12, LCD_SCLK = 11, LCD_D0 = 4, LCD_D1 = 5, LCD_D2 = 6, LCD_D3 = 7;
 static const int I2C_SDA = 15, I2C_SCL = 14, TP_INT = 21, KEY_BOOT = 0;
@@ -211,6 +212,7 @@ void setup() {
     prefs.begin("unicorn", false);
     game.init(esp_random());
     clock_begin(prefs);
+    wifi_setup_begin(game);                   // saved networks, shown in the settings
     game.set_wall(clock_local(), clock_trusted());   // before the save, so time spent off counts
     load_game();
     push_frame();
@@ -254,6 +256,7 @@ void loop() {
     if (f & up::F_SAVE) save_game();
     if (f & up::F_CLOCK) clock_set_local(game.wall_s);   // a parent set the date and time
     clock_poll(now);                          // WiFi time (and zone) sync, about twice a day
+    wifi_setup_poll(game, now, f);            // a parent adding a network from the toy
     if (f & up::F_SOUND) audio_play(game.take_sfx());
     panel_power(f & up::F_SCREEN_ON);
     // the core asks for a frame on every call while something moves; cap pushes at ~30 fps
@@ -266,6 +269,6 @@ void loop() {
         pending = false;
     }
 
-    if (panel_on || audio_busy() || clock_busy()) delay(5);
+    if (panel_on || audio_busy() || clock_busy() || wifi_setup_busy()) delay(5);
     else nap();
 }

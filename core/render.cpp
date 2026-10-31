@@ -420,6 +420,7 @@ static void bubble(int tail_x, int y, const char* msg) {   // speech bubble, tai
 }
 
 static void (*under)(const Game& g, int sx, int sy);   // drawn behind her (the sun lounger)
+static void wifi_glyph(int cx, int cy, int s, u16 c);
 
 static void home_like(const Game& g, int state, const char* sub, bool night, int frame = -1, int dy = 0,
                       bool show_menu = true) {
@@ -427,6 +428,7 @@ static void home_like(const Game& g, int state, const char* sub, bool night, int
     if (night) sky(); else backdrop(g);
     status(g);
     battery_icon(g, SCREEN_W - 52, 46);
+    if (g.wifi_busy()) wifi_glyph(SCREEN_W - 84, 60, 2, g.wifi_stage >= WST_OK ? rgb(0x5E, 0xE0, 0x7A) : LILAC);   // setup under way
     header(g, sub);
     ground(g, night);
     // messes sit on the floor beside her; during a bath they shrink away
@@ -1197,10 +1199,199 @@ static void scene_bedtime(const Game& g) {
     text("BOOT: SATIR · PWR: +10 DK", SCREEN_W / 2, 420, 1, DIM);
 }
 
+// ---- WiFi setup pages ------------------------------------------------------------------------
+
+static const u16 OK_GREEN = rgb(0x5E, 0xE0, 0x7A), BAD_RED = rgb(0xFF, 0x5C, 0x6E), AMBER = rgb(0xFF, 0xB3, 0x47);
+
+static void lines(const char* const* l, int n, int y, u16 c = DIM, int gap = 18) {
+    for (int i = 0; i < n; i++) text(l[i], SCREEN_W / 2, y + i * gap, 1, c);
+}
+
+static void wifi_buttons(const Game& g, const char* left, const char* right) {   // two big buttons
+    const char* label[2] = {left, right};
+    for (int i = 0; i < 2; i++) {
+        if (!label[i]) continue;
+        int x0 = i ? SCREEN_W / 2 + 6 : 16, x1 = i ? SCREEN_W - 16 : SCREEN_W / 2 - 6;
+        rrect(x0, WBTN_Y0, x1, WBTN_Y1, 12, SEL, g.wifi_sel == i ? YELLOW : LILAC, g.wifi_sel == i ? 3 : 2);
+        text(label[i], (x0 + x1) / 2, (WBTN_Y0 + WBTN_Y1) / 2 - 8, 2, INK);
+    }
+}
+
+static void wifi_glyph(int cx, int cy, int s, u16 c) {   // three arcs and a dot
+    for (int k = 3; k >= 1; k--) {
+        upper_half(cx, cy, k * 4 * s, k * 3 * s, c);
+        upper_half(cx, cy, k * 4 * s - 2 * s, k * 3 * s - 2 * s, BLACK);
+    }
+    ellipse(cx, cy, s, s, c);
+}
+
+static void big_mark(int cx, int cy, int kind) {   // 0 tick (green), 1 cross (red), 2 clock (amber)
+    u16 c = kind == 0 ? OK_GREEN : kind == 1 ? BAD_RED : AMBER;
+    ellipse(cx, cy, 34, 34, c);
+    ellipse(cx, cy, 28, 28, BLACK);
+    for (int t = -2; t <= 2; t++) {
+        if (kind == 0) { fill(cx - 16 + t, cy + t, cx - 6 + t, cy + 4 + t, c); for (int k = 0; k < 18; k++) fill(cx - 6 + k, cy + 6 - k + t, cx - 2 + k, cy + 10 - k + t, c); }
+        if (kind == 1) for (int k = -12; k <= 12; k++) { fill(cx + k + t, cy + k, cx + k + t + 3, cy + k + 3, c); fill(cx + k + t, cy - k, cx + k + t + 3, cy - k + 3, c); }
+    }
+    if (kind == 2) { fill(cx - 2, cy - 18, cx + 2, cy + 2, c); fill(cx - 2, cy - 2, cx + 14, cy + 2, c); }
+}
+
+static void qr_draw(const Game& g, int cx, int top, int max_px) {   // black on white, 4-module quiet zone
+    int n = g.qr_side, m = n + 8, px = max_px / m;
+    if (!n || px < 1) return;
+    int x0 = cx - m * px / 2;
+    fill(x0, top, x0 + m * px, top + m * px, rgb(0xFF, 0xFF, 0xFF));
+    for (int y = 0; y < n; y++)
+        for (int x = 0; x < n; x++)
+            if (g.qr[y * n + x]) fill(x0 + (x + 4) * px, top + (y + 4) * px, x0 + (x + 5) * px, top + (y + 5) * px, BLACK);
+}
+
+static void scene_hub(const Game& g) {
+    text("SAAT VE WIFI", SCREEN_W / 2, 30, 2, YELLOW);
+    static const char* names[HUB_ROWS] = {"TARİH VE SAAT", "WIFI", "GERİ"};
+    for (int i = 0; i < HUB_ROWS; i++) {
+        char v[32] = "";
+        if (i == HUB_CLOCK) {
+            Cal c = g.today();
+            if (!c.known) cat(v, "AYARLA >");
+            else { char t[8]; two(c.mday, t); cat(v, t); cat(v, "."); two(c.month, t); cat(v, t); cat(v, " ");
+                   two(c.minute / 60, t); cat(v, t); cat(v, ":"); two(c.minute % 60, t); cat(v, t); cat(v, " >"); }
+        }
+        if (i == HUB_WIFI) { char t[8]; utoa(g.wifi_count, t); cat(v, t); cat(v, " AĞ >"); }
+        settings_row(g, i, names[i], v, false);
+    }
+}
+
+static void scene_wifi(const Game& g) {
+    text("WIFI", SCREEN_W / 2, 30, 2, YELLOW);
+    int saved = 0;
+    for (int i = 0; i < g.wifi_count; i++) saved += !(g.wifi_fixed & (1 << i));
+    for (int i = 0; i < WF_ROWS; i++) {
+        char v[16] = "";
+        if (i == WF_LIST) { char t[8]; utoa(saved, t); cat(v, t); cat(v, "/5 >"); }
+        settings_row(g, i, i == WF_ADD ? (g.wifi_busy() ? "KURULUMA DÖN" : "AĞ EKLE") : i == WF_LIST ? "KAYITLI AĞLAR" : "GERİ",
+                     v, i == WF_ADD);
+    }
+    wifi_glyph(SCREEN_W / 2, 270, 5, LILAC);
+    static const char* l[3] = {"WIFI SADECE SAATİ AYARLAMAK İÇİN.", "GÜNDE İKİ KEZ KISACIK AÇILIR,",
+                               "UNICORN WIFI'SIZ DA OYNAR."};
+    lines(l, 3, 300);
+}
+
+static void scene_wstart(const Game& g) {
+    text("TELEFONLA AĞ EKLE", SCREEN_W / 2, 30, 2, YELLOW);
+    rrect(SCREEN_W / 2 - 46, 64, SCREEN_W / 2 + 46, 210, 14, SEL, LILAC, 3);   // a phone, with a QR on it
+    fill(SCREEN_W / 2 - 12, 72, SCREEN_W / 2 + 12, 75, LILAC);
+    for (int y = 0; y < 7; y++)
+        for (int x = 0; x < 7; x++)
+            if (((x * 7 + y * 3) % 5) < 2 || (x < 2 && y < 2) || (x > 4 && y < 2) || (x < 2 && y > 4))
+                fill(SCREEN_W / 2 - 28 + x * 8, 100 + y * 8, SCREEN_W / 2 - 21 + x * 8, 107 + y * 8, INK);
+    static const char* l[6] = {"1. BAŞLAT'A DOKUN.", "2. ÇIKAN QR KODU TELEFONUN", "   KAMERASIYLA TARA.",
+                               "3. TELEFONDA EV AĞINI SEÇ", "   VE ŞİFRESİNİ YAZ.", "SADECE 2.4 GHZ AĞLAR OLUR."};
+    for (int i = 0; i < 6; i++) text(l[i], 40, 232 + i * 22, 1, i == 5 ? AMBER : INK, 0);
+    wifi_buttons(g, "GERİ", "BAŞLAT");
+}
+
+static void scene_wsession(const Game& g) {
+    int st = g.wifi_stage;
+    if (st <= WST_STARTING) {
+        text("HAZIRLANIYOR...", SCREEN_W / 2, 30, 2, YELLOW);
+        wifi_glyph(SCREEN_W / 2, 230, 8, (g.clock_ms / 400) & 1 ? LILAC : DIM);
+        wifi_buttons(g, 0, "OYUNA DÖN");
+        return;
+    }
+    if (st == WST_WAIT || st == WST_PHONE) {
+        text("TELEFONLA TARA", SCREEN_W / 2, 26, 2, YELLOW);
+        qr_draw(g, SCREEN_W / 2, 50, 236);
+        char name[48] = "AĞ: ";
+        cat(name, g.wifi_ap);
+        text(name, SCREEN_W / 2, 296, 1, INK);
+        if (st == WST_PHONE) {
+            text("TELEFON BAĞLANDI!", SCREEN_W / 2, 320, 2, OK_GREEN);
+            text("SAYFADA EV AĞINI SEÇ", SCREEN_W / 2, 346, 1, DIM);
+        } else {
+            static const char* l[2] = {"TELEFON 'İNTERNET YOK' DESE DE", "BU AĞDA KAL."};
+            lines(l, 2, 322);
+        }
+        wifi_buttons(g, "YARDIM", "OYUNA DÖN");
+        return;
+    }
+    if (st < WST_OK) {                     // three steps, the current one blinking
+        text("BAĞLANIYOR", SCREEN_W / 2, 30, 2, YELLOW);
+        text(g.wifi_net, SCREEN_W / 2, 64, 2, INK);
+        static const char* steps[3] = {"AĞA KATILIYOR", "ADRES ALIYOR", "SAATİ AYARLIYOR"};
+        for (int i = 0; i < 3; i++) {
+            int y = 130 + i * 56, cur = st - WST_JOIN;
+            u16 c = i < cur ? OK_GREEN : i == cur ? ((g.clock_ms / 300) & 1 ? YELLOW : INK) : TRACK;
+            ellipse(70, y + 8, 12, 12, c);
+            if (i < cur) { ellipse(70, y + 8, 7, 7, BLACK); ellipse(70, y + 8, 4, 4, c); }
+            text(steps[i], 100, y, 2, i <= cur ? INK : DIM, 0);
+        }
+        wifi_buttons(g, 0, "OYUNA DÖN");
+        return;
+    }
+    const char *title = "", *a = "", *b = "";
+    int mark = 1;
+    switch (st) {
+    case WST_OK:         title = "BAĞLANDI"; a = g.wifi_net; b = "SAAT AYARLANDI"; mark = 0; break;
+    case WST_OK_NOCLOCK: title = "AĞ KAYDEDİLDİ"; a = g.wifi_net; b = "SAAT BİRAZ SONRA AYARLANACAK"; mark = 2; break;
+    case WST_BAD_PASS:   title = "BAĞLANAMADI"; a = "ŞİFREYİ YA DA MODEMİN"; b = "GÜVENLİK AYARINI KONTROL ET"; break;
+    case WST_NOT_FOUND:  title = "AĞ BULUNAMADI"; a = "MESAFEYİ VE 2.4 GHZ'İN"; b = "AÇIK OLDUĞUNU KONTROL ET"; break;
+    case WST_FULL:       title = "LİSTE DOLU"; a = "EN FAZLA 5 AĞ KAYDEDİLİR:"; b = "ÖNCE KAYITLI BİR AĞI SİL"; mark = 2; break;
+    default:             title = "SÜRE DOLDU"; a = "5 DAKİKA İÇİNDE AĞ SEÇİLMEDİ."; b = "TEKRAR DENEYEBİLİRSİN"; mark = 2; break;
+    }
+    big_mark(SCREEN_W / 2, 140, mark);
+    text(title, SCREEN_W / 2, 196, 2, mark == 0 ? OK_GREEN : mark == 1 ? BAD_RED : AMBER);
+    text(a, SCREEN_W / 2, 236, mark == 1 || st >= WST_FULL ? 1 : 2, INK);
+    text(b, SCREEN_W / 2, 264, 1, DIM);
+    bool ok = st == WST_OK || st == WST_OK_NOCLOCK || st == WST_FULL;
+    wifi_buttons(g, ok ? 0 : "BİTİR", ok ? "TAMAM" : "TEKRAR");
+}
+
+static void scene_whelp(const Game& g) {
+    text("ELLE BAĞLAN", SCREEN_W / 2, 30, 2, YELLOW);
+    char ap[48] = "AĞ: ", pw[48] = "ŞİFRE: ";
+    cat(ap, g.wifi_ap); cat(pw, g.wifi_pass);
+    text("1. TELEFONUN WIFI AYARLARINDA", 32, 80, 1, DIM, 0);
+    text("   ŞU AĞA BAĞLAN:", 32, 100, 1, DIM, 0);
+    text(ap, 32, 128, 2, INK, 0);
+    text(pw, 32, 156, 2, INK, 0);
+    text("2. TARAYICIDA ŞUNU AÇ:", 32, 206, 1, DIM, 0);
+    text("192.168.4.1", 32, 232, 3, YELLOW, 0);
+    text("SAYFA KENDİLİĞİNDEN DE AÇILABİLİR.", 32, 290, 1, DIM, 0);
+    wifi_buttons(g, 0, "GERİ");
+}
+
+static void scene_wlist(const Game& g) {
+    text("KAYITLI AĞLAR", SCREEN_W / 2, 30, 2, YELLOW);
+    for (int i = 0; i < g.wifi_count; i++)
+        settings_row(g, i, g.wifi_names[i], (g.wifi_fixed & (1 << i)) ? "SABİT" : "SİL >", false);
+    settings_row(g, g.wifi_count, "GERİ", "", false);
+    if (!g.wifi_count) text("HENÜZ KAYITLI AĞ YOK", SCREEN_W / 2, 140, 1, DIM);
+    text("SABİT: FIRMWARE İÇİNDE (SECRETS.H)", SCREEN_W / 2, 420, 1, DIM);
+}
+
+static void scene_wforget(const Game& g) {
+    text("AĞI UNUT?", SCREEN_W / 2, 30, 2, YELLOW);
+    wifi_glyph(SCREEN_W / 2, 170, 6, LILAC);
+    if (g.wifi_arg < g.wifi_count) text(g.wifi_names[g.wifi_arg], SCREEN_W / 2, 210, 2, INK);
+    text("BU AĞA ARTIK BAĞLANMAZ.", SCREEN_W / 2, 250, 1, DIM);
+    wifi_buttons(g, "GERİ", "UNUT");
+}
+
 // SC_SETTINGS: for grown-ups (BOOT: 3 quick presses, hold the last). Every value cycles on tap / PWR.
 static void scene_settings(const Game& g) {
-    if (g.set_page == 1) { scene_clock(g); return; }
-    if (g.set_page == 2) { scene_bedtime(g); return; }
+    switch (g.set_page) {
+    case PG_CLOCK:    scene_clock(g); return;
+    case PG_BED:      scene_bedtime(g); return;
+    case PG_HUB:      scene_hub(g); return;
+    case PG_WIFI:     scene_wifi(g); return;
+    case PG_WSTART:   scene_wstart(g); return;
+    case PG_WSESSION: scene_wsession(g); return;
+    case PG_WHELP:    scene_whelp(g); return;
+    case PG_WLIST:    scene_wlist(g); return;
+    case PG_WFORGET:  scene_wforget(g); return;
+    }
     static const char* names[SET_ROWS] = {"SES", "OTURUM", "MOLA", "PARLAKLIK", "SAKİN MOD", "SALLAMA", "UYKU",
                                           "SAAT", "ÇIKIŞ"};
     static const char* vols[3] = {"NORMAL", "KISIK", "KAPALI"};
@@ -1220,7 +1411,7 @@ static void scene_settings(const Game& g) {
             hhmm(g.s.bed10, t); cat(v, t); cat(v, " - "); hhmm(g.s.wake10, t); cat(v, t); cat(v, " >");
             break;
         }
-        case SET_CLOCK: {                  // "31.10.2026 14:05 >" or a nudge to set it
+        case SET_CLOCK: {                  // "31.10.2026 14:05 >" or a nudge to set it (and WiFi, behind it)
             Cal c = g.today();
             if (!c.known) { cat(v, "AYARLA >"); break; }
             char t[8];

@@ -3,3 +3,4 @@
 #include "../../core/game.cpp"
 #include "../../core/render.cpp"
 #include "../../core/sound.cpp"
+#include "../../core/qr.cpp"

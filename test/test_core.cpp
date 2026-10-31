@@ -1832,8 +1832,14 @@ TEST(tricks_learned_over_the_days) {
 static void open_clock_page(Game& g) {
     g.input(IN_PARENT, 0, 0);
     EQ(g.scene, SC_SETTINGS);
-    g.input(IN_TOUCH, 300, SET_Y0 + SET_CLOCK * SET_ROW_H + 18);
-    EQ(g.set_page, 1);
+    g.input(IN_TOUCH, 300, SET_Y0 + SET_CLOCK * SET_ROW_H + 18);   // SAAT: the clock & WiFi hub
+    EQ(g.set_page, PG_HUB);
+    g.input(IN_TOUCH, 300, SET_Y0 + HUB_CLOCK * SET_ROW_H + 18);
+    EQ(g.set_page, PG_CLOCK);
+}
+static void leave_settings(Game& g) {      // from the hub (after KAYDET/GERİ) out of the settings
+    if (g.set_page == PG_HUB) g.input(IN_TOUCH, 184, SET_Y0 + HUB_BACK * SET_ROW_H + 18);
+    g.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
 }
 static void tap_clock(Game& g, int row, int dir, int times = 1) {
     for (int i = 0; i < times; i++) g.input(IN_TOUCH, dir < 0 ? 60 : 300, SET_Y0 + row * SET_ROW_H + 18);
@@ -1850,7 +1856,7 @@ TEST(parent_sets_the_clock) {
     tap_clock(g, CLK_HOUR, +1, 14);
     tap_clock(g, CLK_MIN, -1, 55);             // 0 -> 59 -> ... -> 5
     tap_clock(g, CLK_SAVE, +1);
-    EQ(g.set_page, 0); EQ(g.scene, SC_SETTINGS);
+    EQ(g.set_page, PG_HUB); EQ(g.set_row, HUB_CLOCK); EQ(g.scene, SC_SETTINGS);
     g.set_wall(at(2026, 1, 1, 0, 1), false);   // the platform's old RTC reading, before it heard
     u32 f = g.tick(0);
     CHECK(f & F_CLOCK); CHECK(f & F_SAVE);
@@ -1861,7 +1867,7 @@ TEST(parent_sets_the_clock) {
     EQ(c.month, 10); EQ(c.mday, 31);
     EQ(g.tick(0) & F_CLOCK, 0u);               // reported once
     EQ(g.s.seen_day, at(2026, 10, 31, 0, 0) / 86400);   // no "long absence" from the jump
-    g.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    leave_settings(g);
     run(g, 2000); EQ(g.party, PARTY_NONE);
     Game b = hatched();                        // GERİ leaves without changing anything
     b.set_wall(at(2026, 5, 5, 9, 0));
@@ -1886,7 +1892,7 @@ TEST(parent_sets_the_birthday) {
     tap_clock(g, CLK_SAVE, +1);                // birthday set to today: the party is today
     CHECK(!(g.s.life_flags & LIFE_ADOPTED));
     EQ(g.s.hatch_day, at(2027, 6, 15, 0, 0) / 86400);
-    g.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    leave_settings(g);
     run(g, 300);
     EQ(g.party, PARTY_NONE);                   // born this year (the adopted day): first party next year
     Game o = hatched();                        // a real hatch day two years ago
@@ -1896,7 +1902,7 @@ TEST(parent_sets_the_birthday) {
     tap_clock(o, CLK_BMONTH, +1, 3); tap_clock(o, CLK_BDAY, +1, 14);   // 15 June: today
     tap_clock(o, CLK_SAVE, +1);
     EQ(o.s.hatch_day, at(2025, 6, 15, 0, 0) / 86400);
-    o.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    leave_settings(o);
     run(o, 400); EQ(o.party, PARTY_BIRTHDAY); EQ(o.years(), 2);
     Game p = hatched();                        // a birthday already past this year: no late party
     p.s.hatch_day = (u16)(at(2025, 3, 1, 0, 0) / 86400); p.s.party_year = 26;
@@ -1905,7 +1911,7 @@ TEST(parent_sets_the_birthday) {
     tap_clock(p, CLK_BMONTH, -1, 3);           // 1 March -> December... back to 1 March
     tap_clock(p, CLK_BMONTH, +1, 3);
     tap_clock(p, CLK_SAVE, +1);
-    p.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    leave_settings(p);
     run(p, 400); EQ(p.party, PARTY_NONE); EQ(p.s.party_year, 27);
     Game f = hatched();                        // 29 February: only offered as month 2 allows
     f.set_wall(at(2027, 6, 15, 10, 0));
@@ -2165,6 +2171,76 @@ TEST(boot_taps_and_the_grown_up_gesture) {
     EQ(d.scene, SC_RETURN);
 }
 
+static void tap_row(Game& g, int row) { g.input(IN_TOUCH, 300, SET_Y0 + row * SET_ROW_H + 18); }
+static void tap_button(Game& g, int right) { g.input(IN_TOUCH, right ? 280 : 90, (WBTN_Y0 + WBTN_Y1) / 2); }
+static int take_wifi(Game& g) {            // what the platform does with F_WIFI
+    u32 f = g.tick(0);
+    if (!(f & F_WIFI)) return WREQ_NONE;
+    int r = g.wifi_req;
+    g.wifi_req = WREQ_NONE;
+    return r;
+}
+
+TEST(wifi_setup_from_the_toy) {
+    Game g = hatched();
+    g.wifi_list_clear(); g.wifi_list_add("HomeNet", true);
+    g.input(IN_PARENT, 0, 0);
+    tap_row(g, SET_CLOCK); EQ(g.set_page, PG_HUB);
+    tap_row(g, HUB_WIFI); EQ(g.set_page, PG_WIFI);
+    shot(g, "wifi_page");
+    tap_row(g, WF_ADD); EQ(g.set_page, PG_WSTART);
+    shot(g, "wifi_start");
+    tap_button(g, 0); EQ(g.set_page, PG_WIFI);          // GERİ: nothing started
+    EQ(take_wifi(g), WREQ_NONE);
+    tap_row(g, WF_ADD); tap_button(g, 1);               // BAŞLAT
+    EQ(g.set_page, PG_WSESSION); EQ(g.wifi_stage, WST_STARTING);
+    EQ(take_wifi(g), WREQ_START);
+    g.wifi_session("Unicorn-A7C2", "kq7m4xtz9p2w");   // the platform's network is up
+    EQ(g.wifi_stage, WST_WAIT);
+    CHECK(g.qr_side >= 25 && g.qr_side <= QR_MAX_SIDE);
+    shot(g, "wifi_qr");
+    run(g, SCREEN_OFF_MS + 2000); CHECK(g.screen_on);   // the QR stays lit while the parent scans
+    tap_button(g, 0); EQ(g.set_page, PG_WHELP);         // YARDIM: join by hand
+    shot(g, "wifi_help");
+    tap_button(g, 1); EQ(g.set_page, PG_WSESSION);
+    g.wifi_status(WST_PHONE, 0); shot(g, "wifi_phone");
+    tap_button(g, 1);                                   // OYUNA DÖN: play on, setup carries on
+    EQ(g.scene, SC_HOME); CHECK(g.wifi_busy());
+    g.wifi_status(WST_JOIN, "HomeNet-2.4");
+    shot(g, "wifi_badge");
+    g.input(IN_PARENT, 0, 0);                           // the grown-up comes back: straight to it
+    EQ(g.scene, SC_SETTINGS); EQ(g.set_page, PG_WSESSION);
+    g.wifi_status(WST_ADDR, 0); shot(g, "wifi_joining");
+    g.wifi_status(WST_OK, 0); shot(g, "wifi_ok");
+    tap_button(g, 1);                                   // TAMAM: the radio goes off again
+    EQ(take_wifi(g), WREQ_STOP); EQ(g.wifi_stage, WST_OFF); EQ(g.set_page, PG_WIFI);
+    tap_row(g, WF_ADD); tap_button(g, 1); take_wifi(g);
+    g.wifi_session("Unicorn-B1F0", "abcdefgh2345");
+    g.wifi_status(WST_BAD_PASS, "HomeNet-2.4"); shot(g, "wifi_bad");
+    tap_button(g, 1); EQ(take_wifi(g), WREQ_RETRY);     // TEKRAR: the phone form is still there
+    g.wifi_status(WST_TIMEOUT, 0);
+    tap_button(g, 1); EQ(take_wifi(g), WREQ_START);     // after a time-out: a fresh network
+    g.wifi_status(WST_NOT_FOUND, 0);
+    tap_button(g, 0); EQ(take_wifi(g), WREQ_STOP);      // BİTİR
+    g.wifi_list_clear();                                // the saved list: built-in ones read-only
+    g.wifi_list_add("HomeNet", true); g.wifi_list_add("Mormor", false); g.wifi_list_add("Yazlik", false);
+    tap_row(g, WF_LIST); EQ(g.set_page, PG_WLIST);
+    shot(g, "wifi_list");
+    tap_row(g, 0); EQ(g.set_page, PG_WLIST); EQ(cue_after(g), SFX_REFUSE);
+    tap_row(g, 1); EQ(g.set_page, PG_WFORGET);
+    shot(g, "wifi_forget");
+    tap_button(g, 1); EQ(take_wifi(g), WREQ_FORGET); EQ(g.wifi_arg, 1);
+    EQ(g.set_page, PG_WLIST);
+    for (int st = WST_OFF; st <= WST_TIMEOUT; st++) {   // every screen draws inside the frame
+        g.set_page = PG_WSESSION; g.wifi_stage = (u8)st; render(g, fb);
+        for (int p = PG_HUB; p <= PG_WFORGET; p++) { g.set_page = (u8)p; render(g, fb); }
+    }
+    Game q;                                            // the QR's text is escaped
+    q.init(1);
+    q.wifi_session("A;B", "p:w\\\"x");
+    CHECK(q.qr_side > 0);
+}
+
 // ---- rendering --------------------------------------------------------------------------------
 
 TEST(every_scene_renders_for_every_character) {
@@ -2234,7 +2310,8 @@ int main() {
         T(tricks_learned_over_the_days), T(parent_sets_the_clock), T(parent_sets_the_birthday),
         T(charging_on_the_sun_lounger), T(charging_at_night_and_elsewhere),
         T(bedtime_sways_then_sleeps_on_her_feet), T(put_to_bed_stays_asleep_till_morning), T(bedtime_edges),
-        T(bedtime_is_tick_size_independent), T(boot_taps_and_the_grown_up_gesture), T(album_opens_from_the_info_screen),
+        T(bedtime_is_tick_size_independent), T(boot_taps_and_the_grown_up_gesture),
+        T(wifi_setup_from_the_toy), T(album_opens_from_the_info_screen),
         T(every_scene_renders_for_every_character),
     };
     for (auto& t : tests) {

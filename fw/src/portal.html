@@ -1,0 +1,181 @@
+<!doctype html>
+<!-- The page a parent's phone shows after joining the toy's own WiFi (fw/src/wifi_setup.cpp serves
+     it at http://192.168.4.1; tools/embed_portal.py turns it into portal.gen.h). No external files:
+     the phone has no internet while it is on the toy's network. Network names are shown with
+     textContent only. -->
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Unicorn Pet · WiFi</title>
+<style>
+  :root { color-scheme: dark; --bg: #120d22; --card: #1e1636; --ink: #f4eeff; --dim: #a99bd6;
+          --accent: #ffe066; --ok: #5ee07a; --bad: #ff5c6e; --line: #3a2f63; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 17px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg);
+         color: var(--ink); padding: 18px 16px 40px; max-width: 480px; margin-inline: auto; }
+  h1 { font-size: 22px; margin: 4px 0 2px; } h1 span { color: var(--accent); }
+  .sub { color: var(--dim); margin: 0 0 18px; font-size: 15px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; margin-bottom: 14px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 0 0 10px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li button { width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; min-height: 52px;
+              padding: 10px 12px; margin: 4px 0; border-radius: 12px; border: 2px solid transparent;
+              background: #2a2048; color: var(--ink); font: inherit; }
+  li button[aria-pressed="true"] { border-color: var(--accent); }
+  .name { flex: 1; overflow-wrap: anywhere; } .meta { color: var(--dim); font-size: 13px; white-space: nowrap; }
+  .bars { display: inline-flex; gap: 2px; align-items: flex-end; height: 16px; }
+  .bars i { width: 4px; background: var(--line); border-radius: 1px; } .bars i.on { background: var(--ok); }
+  label { display: block; color: var(--dim); font-size: 14px; margin: 12px 0 6px; }
+  .pw { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; font: inherit; padding: 12px; border-radius: 12px; border: 2px solid var(--line);
+          background: #120d22; color: var(--ink); }
+  input:focus { outline: none; border-color: var(--accent); }
+  .ghost { font: inherit; padding: 0 14px; border-radius: 12px; border: 2px solid var(--line); background: none; color: var(--ink); }
+  .go { width: 100%; margin-top: 14px; min-height: 54px; font: inherit; font-weight: 700; border: 0; border-radius: 14px;
+        background: var(--accent); color: #2b1840; }
+  .go:disabled { opacity: .45; }
+  .hint { color: var(--dim); font-size: 14px; margin: 10px 0 0; }
+  .err { color: var(--bad); font-size: 14px; margin: 8px 0 0; min-height: 1em; }
+  ol.steps { list-style: none; padding: 0; margin: 0; }
+  ol.steps li { display: flex; align-items: center; gap: 10px; padding: 8px 0; color: var(--dim); }
+  ol.steps li::before { content: ""; width: 18px; height: 18px; border-radius: 50%; border: 3px solid var(--line); }
+  ol.steps li.now { color: var(--ink); } ol.steps li.now::before { border-color: var(--accent); animation: pulse 1s infinite; }
+  ol.steps li.done { color: var(--ink); } ol.steps li.done::before { border-color: var(--ok); background: var(--ok); }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .result { text-align: center; padding: 8px 0; } .result b { display: block; font-size: 22px; margin: 6px 0; }
+  .ok b { color: var(--ok); } .bad b { color: var(--bad); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<h1>🦄 Unicorn Pet <span>WiFi</span></h1>
+<p class="sub">Unicorn bu ağı sadece saatini ayarlamak için kullanır.</p>
+
+<section class="card" id="pick">
+  <h2>1 · Ev ağını seç</h2>
+  <ul id="nets"><li class="hint">Ağlar yükleniyor…</li></ul>
+  <p class="hint">Ağın listede yok mu? Unicorn sadece <b>2.4 GHz</b> ağları görür; modemde 2.4 GHz açık olmalı.</p>
+</section>
+
+<section class="card" id="form" hidden>
+  <h2>2 · Şifreyi yaz</h2>
+  <div id="chosen" class="name"></div>
+  <div id="pwbox">
+    <label for="pw">WiFi şifresi</label>
+    <div class="pw"><input id="pw" type="password" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button class="ghost" id="show" type="button">Göster</button></div>
+  </div>
+  <p class="err" id="err"></p>
+  <button class="go" id="connect" type="button">Bağlan</button>
+</section>
+
+<section class="card" id="progress" hidden>
+  <h2>Bağlanıyor</h2>
+  <ol class="steps"><li id="s0">Ağa katılıyor</li><li id="s1">Adres alıyor</li><li id="s2">Saati ayarlıyor</li></ol>
+  <p class="hint" id="note">Telefon bir an kopabilir; sonucu unicorn'un ekranı da gösterir.</p>
+</section>
+
+<section class="card result" id="done" hidden>
+  <div id="icon" style="font-size:44px"></div><b id="title"></b><p id="msg" class="hint"></p>
+  <button class="go" id="again" type="button" hidden>Tekrar dene</button>
+</section>
+
+<script>
+// The toy's API: /scan, /connect, /status. The browser emulator (emu/index.html) can stand in for
+// the toy through window.parent.portalApi, so the same page is shown there.
+const api = (window.parent !== window && window.parent.portalApi) || {
+  scan: () => fetch("/scan").then((r) => r.json()),
+  connect: (net, pass) => fetch("/connect", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: "id=" + net.i + "&pass=" + encodeURIComponent(pass) }).then((r) => r.json()),   // the toy keeps the exact name
+  status: () => fetch("/status").then((r) => r.json()),
+};
+const $ = (id) => document.getElementById(id);
+let chosen = null, polling = null;
+
+function bars(rssi) {
+  const n = rssi > -55 ? 4 : rssi > -67 ? 3 : rssi > -78 ? 2 : 1, b = document.createElement("span");
+  b.className = "bars";
+  for (let i = 0; i < 4; i++) { const s = document.createElement("i"); s.style.height = 4 + i * 4 + "px"; if (i < n) s.className = "on"; b.append(s); }
+  return b;
+}
+
+function show(list) {
+  const ul = $("nets");
+  ul.textContent = "";
+  if (!list.length) { const li = document.createElement("li"); li.className = "hint"; li.textContent = "Hiç 2.4 GHz ağ bulunamadı."; ul.append(li); return; }
+  for (const n of list) {
+    const li = document.createElement("li"), b = document.createElement("button"), name = document.createElement("span"),
+          meta = document.createElement("span");
+    name.className = "name"; name.textContent = n.s;
+    meta.className = "meta"; meta.textContent = n.l ? "🔒" : "açık";
+    b.type = "button"; b.append(name, meta, bars(n.r)); b.setAttribute("aria-pressed", "false");
+    b.onclick = () => {
+      chosen = n;
+      for (const x of ul.querySelectorAll("button")) x.setAttribute("aria-pressed", String(x === b));
+      $("chosen").textContent = n.s;
+      $("pwbox").hidden = !n.l;
+      $("form").hidden = false;
+      $("err").textContent = "";
+      if (n.l) $("pw").focus();
+    };
+    li.append(b); ul.append(li);
+  }
+}
+
+function valid(pass) {           // WPA: 8-63 characters, or 64 hex digits
+  return !chosen.l || (pass.length >= 8 && pass.length <= 63) || /^[0-9a-fA-F]{64}$/.test(pass);
+}
+
+const STAGES = { join: 0, addr: 1, clock: 2 };
+const RESULTS = {
+  ok:       ["✅", "Bağlandı!", "Saat ayarlandı. Bu sayfayı kapatabilirsin.", true],
+  noclock:  ["🕒", "Ağ kaydedildi", "Saat biraz sonra ayarlanacak. Bu sayfayı kapatabilirsin.", true],
+  badpass:  ["❌", "Bağlanamadı", "Şifreyi ya da modemin güvenlik ayarını kontrol et.", false],
+  notfound: ["❌", "Ağ bulunamadı", "Unicorn'u modeme yaklaştır; 2.4 GHz açık mı?", false],
+  full:     ["📋", "Liste dolu", "En fazla 5 ağ kaydedilir. Önce unicorn'un ayarlarından bir ağı sil.", false],
+  timeout:  ["⏱️", "Süre doldu", "Unicorn'un ekranında yeniden BAŞLAT'a dokun.", false],
+};
+
+function stage(st) {
+  if (st.stage in STAGES) {
+    $("pick").hidden = $("form").hidden = $("done").hidden = true;
+    $("progress").hidden = false;
+    for (let i = 0; i < 3; i++) $("s" + i).className = i < STAGES[st.stage] ? "done" : i === STAGES[st.stage] ? "now" : "";
+    return false;
+  }
+  const r = RESULTS[st.stage];
+  if (!r) return false;
+  $("progress").hidden = true;
+  $("done").hidden = false;
+  $("done").className = "card result " + (r[3] ? "ok" : "bad");
+  $("icon").textContent = r[0]; $("title").textContent = r[1]; $("msg").textContent = r[2];
+  $("again").hidden = r[3] || st.stage === "timeout";
+  return true;
+}
+
+function poll() {
+  clearInterval(polling);
+  polling = setInterval(() => {
+    api.status().then((st) => { $("note").textContent = "Telefon bir an kopabilir; sonucu unicorn'un ekranı da gösterir."; if (stage(st)) clearInterval(polling); })
+      .catch(() => { $("note").textContent = "Bağlantı yenileniyor… (unicorn'un ekranına da bakabilirsin)"; });
+  }, 1000);
+}
+
+$("show").onclick = () => { const p = $("pw"); p.type = p.type === "password" ? "text" : "password"; $("show").textContent = p.type === "password" ? "Göster" : "Gizle"; };
+$("connect").onclick = () => {
+  const pass = $("pw").value;
+  if (!chosen) return;
+  if (!valid(pass)) { $("err").textContent = "WiFi şifresi 8-63 karakter olur."; return; }
+  $("connect").disabled = true;
+  api.connect(chosen, chosen.l ? pass : "").then((r) => {
+    $("connect").disabled = false;
+    if (r && r.error) { $("err").textContent = r.error; return; }
+    stage({ stage: "join" }); poll();
+  }).catch(() => { $("connect").disabled = false; stage({ stage: "join" }); poll(); });
+};
+$("again").onclick = () => { $("done").hidden = true; $("pick").hidden = $("form").hidden = false; $("connect").disabled = false; };
+api.scan().then(show).catch(() => { $("nets").textContent = "Ağ listesi alınamadı; sayfayı yenile."; });
+</script>
+</body>
+</html>

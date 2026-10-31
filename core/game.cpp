@@ -526,8 +526,9 @@ void Game::eat(int t) {                    // the chosen snack: all three nouris
 
 // Parent settings: BOOT (or tap) picks a row, PWR (or tap) changes it.
 void Game::settings_input(int type, int x, int y) {
-    if (set_page == 1) { clock_input(type, x, y); return; }
-    if (set_page == 2) { bed_input(type, x, y); return; }
+    if (set_page == PG_CLOCK) { clock_input(type, x, y); return; }
+    if (set_page == PG_BED) { bed_input(type, x, y); return; }
+    if (set_page >= PG_HUB) { wifi_input(type, x, y); return; }
     int row = set_row;
     if (type == IN_TOUCH) {
         if (y < SET_Y0) return;
@@ -564,7 +565,7 @@ void Game::settings_input(int type, int x, int y) {
     }
     case SET_CALM:  s.opts ^= OPT_CALM; break;
     case SET_SHAKE: s.opts ^= OPT_NO_SHAKE; break;
-    case SET_CLOCK: open_clock(); cue(SFX_TAP); return;
+    case SET_CLOCK: set_page = PG_HUB; set_row = 0; cue(SFX_TAP); dirty = 1; return;   // the clock & WiFi hub
     case SET_SLEEP: set_page = 2; set_row = 0; cue(SFX_TAP); dirty = 1; return;
     case SET_EXIT:                         // back to sleep if that is where the grown-up found her
         if (back_scene == SC_SLEEP) doze(false);
@@ -651,7 +652,7 @@ void Game::clock_input(int type, int x, int y) {
     case CLK_BMONTH: if (s.hatched) ed_bmonth = (u8)spin(ed_bmonth, 1, 12); break;
     case CLK_BDAY:   if (s.hatched) ed_bday = (u8)spin(ed_bday, 1, month_days(2000, ed_bmonth)); break;
     case CLK_SAVE:   save_clock(); break;
-    case CLK_BACK:   set_page = 0; set_row = SET_CLOCK; break;
+    case CLK_BACK:   set_page = PG_HUB; set_row = HUB_CLOCK; break;
     }
     if (ed_day > month_days(ed_year, ed_month)) ed_day = (u8)month_days(ed_year, ed_month);
     if (ed_bday > month_days(2000, ed_bmonth)) ed_bday = (u8)month_days(2000, ed_bmonth);
@@ -681,8 +682,125 @@ void Game::save_clock() {
         if (last - 2000 > s.party_year) s.party_year = (u8)(last - 2000);
     }
     want_save = 1;
-    set_page = 0;
-    set_row = SET_CLOCK;
+    set_page = PG_HUB;
+    set_row = HUB_CLOCK;
+}
+
+// ---- WiFi setup screens (the platform does the radio work and reports back) -----------------
+
+static void copy_name(char* dst, const char* src, int n) {
+    int i = 0;
+    for (; src && src[i] && i < n - 1; i++) dst[i] = src[i];
+    dst[i] = 0;
+}
+
+void Game::wifi_request(int req, int arg) {
+    wifi_req = (u8)req;
+    wifi_arg = (u8)arg;
+    if (req == WREQ_START) { wifi_stage = WST_STARTING; qr_side = 0; wifi_net[0] = 0; }
+    if (req == WREQ_STOP) { wifi_stage = WST_OFF; qr_side = 0; }
+    dirty = 1;
+}
+
+// The toy's own network is up: "WIFI:T:WPA;S:<name>;P:<password>;;" as a QR code a phone camera
+// joins in one go. Special characters are escaped (the platform avoids them anyway).
+void Game::wifi_session(const char* ap, const char* pass) {
+    copy_name(wifi_ap, ap, sizeof wifi_ap);
+    copy_name(wifi_pass, pass, sizeof wifi_pass);
+    char t[128];
+    int k = 0;
+    auto put = [&](const char* s, bool esc) {
+        for (; *s && k < (int)sizeof t - 3; s++) {
+            if (esc && (*s == ';' || *s == ',' || *s == ':' || *s == '\\' || *s == '"')) t[k++] = '\\';
+            t[k++] = *s;
+        }
+    };
+    put("WIFI:T:WPA;S:", false); put(wifi_ap, true); put(";P:", false); put(wifi_pass, true); put(";;", false);
+    t[k] = 0;
+    qr_side = (u8)qr_encode(t, qr, QR_MAX_SIDE_);
+    wifi_stage = WST_WAIT;
+    dirty = 1;
+}
+
+void Game::wifi_status(int stage, const char* network) {
+    wifi_stage = (u8)stage;
+    if (network) copy_name(wifi_net, network, sizeof wifi_net);
+    if (stage == WST_OFF) {                // the radio went off by itself: leave its screens
+        qr_side = 0;
+        if (scene == SC_SETTINGS && (set_page == PG_WSESSION || set_page == PG_WHELP)) { set_page = PG_WIFI; set_row = WF_ADD; }
+    }
+    dirty = 1;
+}
+
+void Game::wifi_list_add(const char* name, bool built_in) {
+    if (wifi_count >= WIFI_LIST_MAX) return;
+    if (built_in) wifi_fixed |= (u16)(1 << wifi_count);
+    copy_name(wifi_names[wifi_count++], name, WIFI_NAME);
+    dirty = 1;
+}
+
+// Two big buttons along the bottom (left 0, right 1) on the WiFi pages.
+static int wifi_button(int x, int y) {
+    if (y < WBTN_Y0 || y > WBTN_Y1) return -1;
+    return x < SCREEN_W / 2 ? 0 : 1;
+}
+
+void Game::wifi_input(int type, int x, int y) {
+    int row = set_row, rows = set_page == PG_HUB ? HUB_ROWS : set_page == PG_WIFI ? WF_ROWS
+                               : set_page == PG_WLIST ? wifi_count + 1 : 0;
+    int btn = -1;
+    if (rows) {                            // list pages: BOOT moves, PWR or a tap picks
+        if (type == IN_NEXT) { set_row = (u8)((set_row + 1) % rows); dirty = 1; return; }
+        if (type == IN_TOUCH) {
+            if (y < SET_Y0 || (y - SET_Y0) / SET_ROW_H >= rows) return;
+            row = set_row = (u8)((y - SET_Y0) / SET_ROW_H);
+        } else if (type != IN_SELECT) return;
+    } else {                               // button pages: BOOT switches, PWR or a tap presses
+        if (type == IN_NEXT) { wifi_sel ^= 1; dirty = 1; return; }
+        if (type == IN_TOUCH) btn = wifi_button(x, y); else if (type == IN_SELECT) btn = wifi_sel;
+        if (btn < 0) return;
+    }
+    bool result = wifi_stage >= WST_OK, under_way = wifi_stage >= WST_JOIN && !result;
+    switch (set_page) {
+    case PG_HUB:
+        if (row == HUB_CLOCK) { open_clock(); break; }
+        if (row == HUB_WIFI) { set_page = PG_WIFI; set_row = 0; break; }
+        set_page = PG_MAIN; set_row = SET_CLOCK;
+        break;
+    case PG_WIFI:
+        if (row == WF_ADD) { set_page = wifi_busy() ? PG_WSESSION : PG_WSTART; wifi_sel = 1; break; }
+        if (row == WF_LIST) { set_page = PG_WLIST; set_row = 0; break; }
+        set_page = PG_HUB; set_row = HUB_WIFI;
+        break;
+    case PG_WSTART:                        // GERİ | BAŞLAT
+        if (btn == 1) { wifi_request(WREQ_START); set_page = PG_WSESSION; wifi_sel = 1; }
+        else { set_page = PG_WIFI; set_row = WF_ADD; }
+        break;
+    case PG_WSESSION:
+        if (result) {                      // TAMAM / BİTİR | TEKRAR
+            bool ok = wifi_stage == WST_OK || wifi_stage == WST_OK_NOCLOCK || wifi_stage == WST_FULL;
+            if (btn == 1 && !ok) { wifi_request(wifi_stage == WST_TIMEOUT ? WREQ_START : WREQ_RETRY); break; }
+            if (btn == 1 || btn == 0) { wifi_request(WREQ_STOP); set_page = PG_WIFI; set_row = WF_LIST; }
+            break;
+        }
+        if (btn == 0 && !under_way) { set_page = PG_WHELP; break; }   // YARDIM
+        if (btn == 1) go(SC_HOME);         // OYUNA DÖN: play on, the setup carries on
+        break;
+    case PG_WHELP:
+        set_page = PG_WSESSION;
+        break;
+    case PG_WLIST:
+        if (row >= wifi_count) { set_page = PG_WIFI; set_row = WF_LIST; break; }
+        if (wifi_fixed & (1 << row)) { cue(SFX_REFUSE); return; }   // built into the firmware
+        set_page = PG_WFORGET; wifi_sel = 0; wifi_arg = (u8)row;
+        break;
+    case PG_WFORGET:                       // GERİ | UNUT
+        if (btn == 1) wifi_request(WREQ_FORGET, wifi_arg);
+        set_page = PG_WLIST; set_row = 0;
+        break;
+    }
+    dirty = 1;
+    cue(SFX_TAP);
 }
 
 void Game::choose_egg() {                  // this one is mine: her colours are set for life
@@ -931,7 +1049,10 @@ void Game::input(int type, int x, int y) {
         if (scene == SC_AWAY || scene == SC_LEAVE) { away_ms = 0; come_back(); }
         else if (scene == SC_HOME || scene == SC_EGG || scene == SC_INFO || scene == SC_LOUNGE || scene == SC_SLEEP) {
             back_scene = scene;
-            set_row = 0; set_page = 0; go(SC_SETTINGS);
+            set_row = 0;
+            set_page = wifi_busy() ? PG_WSESSION : PG_MAIN;   // a WiFi setup under way: straight back to it
+            wifi_sel = 1;
+            go(SC_SETTINGS);
         }
         return;
     }
@@ -1472,7 +1593,8 @@ u32 Game::tick(u32 dt) {
         scene_timers();
         if (screen_on) step();             // cosmetics only run while someone can see them
         bool busy = scene == SC_EAT || scene == SC_PLAY || scene == SC_WASH || scene == SC_HATCH ||
-                    scene == SC_GAME || scene == SC_LEAVE || scene == SC_RETURN;
+                    scene == SC_GAME || scene == SC_LEAVE || scene == SC_RETURN ||
+                    (scene == SC_SETTINGS && set_page == PG_WSESSION && wifi_busy());   // QR up: stay lit
         u32 off = scene == SC_AWAY ? AWAY_SCREEN_OFF_MS : SCREEN_OFF_MS;
         if (screen_on && !busy && idle_ms >= off) { screen_on = 0; visitor = 0; visit_due = 0; }
     }
@@ -1490,6 +1612,7 @@ u32 Game::tick(u32 dt) {
     if (save_ms >= AUTOSAVE_MS) { save_ms = 0; want_save = 1; }
     if (want_save) { flags |= F_SAVE; want_save = 0; }
     if (want_clock) { flags |= F_CLOCK; want_clock = 0; }
+    if (wifi_req) flags |= F_WIFI;         // the platform clears wifi_req once it has taken it
     if (sfx && s.muted) sfx = SFX_NONE;
     if (sfx) flags |= F_SOUND;
     if (screen_on) {

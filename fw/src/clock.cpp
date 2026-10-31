@@ -8,9 +8,7 @@
 #include "config.h"
 #include "rtc.h"
 #include "tz.h"
-#if __has_include("secrets.h")
-#include "secrets.h"
-#endif
+#include "wifi_setup.h"
 
 static Preferences* nv;
 static bool trusted;
@@ -99,40 +97,56 @@ void clock_set_local(uint32_t local) {
     trusted = true;
 }
 
+// ---- NTP, shared with the WiFi setup (wifi_setup.cpp) ---------------------------------------
+
+void ntp_start() {
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);   // not configTime(): it would reset TZ
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_setservername(1, "time.google.com");
+    sntp_set_sync_status(SNTP_SYNC_STATUS_RESET);      // wait for a fresh answer, every time
+    esp_sntp_init();
+}
+
+bool ntp_done(uint32_t* utc) {             // a fresh, sane answer has arrived
+    const time_t Y2025 = 1735689600;       // anything earlier is the ESP32's own unset clock
+    time_t now = time(nullptr);
+    if (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED || now < Y2025) return false;
+    *utc = (uint32_t)(now - (time_t)tz::UNIX_2000);
+    return true;
+}
+
+void ntp_stop() { esp_sntp_stop(); }
+
+void clock_set_utc(uint32_t utc) {         // main task only (I2C)
+    rtc_set(utc);
+    nv->putBool("cal", true);
+    trusted = true;
+    Serial.println("clock set over WiFi");
+}
+
 // ---- WiFi sync: a one-shot task per attempt, results handed over through a queue -----------
 
 struct Sync { uint32_t utc, at_ms; bool zone_ok; long offset; char zone[40]; };   // utc as of at_ms
+struct Job { bool want_zone; int n; WifiNet nets[WIFI_KNOWN_MAX]; };            // a copy for the task
 static QueueHandle_t results;
 static volatile bool running;
 static uint32_t next_ms = 3000;            // first try shortly after power-up
 
-#ifdef WIFI_NETWORKS
-static const struct { const char* ssid; const char* pass; } NETWORKS[] = WIFI_NETWORKS;
-
 static void sync_task(void* arg) {
-    bool want_zone = arg != nullptr;
+    Job* job = (Job*)arg;
     Sync r = {};
     {                                      // scoped: WiFiMulti must be destroyed before vTaskDelete
     WiFiMulti multi;
-    for (const auto& n : NETWORKS) multi.addAP(n.ssid, n.pass);
+    for (int i = 0; i < job->n; i++) multi.addAP(job->nets[i].ssid, job->nets[i].pass);
     WiFi.mode(WIFI_STA);
     uint32_t t0 = millis();
     while (multi.run(2000) != WL_CONNECTED && millis() - t0 < 15000) delay(200);
     if (WiFi.status() == WL_CONNECTED) {
-        esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);   // not configTime(): it would reset TZ
-        esp_sntp_setservername(0, "pool.ntp.org");
-        esp_sntp_setservername(1, "time.google.com");
-        sntp_set_sync_status(SNTP_SYNC_STATUS_RESET);      // wait for a fresh answer, every time
-        esp_sntp_init();
-        for (int i = 0; i < 60 && sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED; i++) delay(250);
-        const time_t Y2025 = 1735689600;   // anything earlier is the ESP32's own unset clock
-        time_t now = time(nullptr);
-        if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED && now >= Y2025) {
-            r.utc = (uint32_t)(now - (time_t)tz::UNIX_2000);
-            r.at_ms = millis();
-        }
-        esp_sntp_stop();
-        if (want_zone) {                   // the time zone of this internet connection
+        ntp_start();
+        for (int i = 0; i < 60 && !ntp_done(&r.utc); i++) delay(250);
+        if (r.utc) r.at_ms = millis();
+        ntp_stop();
+        if (job->want_zone) {              // the time zone of this internet connection
             HTTPClient http;
             http.setTimeout(5000);
             if (http.begin("http://ip-api.com/json/?fields=status,timezone,offset") && http.GET() == 200) {
@@ -143,16 +157,15 @@ static void sync_task(void* arg) {
         }
     }
     }
+    delete job;
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);                   // the radio is off again until the next sync
     xQueueOverwrite(results, &r);
     running = false;
     vTaskDelete(nullptr);
 }
-#endif
 
 void clock_poll(uint32_t now_ms) {
-#ifdef WIFI_NETWORKS
     if (!results) results = xQueueCreate(1, sizeof(Sync));
     Sync r;
     if (!running && xQueueReceive(results, &r, 0) == pdTRUE) {
@@ -168,25 +181,20 @@ void clock_poll(uint32_t now_ms) {
             pick_zone();
             Serial.printf("time zone: %s (%s)\n", r.zone, rule);
         }
-        if (r.utc) {
-            rtc_set(r.utc + (millis() - r.at_ms + 500) / 1000);   // the seconds since NTP answered
-            nv->putBool("cal", true);
-            trusted = true;
-            Serial.println("clock set over WiFi");
-        }
+        if (r.utc) clock_set_utc(r.utc + (millis() - r.at_ms + 500) / 1000);   // + the seconds since NTP answered
         next_ms = now_ms + (r.utc ? 12u * 3600000u : 30u * 60000u);   // twice a day, or retry soon
         if (!next_ms) next_ms = 1;
     }
-    if (running || (int32_t)(now_ms - next_ms) < 0) return;
+    // one radio owner: no sync while a parent's WiFi setup holds the radio
+    if (running || wifi_setup_busy() || (int32_t)(now_ms - next_ms) < 0) return;
     next_ms = now_ms + 30u * 60000u;       // if this attempt never reports back
+    Job* job = new Job();
+    job->n = wifi_known(job->nets, WIFI_KNOWN_MAX);
+    if (!job->n) { delete job; return; }   // no networks yet: the RTC and the parent set the time
     uint32_t today = rtc_now() / 86400, last = nv->getUInt("zday", 0);
-    bool want_zone = !fixed_rule() && (!nv->getString("zrule", "").length() || today >= last + 7);
+    job->want_zone = !fixed_rule() && (!nv->getString("zrule", "").length() || today >= last + 7);
     running = true;
-    if (xTaskCreatePinnedToCore(sync_task, "clock", 8192, want_zone ? (void*)1 : nullptr, 1, nullptr, 0) != pdPASS)
-        running = false;
-#else
-    (void)now_ms;                          // no secrets.h: no WiFi, the RTC and the parent set the time
-#endif
+    if (xTaskCreatePinnedToCore(sync_task, "clock", 8192, job, 1, nullptr, 0) != pdPASS) { running = false; delete job; }
 }
 
 bool clock_busy() { return running; }

@@ -48,6 +48,10 @@
 
   /* panel */
   .panel { width: 340px; display: grid; gap: 22px; }
+  /* a phone for the WiFi setup demo: the real fw/src/portal.html, with a pretend toy behind it */
+  .phone { width: 360px; padding: 14px 10px 18px; border-radius: 44px; background: #0b0b10; border: 3px solid #2a2a35; }
+  .phone h3 { margin: 4px 0 10px; text-align: center; font: 12px/1 system-ui; color: #a99bd6; letter-spacing: .08em; }
+  .phone iframe { width: 100%; height: 680px; border: 0; border-radius: 26px; background: #120d22; }
   section { background: var(--panel); border-radius: 14px; padding: 18px 18px 20px; }
   h2 { font-size: 11px; color: var(--dim); margin: 0 0 14px; }
   .seg { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -80,6 +84,10 @@
     <p class="keys"><kbd>→</kbd> <kbd>Boşluk</kbd> BOOT · <kbd>Enter</kbd> PWR · <kbd>S</kbd> salla · ekrana tıkla = dokun</p>
   </div>
 
+  <div class="phone" id="phone" hidden>
+    <h3>TELEFON · DEMO</h3>
+    <iframe id="portal" title="Telefondaki WiFi kurulum sayfası"></iframe>
+  </div>
   <div class="panel">
     <section>
       <h2>ZAMAN</h2>
@@ -145,7 +153,7 @@ const SCENES = ["Yumurta", "Çıkıyor", "Ev", "Yemek", "Kutlama", "Banyo", "Uyk
 const MOODS = ["Normal", "Mutlu", "Aç", "Uykulu", "Üzgün"];
 const CHARS = ["Pamuk", "Gece Yıldızı", "Şeker", "Deniz"];
 const STATS = ["Tokluk", "Mutluluk", "Enerji", "Temizlik"];
-const IN = { NEXT: 1, SELECT: 2, TOUCH: 3, SHAKE: 4, PARENT: 5 }, F = { REDRAW: 1, SCREEN_ON: 2, SAVE: 4, SOUND: 8, CLOCK: 16 };
+const IN = { NEXT: 1, SELECT: 2, TOUCH: 3, SHAKE: 4, PARENT: 5 }, F = { REDRAW: 1, SCREEN_ON: 2, SAVE: 4, SOUND: 8, CLOCK: 16, WIFI: 32 };
 
 const { instance } = await WebAssembly.instantiateStreaming(fetch("unicorn.wasm"), {});
 const w = instance.exports;
@@ -218,6 +226,72 @@ function boot() {                                   // like the firmware: fresh 
   blit();
 }
 
+// ---- WiFi setup demo: a pretend toy network and phone, driving the real core and portal page ----
+const WST = { OFF: 0, STARTING: 1, WAIT: 2, PHONE: 3, JOIN: 4, ADDR: 5, CLOCK: 6, OK: 7, OK_NOCLOCK: 8,
+              BAD_PASS: 9, NOT_FOUND: 10, FULL: 11, TIMEOUT: 12 };
+const WREQ = { START: 1, STOP: 2, RETRY: 3, FORGET: 4 };
+const STAGE_NAMES = ["wait", "wait", "wait", "wait", "join", "addr", "clock", "ok", "noclock", "badpass", "notfound", "full", "timeout"];
+const mock = {
+  nets: [{ s: "Ev WiFi 2.4", r: -46, l: 1 }, { s: "Komşu Modem", r: -71, l: 1 }, { s: "Kafe Misafir", r: -80, l: 0 }],
+  saved: [],
+};
+function putText(...strs) {
+  const buf = new Uint8Array(w.memory.buffer, w.up_text_buf(), 256), enc = new TextEncoder();
+  let o = 0;
+  for (const s of strs) { const e = enc.encode(s).slice(0, 120); buf.set(e, o); o += e.length; buf[o++] = 0; }
+}
+function wifiStatus(stage, net = "") { putText(net); w.up_wifi_status(stage); }
+function pushList() {
+  w.up_wifi_list_clear();
+  for (const s of mock.saved) { putText(s); w.up_wifi_list_add(0); }
+}
+let wifiGen = 0;                             // a stopped session's pending steps do nothing
+const later = (ms, fn) => { const gen = wifiGen; setTimeout(() => { if (gen === wifiGen) fn(); }, ms / speed); };
+window.portalApi = {                         // what the toy would answer at /scan, /connect, /status
+  scan: () => new Promise((ok) => later(400, () => ok(mock.nets))),
+  connect: (net, pass) => {
+    const ssid = net.s;
+    if (!mock.saved.includes(ssid) && mock.saved.length >= 5) { wifiStatus(WST.FULL, ssid); return Promise.resolve({ ok: true }); }
+    wifiStatus(WST.JOIN, ssid);
+    later(900, () => wifiStatus(WST.ADDR));
+    later(1800, () => {
+      if (pass === "yanlis123") return wifiStatus(WST.BAD_PASS);          // the demo's wrong password
+      wifiStatus(WST.CLOCK);
+      later(900, () => {
+        mock.saved = [ssid, ...mock.saved.filter((s) => s !== ssid)];
+        pushList();
+        wallMs = Date.now(); $("rtc").checked = true;
+        wifiStatus(WST.OK);
+      });
+    });
+    return Promise.resolve({ ok: true });
+  },
+  status: () => Promise.resolve({ stage: STAGE_NAMES[w.up_wifi_stage()] || "wait" }),
+};
+function wifiRequest() {
+  const req = w.up_wifi_req(), arg = w.up_wifi_arg();
+  w.up_wifi_take();
+  if (req === WREQ.START || req === WREQ.STOP) wifiGen++;
+  if (req === WREQ.START) {
+    later(800, () => {
+      const pass = Array.from({ length: 12 }, () => "abcdefghjkmnpqrstuvwxyz23456789"[Math.random() * 31 | 0]).join("");
+      putText("Unicorn-EMU1", pass);
+      w.up_wifi_session();
+      $("phone").hidden = false;
+      $("portal").src = "../fw/src/portal.html";      // as if the phone scanned the QR
+      $("portal").onload = () => { if (w.up_wifi_stage() === WST.WAIT) wifiStatus(WST.PHONE); };
+    });
+  } else if (req === WREQ.STOP) {
+    $("phone").hidden = true;
+    $("portal").src = "about:blank";
+  } else if (req === WREQ.RETRY) {
+    wifiStatus(WST.PHONE);
+  } else if (req === WREQ.FORGET) {
+    mock.saved.splice(arg, 1);
+    pushList();
+  }
+}
+
 function input(type, x = 0, y = 0) {
   if (!powered) return;
   w.up_input(type, x, y);
@@ -275,6 +349,7 @@ function step(dt) {
     $("rtc").checked = true;
     save();
   }
+  if (f & F.WIFI) wifiRequest();
   if (f & F.SAVE) save();
   if (f & F.SOUND) play(w.up_take_sfx());
   silenceIfOff();
@@ -308,13 +383,13 @@ canvas.addEventListener("pointerdown", (e) => {
 });
 // BOOT is held, not clicked: the core turns presses into taps (and the grown-up gesture)
 let bootDown = false;
-const boot = (down) => { bootDown = down; $("boot").classList.toggle("down", down); };
-$("boot").onpointerdown = (e) => { e.preventDefault(); boot(true); };
-$("boot").onpointerup = $("boot").onpointerleave = () => boot(false);
+const bootKey = (down) => { bootDown = down; $("boot").classList.toggle("down", down); };
+$("boot").onpointerdown = (e) => { e.preventDefault(); bootKey(true); };
+$("boot").onpointerup = $("boot").onpointerleave = () => bootKey(false);
 $("pwr").onclick = () => input(IN.SELECT);
 addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT") return;
-  if (e.key === "ArrowRight" || e.key === " ") { e.preventDefault(); if (!e.repeat) boot(true); }
+  if (e.key === "ArrowRight" || e.key === " ") { e.preventDefault(); if (!e.repeat) bootKey(true); }
   if (e.key === "Enter") { e.preventDefault(); flash("pwr"); input(IN.SELECT); }
   if (e.key === "s" || e.key === "S") shake();
 });
@@ -333,7 +408,7 @@ addEventListener("devicemotion", (e) => {
   const g = Math.hypot(a.x, a.y, a.z) / 9.81;
   if (Math.abs(g - 1) > 1.2 && performance.now() - lastShake > 1500) { lastShake = performance.now(); shake(); }
 });
-addEventListener("keyup", (e) => { if (e.key === "ArrowRight" || e.key === " ") boot(false); });
+addEventListener("keyup", (e) => { if (e.key === "ArrowRight" || e.key === " ") bootKey(false); });
 function flash(id) { $(id).classList.add("down"); setTimeout(() => $(id).classList.remove("down"), 120); }
 
 // ---- panel ----------------------------------------------------------------------------

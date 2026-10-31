@@ -2,6 +2,7 @@
 #include "../core/game.cpp"
 #include "../core/render.cpp"
 #include "../core/sound.cpp"
+#include "../core/qr.cpp"
 
 using namespace up;
 
@@ -73,6 +74,17 @@ API(up_brightness) int up_brightness() { return G.brightness(); }
 API(up_set_battery) void up_set_battery(int pct) { G.set_battery(pct); }
 API(up_set_plugged) void up_set_plugged(int usb) { G.set_plugged(usb != 0); }
 API(up_set_boot) void up_set_boot(int down) { G.set_boot(down != 0); }
+// WiFi setup: strings travel through up_text_buf() (NUL-separated)
+static char TEXT[256];
+API(up_text_buf) char* up_text_buf() { return TEXT; }
+API(up_wifi_req) int up_wifi_req() { return G.wifi_req; }
+API(up_wifi_arg) int up_wifi_arg() { return G.wifi_arg; }
+API(up_wifi_take) void up_wifi_take() { G.wifi_req = WREQ_NONE; }
+API(up_wifi_stage) int up_wifi_stage() { return G.wifi_stage; }
+API(up_wifi_session) void up_wifi_session() { int n = 0; while (TEXT[n]) n++; G.wifi_session(TEXT, TEXT + n + 1); }
+API(up_wifi_status) void up_wifi_status(int stage) { G.wifi_status(stage, TEXT[0] ? TEXT : 0); }
+API(up_wifi_list_clear) void up_wifi_list_clear() { G.wifi_list_clear(); }
+API(up_wifi_list_add) void up_wifi_list_add(int fixed) { G.wifi_list_add(TEXT, fixed != 0); }
 API(up_plugged) int up_plugged() { return G.plugged; }
 API(up_set_tilt) void up_set_tilt(int v) { G.set_tilt(v); }
 API(up_accessory) int up_accessory() { return G.s.accessory; }
