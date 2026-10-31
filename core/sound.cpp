@@ -1,0 +1,32 @@
+// Melodies for each sound cue: short square-wave tunes, played by the ES8311 on the board
+// and by Web Audio in the emulator. Kept under ~1.2 s so they never get in the way.
+#include "unicorn.h"
+
+namespace up {
+
+enum { C4 = 262, E4 = 330, G4 = 392, A4 = 440, C5 = 523, D5 = 587, E5 = 659, G5 = 784, A5 = 880,
+       C6 = 1047, D6 = 1175, E6 = 1319, G6 = 1568, REST = 0 };
+
+static const Note TAP[] = {{C6, 40}};
+static const Note HATCH[] = {{C5, 90}, {E5, 90}, {G5, 90}, {C6, 90}, {REST, 40}, {G5, 80}, {C6, 220}};
+static const Note EAT[] = {{G4, 60}, {REST, 50}, {G4, 60}, {REST, 50}, {C5, 80}};
+static const Note PLAY[] = {{C5, 70}, {E5, 70}, {G5, 70}, {C6, 70}, {G5, 70}, {C6, 160}};
+static const Note WASH[] = {{E6, 40}, {REST, 30}, {G6, 40}, {REST, 40}, {D6, 40}, {REST, 30}, {G6, 60}};
+static const Note SLEEP[] = {{G5, 180}, {E5, 180}, {C5, 180}, {G4, 360}};
+static const Note WAKE[] = {{G4, 90}, {C5, 90}, {E5, 90}, {G5, 200}};
+static const Note REFUSE[] = {{E4, 160}, {C4, 280}};
+static const Note INFO[] = {{A5, 60}, {D6, 90}};
+
+#define TUNE(t) {t, (int)(sizeof(t) / sizeof(t[0]))}
+static const struct { const Note* notes; int count; } TUNES[SFX_COUNT] = {
+    {0, 0}, TUNE(TAP), TUNE(HATCH), TUNE(EAT), TUNE(PLAY), TUNE(WASH), TUNE(SLEEP), TUNE(WAKE),
+    TUNE(REFUSE), TUNE(INFO),
+};
+
+const Note* melody(int sfx, int* count) {
+    if (sfx <= SFX_NONE || sfx >= SFX_COUNT) { *count = 0; return 0; }
+    *count = TUNES[sfx].count;
+    return TUNES[sfx].notes;
+}
+
+}  // namespace up

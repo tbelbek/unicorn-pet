@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unicorn Pet · Emülatör</title>
+<link rel="icon" href="data:,">
+<style>
+  @font-face { font-family: "PS2P"; src: url("../assets/fonts/PressStart2P-Regular.ttf"); }
+  :root {
+    --bg: #0b0816; --panel: #141024; --line: #241c40; --ink: #f4eeff; --dim: #a99bd6;
+    --accent: #ffe066; --pink: #ff8fb8; --focus: #c9b8ff;
+  }
+  * { box-sizing: border-box; }
+  ::selection { background: #5b2a86; color: var(--ink); }
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  h1, h2, .px { font-family: "PS2P", monospace; font-weight: normal; letter-spacing: 0; }
+  h1 { font-size: 20px; color: var(--accent); margin: 32px 0 6px; text-align: center; }
+  .sub { text-align: center; color: var(--dim); margin: 0 0 28px; }
+  main { display: flex; gap: 48px; justify-content: center; align-items: flex-start; flex-wrap: wrap;
+         padding: 0 24px 48px; }
+
+  /* device */
+  .device { position: relative; padding: 26px; border-radius: 58px; background: #1a1a1f;
+            box-shadow: 0 18px 40px rgba(0,0,0,.55), inset 0 0 0 3px #3a3a44; }
+  canvas { display: block; width: 368px; height: 448px; border-radius: 36px; background: #000;
+           image-rendering: pixelated; cursor: pointer; touch-action: none; }
+  .device.big canvas { width: 552px; height: 672px; }
+  .side { position: absolute; top: 120px; width: 12px; height: 64px; border-radius: 6px; border: 0;
+          background: #3a3a44; cursor: pointer; padding: 0; }
+  .side:active, .side.down { background: var(--focus); }
+  .side.boot { left: -10px; } .side.pwr { right: -10px; }
+  .side span { position: absolute; top: 72px; font: 9px "PS2P", monospace; color: var(--dim);
+               white-space: nowrap; }
+  .side.boot span { left: -6px; } .side.pwr span { right: -4px; }
+  .off-note { position: absolute; inset: 26px; display: none; align-items: center; justify-content: center;
+              text-align: center; color: #5a5480; font: 10px/2 "PS2P", monospace; pointer-events: none; }
+  .device.screen-off .off-note, .device.power-off .off-note { display: flex; }
+  @keyframes shake { 0%,100% { transform: none } 20% { transform: translateX(-8px) rotate(-2deg) }
+                     40% { transform: translateX(7px) rotate(2deg) } 60% { transform: translateX(-5px) }
+                     80% { transform: translateX(4px) } }
+  .device.shaking { animation: shake .35s ease-out; }
+  @media (prefers-reduced-motion: reduce) { .device.shaking { animation: none; } }
+  .keys { margin-top: 18px; color: var(--dim); font-size: 13px; text-align: center; }
+  kbd { font: 11px "PS2P", monospace; color: var(--ink); background: var(--line); padding: 3px 6px;
+        border-radius: 4px; }
+
+  /* panel */
+  .panel { width: 340px; display: grid; gap: 22px; }
+  section { background: var(--panel); border-radius: 14px; padding: 18px 18px 20px; }
+  h2 { font-size: 11px; color: var(--dim); margin: 0 0 14px; }
+  .seg { display: flex; gap: 6px; flex-wrap: wrap; }
+  button.b { font: 11px "PS2P", monospace; color: var(--ink); background: var(--line); border: 0;
+             border-radius: 8px; padding: 10px 12px; cursor: pointer; }
+  button.b:hover { background: #33285a; }
+  button.b[aria-pressed="true"] { background: var(--accent); color: #1b1530; }
+  button.b.warn { background: #3d1a2c; } button.b.warn:hover { background: #5a2440; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; }
+  dt { color: var(--dim); } dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .stat { display: grid; grid-template-columns: 74px 1fr 46px; align-items: center; gap: 10px;
+          margin-bottom: 8px; }
+  .stat output { text-align: right; font-variant-numeric: tabular-nums; color: var(--dim); }
+  input[type=range] { width: 100%; accent-color: var(--pink); }
+  .hint { color: var(--dim); font-size: 12px; margin: 10px 0 0; }
+</style>
+</head>
+<body>
+<h1>UNICORN PET</h1>
+<p class="sub">Tarayıcı emülatörü · cihazdaki oyun çekirdeğinin aynısı (WebAssembly)</p>
+<main>
+  <div>
+    <div class="device" id="device">
+      <button class="side boot" id="boot" aria-label="BOOT tuşu: sonraki"><span>BOOT</span></button>
+      <button class="side pwr" id="pwr" aria-label="PWR tuşu: seç"><span>PWR</span></button>
+      <canvas id="screen" width="368" height="448" aria-label="Oyun ekranı, tıklamak dokunmak demek"></canvas>
+      <div class="off-note" id="offNote">EKRAN KAPALI<br>DOKUN</div>
+    </div>
+    <p class="keys"><kbd>→</kbd> <kbd>Boşluk</kbd> BOOT · <kbd>Enter</kbd> PWR · <kbd>S</kbd> salla · ekrana tıkla = dokun</p>
+  </div>
+
+  <div class="panel">
+    <section>
+      <h2>ZAMAN</h2>
+      <div class="seg" id="speeds"></div>
+      <p class="hint">600× ile 1 saatlik oyun 6 saniyede geçer.</p>
+    </section>
+    <section>
+      <h2>DURUM</h2>
+      <dl>
+        <dt>Sahne</dt><dd id="scene">–</dd>
+        <dt>Ruh hâli</dt><dd id="mood">–</dd>
+        <dt>Karakter</dt><dd id="char">–</dd>
+        <dt>Yaş</dt><dd id="age">–</dd>
+        <dt>Ekran</dt><dd id="scr">–</dd>
+        <dt>Ses</dt><dd id="snd">–</dd>
+      </dl>
+    </section>
+    <section>
+      <h2>İHTİYAÇLAR</h2>
+      <div id="stats"></div>
+      <p class="hint">Kaydırarak ayarla: aç, yorgun ya da kirli hâlleri hemen test edebilirsin.</p>
+    </section>
+    <section>
+      <h2>GÜÇ VE KAYIT</h2>
+      <div class="seg">
+        <button class="b" id="shake">SALLA</button>
+        <button class="b" id="power">GÜCÜ KES</button>
+        <button class="b" id="size">BÜYÜT</button>
+        <button class="b" id="shot">EKRAN GÖRÜNTÜSÜ</button>
+        <button class="b warn" id="reset">YENİ YUMURTA</button>
+      </div>
+      <p class="hint">Güç kesilince zaman durur (cihazdaki gibi); açınca son kayıttan devam eder.
+        Sesi açıp kapatmak için unicorn'a dokun, sağ üstteki düğmeye bas. Telefonda gerçekten sallayabilirsin.</p>
+    </section>
+  </div>
+</main>
+
+<script type="module">
+const W = 368, H = 448, KEY = "unicorn-pet-save";
+const SCENES = ["Yumurta", "Çıkıyor", "Ev", "Yemek", "Oyun", "Banyo", "Uyku", "Bilgi (yüz)", "Çok yorgun"];
+const MOODS = ["Normal", "Mutlu", "Aç", "Uykulu", "Üzgün"];
+const CHARS = ["Pamuk", "Gece Yıldızı", "Şeker", "Deniz"];
+const STATS = ["Tokluk", "Mutluluk", "Enerji", "Temizlik"];
+const IN = { NEXT: 1, SELECT: 2, TOUCH: 3, SHAKE: 4 }, F = { REDRAW: 1, SCREEN_ON: 2, SAVE: 4, SOUND: 8 };
+
+const { instance } = await WebAssembly.instantiateStreaming(fetch("unicorn.wasm"), {});
+const w = instance.exports;
+const $ = (id) => document.getElementById(id);
+const canvas = $("screen"), ctx = canvas.getContext("2d"), img = ctx.createImageData(W, H);
+const device = $("device");
+let speed = 1, powered = true, screenOn = true;
+
+function blit() {
+  const fb = new Uint16Array(w.memory.buffer, w.up_fb(), W * H), d = img.data;
+  for (let i = 0, j = 0; i < fb.length; i++, j += 4) {
+    const c = fb[i];
+    d[j] = (c >> 11) << 3 | (c >> 13); d[j + 1] = ((c >> 5) & 63) << 2 | ((c >> 9) & 3);
+    d[j + 2] = (c & 31) << 3 | ((c >> 2) & 7); d[j + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+function black() { ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H); }
+
+function save() {
+  const n = w.up_save();
+  const bytes = new Uint8Array(w.memory.buffer, w.up_save_buf(), n);
+  localStorage.setItem(KEY, btoa(String.fromCharCode(...bytes)));
+}
+function boot() {                                   // like the firmware: fresh state, then NVS
+  w.up_init((Math.random() * 2 ** 32) >>> 0);
+  const saved = localStorage.getItem(KEY);
+  if (saved) {
+    const bytes = Uint8Array.from(atob(saved), (c) => c.charCodeAt(0));
+    new Uint8Array(w.memory.buffer, w.up_save_buf(), bytes.length).set(bytes);
+    if (!w.up_load(bytes.length)) localStorage.removeItem(KEY);
+  }
+  screenOn = true;
+  blit();
+}
+
+function input(type, x = 0, y = 0) {
+  if (!powered) return;
+  w.up_input(type, x, y);
+  step(0);
+}
+// ---- sound: the core's melody table, played as a square wave like the board does ------
+let audio;
+function play(id) {
+  if (!id) return;
+  audio ??= new AudioContext();
+  if (audio.state === "suspended") audio.resume();
+  const n = w.up_melody_len(id), notes = new Uint16Array(w.memory.buffer, w.up_melody(id), n * 2);
+  let t = audio.currentTime + 0.01;
+  for (let i = 0; i < n; i++) {
+    const hz = notes[i * 2], dur = notes[i * 2 + 1] / 1000;
+    if (hz) {
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.type = "square"; o.frequency.value = hz;
+      g.gain.setValueAtTime(0.05, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      o.connect(g).connect(audio.destination); o.start(t); o.stop(t + dur);
+    }
+    t += dur;
+  }
+}
+
+function step(dt) {
+  const f = w.up_tick(Math.max(0, dt) >>> 0);
+  if (f & F.SAVE) save();
+  if (f & F.SOUND) play(w.up_take_sfx());
+  const on = !!(f & F.SCREEN_ON);
+  if (on && (f & F.REDRAW || !screenOn)) blit();
+  if (!on && screenOn) black();
+  screenOn = on;
+  device.classList.toggle("screen-off", !on);
+}
+
+// time: virtual ms so a hidden tab (paused rAF) can't dump hours into one tick
+let last = performance.now();
+function frame(now) {
+  // clamp both ways: the first rAF timestamp can be *earlier* than performance.now() taken at
+  // load, and a negative dt would wrap to ~49.7 days once it crosses into the wasm u32
+  const real = Math.max(0, Math.min(now - last, 250));
+  last = now;
+  if (powered) step(Math.round(real * speed));
+  if (powered) panel();
+  requestAnimationFrame(frame);
+}
+
+// ---- inputs ---------------------------------------------------------------------------
+canvas.addEventListener("pointerdown", (e) => {
+  const r = canvas.getBoundingClientRect();
+  input(IN.TOUCH, Math.round((e.clientX - r.left) * W / r.width), Math.round((e.clientY - r.top) * H / r.height));
+});
+$("boot").onclick = () => input(IN.NEXT);
+$("pwr").onclick = () => input(IN.SELECT);
+addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.key === "ArrowRight" || e.key === " ") { e.preventDefault(); flash("boot"); input(IN.NEXT); }
+  if (e.key === "Enter") { e.preventDefault(); flash("pwr"); input(IN.SELECT); }
+  if (e.key === "s" || e.key === "S") shake();
+});
+function shake() {
+  device.classList.remove("shaking"); void device.offsetWidth; device.classList.add("shaking");
+  input(IN.SHAKE);
+}
+$("shake").onclick = shake;
+// phones: a real shake (same idea as the IMU threshold on the board)
+let lastShake = 0;
+addEventListener("devicemotion", (e) => {
+  const a = e.accelerationIncludingGravity;
+  if (!a) return;
+  const g = Math.hypot(a.x, a.y, a.z) / 9.81;
+  if (Math.abs(g - 1) > 1.2 && performance.now() - lastShake > 1500) { lastShake = performance.now(); shake(); }
+});
+function flash(id) { $(id).classList.add("down"); setTimeout(() => $(id).classList.remove("down"), 120); }
+
+// ---- panel ----------------------------------------------------------------------------
+for (const s of [1, 10, 60, 600]) {
+  const b = document.createElement("button");
+  b.className = "b"; b.textContent = s + "×"; b.setAttribute("aria-pressed", s === 1);
+  b.onclick = () => { speed = s; for (const o of $("speeds").children) o.setAttribute("aria-pressed", o === b); };
+  $("speeds").append(b);
+}
+const sliders = STATS.map((name, i) => {
+  const row = document.createElement("label");
+  row.className = "stat";
+  row.innerHTML = `<span>${name}</span><input type="range" min="0" max="${w.up_max_stat()}" step="100"><output></output>`;
+  const range = row.querySelector("input");
+  range.oninput = () => { w.up_set_stat(i, +range.value); step(0); };
+  $("stats").append(row);
+  return { range, out: row.querySelector("output") };
+});
+function panel() {
+  $("scene").textContent = SCENES[w.up_scene()];
+  $("mood").textContent = w.up_hatched() ? MOODS[w.up_mood()] : "–";
+  $("char").textContent = w.up_hatched() ? CHARS[w.up_character()] : "henüz yumurtada";
+  const a = w.up_age_s();
+  $("age").textContent = `${Math.floor(a / 86400)} g ${Math.floor(a / 3600) % 24} sa ${Math.floor(a / 60) % 60} dk`;
+  $("scr").textContent = !powered ? "güç yok" : screenOn ? "açık" : "kapalı (20 sn boşta)";
+  $("snd").textContent = w.up_muted() ? "kapalı" : "açık";
+  sliders.forEach((s, i) => {
+    const v = w.up_stat(i);
+    if (document.activeElement !== s.range) s.range.value = v;
+    s.out.textContent = Math.round(v / 100) + "%";
+  });
+}
+$("power").onclick = () => {
+  powered = !powered;
+  $("power").textContent = powered ? "GÜCÜ KES" : "GÜCÜ AÇ";
+  device.classList.toggle("power-off", !powered);
+  $("offNote").innerHTML = powered ? "EKRAN KAPALI<br>DOKUN" : "GÜÇ KAPALI<br>ZAMAN DURDU";
+  if (powered) boot(); else black();
+  panel();
+};
+$("size").onclick = () => {
+  const big = device.classList.toggle("big");
+  $("size").textContent = big ? "GERÇEK BOYUT" : "BÜYÜT";
+};
+$("shot").onclick = () => {
+  const a = document.createElement("a");
+  a.download = `unicorn-${Date.now()}.png`; a.href = canvas.toDataURL(); a.click();
+};
+$("reset").onclick = () => { localStorage.removeItem(KEY); boot(); };
+
+boot();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
