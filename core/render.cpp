@@ -1,10 +1,28 @@
 // Renders a Game into an RGB565 framebuffer. Layout mirrors design/showcase.png.
 #include "unicorn.h"
 #include "assets.gen.h"
+#include "strings.gen.h"
 
 namespace up {
 
 static u16* FB;
+static int LANG;                            // the save's language, set at the top of render()
+static_assert(STR_LANGS == LANG_COUNT, "tools/i18n.py and enum Lang disagree");
+static const char* T(int id) { return UP_STR[LANG][id]; }
+// a string with '#' standing for a number: fmt(buf, S_DAYS, 12) -> "DAY 12 TOGETHER"
+static void utoa(u32 v, char* out);
+template <int N> static const char* fmt(char (&out)[N], int id, u32 n) {
+    const char* p = T(id);
+    int k = 0;
+    for (; *p && k < N - 1; p++) {         // never past the end of out, however long the language
+        if (*p != '#') { out[k++] = *p; continue; }
+        char d[12];
+        utoa(n, d);
+        for (int i = 0; d[i] && k < N - 1; i++) out[k++] = d[i];
+    }
+    out[k] = 0;
+    return out;
+}
 static u16 PAL[UP_PALETTE], NIGHT[UP_PALETTE];
 static bool pal_ready;
 
@@ -53,7 +71,7 @@ static void fill(int x0, int y0, int x1, int y1, u16 c) {          // [x0,x1) x 
 static void ellipse(int cx, int cy, int rx, int ry, u16 c) {
     for (int y = -ry; y <= ry; y++)
         for (int x = -rx; x <= rx; x++)
-            if (x * x * ry * ry + y * y * rx * rx <= rx * rx * ry * ry) px(cx + x, cy + y, c);
+            if ((long long)x * x * ry * ry + (long long)y * y * rx * rx <= (long long)rx * rx * ry * ry) px(cx + x, cy + y, c);
 }
 
 static void rrect(int x0, int y0, int x1, int y1, int r, u16 fillc, u16 line, int width) {
@@ -91,10 +109,15 @@ static void icon(int i, int scale, int x, int y) {
 
 static const char* next_cp(const char* s, u32* cp) {
     u8 c = (u8)*s;
-    if (c < 0x80) { *cp = c; return s + 1; }
-    if ((c & 0xE0) == 0xC0) { *cp = ((c & 0x1F) << 6) | (s[1] & 0x3F); return s + 2; }
-    *cp = ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
-    return s + 3;
+    int len = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 0;
+    if (len == 1) { *cp = c; return s + 1; }
+    u32 v = len == 2 ? c & 0x1F : len == 3 ? c & 0x0F : c & 0x07;
+    for (int i = 1; i < len; i++) {        // stop at a terminator or a broken sequence
+        if (((u8)s[i] & 0xC0) != 0x80) { *cp = '?'; return s + i; }
+        v = (v << 6) | ((u8)s[i] & 0x3F);
+    }
+    *cp = len ? v : '?';
+    return s + (len ? len : 1);
 }
 
 static int glyph(u32 cp) {
@@ -111,8 +134,20 @@ static int text_w(const char* s, int scale) {
 }
 
 // align: 0 = left edge at x, 1 = centred on x
+static int overflows;                      // text that ran off the screen (a test checks every language)
+int text_overflows() { int n = overflows; overflows = 0; return n; }
+
 static void text(const char* s, int x, int y, int scale, u16 c, int align = 1) {
-    if (align == 1) x -= text_w(s, scale) / 2;
+    int w = text_w(s, scale);
+    while (scale > 1) {                    // too wide for the screen (a long word in some language): smaller
+        int x0 = align == 1 ? x - w / 2 : x;
+        if (x0 >= 0 && x0 + w <= SCREEN_W) break;
+        scale--;
+        y += UP_FONT_H / 2;                // keep the line roughly where it was
+        w = text_w(s, scale);
+    }
+    if (align == 1) x -= w / 2;
+    if (x < 0 || x + w > SCREEN_W) overflows++;
     u32 cp;
     while (*s) {
         s = next_cp(s, &cp);
@@ -123,6 +158,29 @@ static void text(const char* s, int x, int y, int scale, u16 c, int align = 1) {
                                                  x + (col + 1) * scale, y + (row + 1) * scale, c);
         x += 8 * scale;
     }
+}
+
+// centred text that drops to the small size if it would not fit the given width
+static void text_fit(const char* s, int cx, int y, int scale, u16 c, int max_w = SCREEN_W - 24) {
+    while (scale > 1 && text_w(s, scale) > max_w) scale--;
+    text(s, cx, y + (scale == 1 ? 4 : 0), scale, c);
+}
+
+// left-aligned text cut to max_w pixels, ".." marking the cut (long network names)
+static void text_clip(const char* s, int x, int y, int scale, u16 c, int max_w) {
+    if (text_w(s, scale) <= max_w) { text(s, x, y, scale, c, 0); return; }
+    char buf[100];
+    int k = 0;
+    for (const char* p = s; *p;) {         // whole characters only, while they still fit with ".."
+        u32 cp;
+        const char* q = next_cp(p, &cp);
+        int keep = k;
+        while (p < q && k < 94) buf[k++] = *p++;
+        buf[k] = '.'; buf[k + 1] = '.'; buf[k + 2] = 0;
+        if (text_w(buf, scale) > max_w) { k = keep; break; }
+    }
+    buf[k] = '.'; buf[k + 1] = '.'; buf[k + 2] = 0;
+    text(buf, x, y, scale, c, 0);
 }
 
 static void utoa(u32 v, char* out) {
@@ -250,7 +308,7 @@ static void status(const Game& g) {
 // Battery, top right: four bars (green, yellow, red as it empties) and a bolt while plugged in.
 // Hidden while the level is unknown. Nearly empty and unplugged: the outline blinks red.
 static void battery_icon(const Game& g, int x0, int y0) {
-    if (!g.battery) return;
+    if (!g.batt_known) return;
     int pct = g.battery, bars = (pct + 24) / 25;
     u16 c = pct > 50 ? rgb(0x5E, 0xE0, 0x7A) : pct > 20 ? YELLOW : rgb(0xFF, 0x5C, 0x6E);
     bool blink = pct < 10 && !g.plugged && ((g.clock_ms + g.acc_ms) / 500) & 1;
@@ -267,7 +325,7 @@ static void battery_icon(const Game& g, int x0, int y0) {
 }
 
 static void header(const Game& g, const char* sub) {
-    text(UP_NAMES[g.s.character], SCREEN_W / 2, 52, 2, PAL[UP_ACCENT[g.s.character]]);
+    text(T(S_NAME_0 + g.s.character), SCREEN_W / 2, 52, 2, PAL[UP_ACCENT[g.s.character]]);
     text(sub, SCREEN_W / 2, 74, 1, DIM);
 }
 
@@ -276,7 +334,7 @@ static int wave(u32 t, u32 period, int amp);
 
 static void menu(const Game& g) {
     static const int icons[MENU_COUNT] = {IC_APPLE, IC_BALL, IC_MOON, IC_BUBBLE};
-    static const char* labels[MENU_COUNT] = {"BESLE", "OYNA", "UYUT", "YIKA"};
+    static const short labels[MENU_COUNT] = {S_MENU_FEED, S_MENU_PLAY, S_MENU_SLEEP, S_MENU_WASH};
     u32 t = g.clock_ms + g.acc_ms;
     int rec = g.recommended();
     for (int i = 0; i < MENU_COUNT; i++) {
@@ -290,7 +348,7 @@ static void menu(const Game& g) {
             dy = arc(t % 1100, 500, 6);
         }
         icon(icons[i], scale, cx - UP_ICON_W * scale / 2, 378 + 12 - UP_ICON_H * scale / 2 + dy);
-        text(labels[i], cx, 414, 1, i == g.menu ? INK : DIM);
+        text(T(labels[i]), cx, 414, 1, i == g.menu ? INK : DIM);
     }
 }
 
@@ -341,6 +399,15 @@ static void unicorn_side(const Game& g, int state, bool night, int frame, int dy
     bool flip = g.facing * turn < 0;
     int x0 = side_x(g) - (sx - SC) * UP_SIDE_W / 2, top = side_y(g) + UP_SIDE_FEET * SC + dy - UP_SIDE_FEET * sy;
     blit2(spr, UP_SIDE_W, UP_SIDE_H, sx, sy, x0, top, night ? NIGHT : PAL, flip);
+    if (g.stage() >= STAGE_GROWN && state != ST_SLEEP && g.scene != SC_SLEEP) {   // her grown-up marks
+        static const i8 FX[3] = {15, 11, 19}, FY[3] = {29, 32, 33};
+        static const u16* const FC[3] = {&YELLOW, &PINK, &LILAC};
+        int n = g.stage() == STAGE_STORYKEEPER ? 3 : 1;
+        for (int k = 0; k < n; k++) {      // on the same squashed/stretched, mirrored grid as her body
+            int fx = flip ? UP_SIDE_W - 1 - FX[k] : FX[k];
+            sparkle(x0 + fx * sx, top + FY[k] * sy, 3, *FC[k]);
+        }
+    }
     int acc = acc_draw >= 0 ? acc_draw : g.s.accessory;
     if (acc > ACC_NONE && acc < ACC_COUNT) {   // the accessory follows her head in every pose
         int ax = UP_HEAD[state][frame][0], ay = UP_HEAD[state][frame][1];
@@ -440,15 +507,6 @@ static void home_like(const Game& g, int state, const char* sub, bool night, int
     if (under) under(g, side_x(g), side_y(g) + dy);
     unicorn_side(g, state, night, frame, dy);
     int sx = side_x(g), sy = side_y(g) + dy;
-    if (g.stage() >= STAGE_GROWN && state != ST_SLEEP && g.scene != SC_SLEEP) {   // her grown-up marks
-        static const i8 FX[3] = {15, 11, 19}, FY[3] = {29, 32, 33};
-        static const u16* const FC[3] = {&YELLOW, &PINK, &LILAC};
-        int n = g.stage() == STAGE_STORYKEEPER ? 3 : 1;
-        for (int k = 0; k < n; k++) {
-            int fx = g.facing * turn < 0 ? UP_SIDE_W - 1 - FX[k] : FX[k];
-            sparkle(sx + fx * SC, sy + FY[k] * SC, 3, *FC[k]);
-        }
-    }
     if (state == M_HAPPY) { sparkle(sx + P(34), sy + P(52), 4, YELLOW); sparkle(sx + P(230), sy + P(42), 3, PINK); }
     if (state == M_HUNGRY) thought(sx + P(g.facing < 0 ? 10 : 196), sy + P(6));
     if (state == M_SLEEPY) zz(sx + P(220) + wave(now(g), 2000, 4), sy + P(32) - (int)(now(g) / 40 % 24));
@@ -499,7 +557,7 @@ static void house_button() {                // top-right: back home
 
 static void scene_egg_pick(const Game& g) {
     static const short EX[4] = {100, 268, 100, 268}, EY[4] = {170, 170, 310, 310};
-    text("YUMURTANI SEÇ", SCREEN_W / 2, 30, 2, YELLOW);
+    text(T(S_EGG_PICK), SCREEN_W / 2, 30, 2, YELLOW);
     for (int i = 0; i < 4; i++) {
         bool on = g.preview && g.sel == i;
         int lift = on && !g.calm() ? -4 + wave(now(g), 900, 3) : 0;
@@ -579,7 +637,7 @@ static void butterfly(const Game& g) {
 
 static void scene_toys(const Game& g) {
     static const int icons[TOY_COUNT] = {IC_STAR, IC_NOTE, IC_CLOUD, IC_MIRROR, IC_HOUSE};
-    header(g, "NE OYNAYALIM?");
+    header(g, T(S_TOYS));
     for (int i = 0; i < TOY_COUNT; i++) {
         int cx = i == TOY_HOME ? SCREEN_W / 2 : 116 + (i % 2) * 136, cy = 148 + (i / 2) * 116;
         rrect(cx - 52, cy - 52, cx + 52, cy + 52, 18, SEL, i == g.sel ? PAL[UP_ACCENT[g.s.character]] : TRACK, 3);
@@ -591,7 +649,7 @@ static void scene_toys(const Game& g) {
 }
 
 static void scene_music(const Game& g) {
-    header(g, "MÜZİK BAHÇESİ");
+    header(g, T(S_MUSIC));
     house_button();
     unicorn_front(g, g.echo_i ? M_HAPPY : M_IDLE, 22, 2);
     static const int petal_k[3] = {0, 2, 4};
@@ -614,7 +672,7 @@ static void scene_music(const Game& g) {
 }
 
 static void scene_cloud(const Game& g) {
-    header(g, "TÜYLERİ YAKALA");
+    header(g, T(S_CLOUD));
     house_button();
     for (int i = 0; i < 3; i++) ellipse(64 + i * 120, CLOUD_Y + 50, 4, 4, TRACK);   // lane guides
     // the cloud, sliding smoothly toward where it is going
@@ -641,7 +699,7 @@ static void scene_cloud(const Game& g) {
 
 static void scene_dress(const Game& g) {
     static const int icons[ACC_COUNT] = {-1, IC_BOW, IC_FLOWER, IC_TIARA};
-    header(g, "AYNA");
+    header(g, T(S_MIRROR));
     house_button();
     ground(g, false);
     bool happy = g.dress_at && (int)(g.clock_ms - g.dress_at) < 700;
@@ -710,7 +768,7 @@ static void rainbow_behind(const Game& g, int sx, int sy) {
         int rx = P(176 - k * 12) * grow / 256, ry = P(236 - k * 12) * grow / 256, in = P(12) * grow / 256;
         for (int y = -ry; y <= 0; y++) {
             int w = rx;
-            while (w > 0 && w * w * ry * ry + y * y * rx * rx > rx * rx * ry * ry) w--;
+            while (w > 0 && (long long)w * w * ry * ry + (long long)y * y * rx * rx > (long long)rx * rx * ry * ry) w--;
             int x0 = w - in < 0 ? 0 : w - in;
             if (base + y < HEADER_Y1) continue;
             fill(cx - w, base + y, cx - x0, base + y + 1, RAINBOW[k]);
@@ -748,14 +806,8 @@ static void trick_props(const Game& g, int dy, u32 t) {
 }
 
 static void scene_home(const Game& g) {
-    char day[32] = "BİRLİKTE ";             // days she was cared for, not powered hours
-    int n = 0;
-    while (day[n]) n++;
-    utoa(g.s.care_days ? g.s.care_days : 1, day + n);
-    while (day[n]) n++;
-    const char* tail = ". GÜN";
-    for (int i = 0; tail[i]; i++) day[n++] = tail[i];
-    day[n] = 0;
+    char day[64];                           // days she was cared for, not powered hours
+    fmt(day, S_DAYS, g.s.care_days ? g.s.care_days : 1);
     u32 t = g.clock_ms + g.acc_ms;
     int state = g.mood(), frame = 0, dy = wave(now(g), 2400, 3) + 2;   // slow breathing bob
     squash_now = 0;
@@ -861,9 +913,9 @@ static void scene_home(const Game& g) {
     }
     if (g.party == PARTY_BIRTHDAY) cake(g, g.facing < 0 ? SCREEN_W - 86 : 86, 344);
     if (g.party) {
-        static const char* MILE[MILESTONES] = {"BÜYÜDÜM!", "BÜYÜDÜM!", "BÜYÜDÜM!", "1 YIL!"};
-        const char* says = g.party == PARTY_REUNION ? "ÖZLEDİM!" : g.party == PARTY_BIRTHDAY ? "İYİ Kİ DOĞDUM!"
-                         : MILE[g.party_arg];
+        static const short MILE[MILESTONES] = {S_GREW, S_GREW, S_GREW, S_ONE_YEAR};
+        const char* says = g.party == PARTY_REUNION ? T(S_MISSED) : g.party == PARTY_BIRTHDAY ? T(S_BIRTHDAY)
+                         : T(MILE[g.party_arg]);
         bubble(side_x(g) + P(g.facing < 0 ? 40 : 200), side_y(g) + P(6), says);
     }
     if (g.hint_pet && !g.petting) hand_hint(g, side_x(g) + P(252), side_y(g) + P(156));   // "pet me", on black
@@ -903,7 +955,7 @@ static void quilt(int x0, int y0, int w, int h, const u8* top, int show_w, bool 
 static void upper_half(int cx, int cy, int rx, int ry, u16 c) {   // a filled half-ellipse, flat side down
     for (int y = -ry; y <= 0; y++) {
         int w = rx;
-        while (w > 0 && w * w * ry * ry + y * y * rx * rx > rx * rx * ry * ry) w--;
+        while (w > 0 && (long long)w * w * ry * ry + (long long)y * y * rx * rx > (long long)rx * rx * ry * ry) w--;
         fill(cx - w, cy + y, cx + w + 1, cy + y + 1, c);
     }
 }
@@ -1014,14 +1066,14 @@ static void dream_cloud(int cx, int cy, int grow, u16 c) {
 static void scene_sleep(const Game& g) {
     if (g.standing) {                      // fell asleep on her feet: eyes shut, a slow sway, Zz
         nudge = g.calm() ? 0 : wave(now(g), 4200, P(4));
-        home_like(g, ST_BLINK, "AYAKTA UYUYAKALDI", true, 0, 2);
+        home_like(g, ST_BLINK, T(S_ASLEEP_STANDING), true, 0, 2);
         int sx = side_x(g), sy = side_y(g);
         zz(sx + P(g.facing < 0 ? 0 : 220) + wave(now(g), 2600, 6), sy + P(40) - (int)(now(g) / 45 % 40));
         nudge = 0;
         return;
     }
     int dy = g.calm() ? 2 : wave(now(g), 3200, 2) + 2;
-    home_like(g, ST_SLEEP, "UYUYOR · İYİ GECELER", true, 0, dy);
+    home_like(g, ST_SLEEP, T(S_SLEEPING), true, 0, dy);
     int sx = side_x(g), sy = side_y(g) + dy;
     bool flip = g.facing < 0;
     if (g.tucked_in()) {                   // up to her chin, pulled up from the tail end
@@ -1081,7 +1133,7 @@ static void scene_lounge(const Game& g) {
     int lift = P(30), dy = -lift + (g.calm() ? 0 : wave(now(g), 3600, 1));
     bool night = g.phase() == PH_NIGHT;
     under = lounger;
-    home_like(g, ST_SLEEP, night ? "DİNLENİYOR · ŞARJ OLUYOR" : "GÜNEŞLENİYOR · ŞARJ OLUYOR", night, 0, dy);
+    home_like(g, ST_SLEEP, night ? T(S_LOUNGE_NIGHT) : T(S_LOUNGE_DAY), night, 0, dy);
     under = 0;
     int sx = side_x(g), sy = side_y(g) + dy;
     bool flip = g.facing < 0;
@@ -1109,7 +1161,7 @@ static void scene_lounge(const Game& g) {
 // SC_FEED: three big snacks to choose from
 static void scene_feed(const Game& g) {
     static const int treats[TREAT_COUNT] = {IC_APPLE, IC_STRAWBERRY, IC_CARROT};
-    header(g, "NE YEMEK İSTER?");
+    header(g, T(S_FEED_ASK));
     // a small, patient timer: if nobody chooses, she takes the highlighted one
     int left = (int)(FEED_PICK_MS - (g.scene_ms < FEED_PICK_MS ? g.scene_ms : FEED_PICK_MS));
     fill(SCREEN_W / 2 - 100, 96, SCREEN_W / 2 - 100 + 200 * left / FEED_PICK_MS, 100, TRACK);
@@ -1129,31 +1181,39 @@ static void scene_feed(const Game& g) {
 
 // SC_REFUSE: too tired to play, and a big pillow to tap
 static void scene_refuse(const Game& g) {
-    home_like(g, M_SLEEPY, "ÇOK YORGUN: UYUSUN MU?", false, 0, g.calm() ? 0 : wave(now(g), 2400, 3) + 2, false);
+    home_like(g, M_SLEEPY, T(S_TOO_TIRED), false, 0, g.calm() ? 0 : wave(now(g), 2400, 3) + 2, false);
     int pulse = g.calm() ? 0 : wave(now(g), 1200, 3);
     rrect(40 - pulse, 360 - pulse, 328 + pulse, 436 + pulse, 18, rgb(0x2A, 0x24, 0x5E), LILAC, 3);
     icon(IC_MOON, 5, SCREEN_W / 2 - UP_ICON_W * 5 / 2 - 40, 378);
-    text("UYU", SCREEN_W / 2 + 40, 390, 2, INK);
+    text(T(S_NAP), SCREEN_W / 2 + 40, 390, 2, INK);
 }
 
 // "07" style two-digit number into out (no libc)
 static void two(int v, char* out) { out[0] = (char)('0' + v / 10 % 10); out[1] = (char)('0' + v % 10); out[2] = 0; }
-static void cat(char* dst, const char* src) { while (*dst) dst++; while ((*dst++ = *src++)) {} }
+// append, bounded by the destination array (a long word in some language is cut, never overflows)
+template <int N> static void cat(char (&dst)[N], const char* src) {
+    int k = 0;
+    while (k < N - 1 && dst[k]) k++;
+    while (k < N - 1 && *src) dst[k++] = *src++;
+    dst[k] = 0;
+}
 
 static void settings_row(const Game& g, int i, const char* name, const char* val, bool accent) {
     int y = SET_Y0 + i * SET_ROW_H;
     if (i == g.set_row) rrect(16, y, SCREEN_W - 16, y + SET_ROW_H - 4, 10, SEL, LILAC, 2);
-    text(name, 32, y + 9, 2, accent ? YELLOW : INK, 0);
+    int room = SCREEN_W - 64 - (*val ? text_w(val, 1) + 12 : 0);   // a long name (or a long word) gets the small size
+    int big = text_w(name, 2) <= room;
+    text_clip(name, 32, y + (big ? 9 : 13), big ? 2 : 1, accent ? YELLOW : INK, room);
     if (*val) text(val, SCREEN_W - 32 - text_w(val, 1), y + 13, 1, DIM, 0);
 }
 
 // SC_SETTINGS page 1: the date and time, and her birthday. Left half of a row: -1, right half: +1.
 static void scene_clock(const Game& g) {
-    static const char* names[CLK_ROWS] = {"YIL", "AY", "GÜN", "SAAT", "DAKİKA", "DOĞUM AYI", "DOĞUM GÜNÜ",
-                                          "KAYDET", "GERİ"};
-    text("SAAT VE DOĞUM GÜNÜ", SCREEN_W / 2, 30, 2, YELLOW);
+    static const short names[CLK_ROWS] = {S_YEAR, S_MONTH, S_DAY, S_HOUR, S_MINUTE, S_BMONTH, S_BDAY,
+                                          S_SAVE, S_BACK};
+    text(T(S_CLOCK_TITLE), SCREEN_W / 2, 30, 2, YELLOW);
     for (int i = 0; i < CLK_ROWS; i++) {
-        char v[24] = "";
+        char v[96] = "";
         int n = -1;
         switch (i) {
         case CLK_YEAR: n = g.ed_year; break;
@@ -1169,14 +1229,14 @@ static void scene_clock(const Game& g) {
             if (n >= 100) utoa((u32)n, num); else two(n, num);
             cat(v, "-  "); cat(v, num); cat(v, "  +");
         } else if (n == -2) {
-            cat(v, "YUMURTADAN SONRA");
+            cat(v, T(S_AFTER_HATCH));
         }
-        settings_row(g, i, names[i], v, i == CLK_SAVE);
+        settings_row(g, i, T(names[i]), v, i == CLK_SAVE);
     }
-    text("BOOT: SATIR · PWR: +1", SCREEN_W / 2, 420, 1, DIM);
+    text(T(S_HINT_ROWS), SCREEN_W / 2, 420, 1, DIM);
 }
 
-static void hhmm(int tens, char* out) {    // tens of minutes after midnight -> "19:30"
+static void hhmm(int tens, char (&out)[8]) {   // tens of minutes after midnight -> "19:30"
     char t[4];
     out[0] = 0;
     two(tens / 6, t); cat(out, t); cat(out, ":"); two(tens % 6 * 10, t); cat(out, t);
@@ -1184,19 +1244,19 @@ static void hhmm(int tens, char* out) {    // tens of minutes after midnight -> 
 
 // SC_SETTINGS page 2: bedtime and wake-up time. Left half of a row: -10 min, right half: +10 min.
 static void scene_bedtime(const Game& g) {
-    static const char* names[BEDR_ROWS] = {"UYKU KURALI", "YATMA", "UYANMA", "GERİ"};
-    text("UYKU SAATİ", SCREEN_W / 2, 30, 2, YELLOW);
+    static const short names[BEDR_ROWS] = {S_BED_RULE, S_BED_AT, S_WAKE_AT, S_BACK};
+    text(T(S_BED_TITLE), SCREEN_W / 2, 30, 2, YELLOW);
     bool on = !(g.s.opts & OPT_NO_BEDTIME);
     for (int i = 0; i < BEDR_ROWS; i++) {
-        char v[24] = "", t[8];
-        if (i == BEDR_ON) cat(v, on ? "AÇIK" : "KAPALI");
+        char v[96] = "", t[8];
+        if (i == BEDR_ON) cat(v, on ? T(S_ON) : T(S_OFF));
         if (i == BEDR_BED || i == BEDR_WAKE) { hhmm(i == BEDR_BED ? g.s.bed10 : g.s.wake10, t); cat(v, "-  "); cat(v, t); cat(v, "  +"); }
-        settings_row(g, i, names[i], v, false);
+        settings_row(g, i, T(names[i]), v, false);
     }
-    const char* help[4] = {"YATMA SAATİNDE UYUMADIYSA SALLANIR,", "1 SAAT SONRA AYAKTA UYUYAKALIR.",
-                           "UYANMA SAATİNE KADAR UYANMAZ.", g.today().known ? "" : "(SAAT AYARLI DEĞİL: KURAL BEKLER)"};
+    const char* help[4] = {T(S_BED_HELP_1), T(S_BED_HELP_2),
+                           T(S_BED_HELP_3), g.today().known ? "" : T(S_BED_NO_CLOCK)};
     for (int k = 0; k < 4; k++) text(help[k], SCREEN_W / 2, 230 + k * 18, 1, DIM);
-    text("BOOT: SATIR · PWR: +10 DK", SCREEN_W / 2, 420, 1, DIM);
+    text(T(S_HINT_BED), SCREEN_W / 2, 420, 1, DIM);
 }
 
 // ---- WiFi setup pages ------------------------------------------------------------------------
@@ -1247,79 +1307,80 @@ static void qr_draw(const Game& g, int cx, int top, int max_px) {   // black on 
 }
 
 static void scene_hub(const Game& g) {
-    text("SAAT VE WIFI", SCREEN_W / 2, 30, 2, YELLOW);
-    static const char* names[HUB_ROWS] = {"TARİH VE SAAT", "WIFI", "GERİ"};
+    text(T(S_HUB_TITLE), SCREEN_W / 2, 30, 2, YELLOW);
+    static const short names[HUB_ROWS] = {S_DATE_TIME, S_WIFI, S_BACK};
     for (int i = 0; i < HUB_ROWS; i++) {
-        char v[32] = "";
+        char v[96] = "";
         if (i == HUB_CLOCK) {
             Cal c = g.today();
-            if (!c.known) cat(v, "AYARLA >");
+            if (!c.known) cat(v, T(S_SET_IT));
             else { char t[8]; two(c.mday, t); cat(v, t); cat(v, "."); two(c.month, t); cat(v, t); cat(v, " ");
                    two(c.minute / 60, t); cat(v, t); cat(v, ":"); two(c.minute % 60, t); cat(v, t); cat(v, " >"); }
         }
-        if (i == HUB_WIFI) { char t[8]; utoa(g.wifi_count, t); cat(v, t); cat(v, " AĞ >"); }
-        settings_row(g, i, names[i], v, false);
+        if (i == HUB_WIFI) fmt(v, S_N_NETWORKS, g.wifi_count);
+        settings_row(g, i, T(names[i]), v, false);
     }
 }
 
 static void scene_wifi(const Game& g) {
-    text("WIFI", SCREEN_W / 2, 30, 2, YELLOW);
+    text(T(S_WIFI), SCREEN_W / 2, 30, 2, YELLOW);
     int saved = 0;
     for (int i = 0; i < g.wifi_count; i++) saved += !(g.wifi_fixed & (1 << i));
     for (int i = 0; i < WF_ROWS; i++) {
-        char v[16] = "";
+        char v[96] = "";
         if (i == WF_LIST) { char t[8]; utoa(saved, t); cat(v, t); cat(v, "/5 >"); }
-        settings_row(g, i, i == WF_ADD ? (g.wifi_busy() ? "KURULUMA DÖN" : "AĞ EKLE") : i == WF_LIST ? "KAYITLI AĞLAR" : "GERİ",
+        settings_row(g, i, i == WF_ADD ? (g.wifi_busy() ? T(S_BACK_TO_SETUP) : T(S_ADD_NET)) : i == WF_LIST ? T(S_SAVED_NETS) : T(S_BACK),
                      v, i == WF_ADD);
     }
     wifi_glyph(SCREEN_W / 2, 270, 5, LILAC);
-    static const char* l[3] = {"WIFI SADECE SAATİ AYARLAMAK İÇİN.", "GÜNDE İKİ KEZ KISACIK AÇILIR,",
-                               "UNICORN WIFI'SIZ DA OYNAR."};
+    const char* l[3] = {T(S_WIFI_INFO_1), T(S_WIFI_INFO_2),
+                               T(S_WIFI_INFO_3)};
     lines(l, 3, 300);
 }
 
 static void scene_wstart(const Game& g) {
-    text("TELEFONLA AĞ EKLE", SCREEN_W / 2, 30, 2, YELLOW);
+    text(T(S_PHONE_ADD), SCREEN_W / 2, 30, 2, YELLOW);
     rrect(SCREEN_W / 2 - 46, 64, SCREEN_W / 2 + 46, 210, 14, SEL, LILAC, 3);   // a phone, with a QR on it
     fill(SCREEN_W / 2 - 12, 72, SCREEN_W / 2 + 12, 75, LILAC);
     for (int y = 0; y < 7; y++)
         for (int x = 0; x < 7; x++)
             if (((x * 7 + y * 3) % 5) < 2 || (x < 2 && y < 2) || (x > 4 && y < 2) || (x < 2 && y > 4))
                 fill(SCREEN_W / 2 - 28 + x * 8, 100 + y * 8, SCREEN_W / 2 - 21 + x * 8, 107 + y * 8, INK);
-    static const char* l[6] = {"1. BAŞLAT'A DOKUN.", "2. ÇIKAN QR KODU TELEFONUN", "   KAMERASIYLA TARA.",
-                               "3. TELEFONDA EV AĞINI SEÇ", "   VE ŞİFRESİNİ YAZ.", "SADECE 2.4 GHZ AĞLAR OLUR."};
+    const char* l[6] = {T(S_STEP_1), T(S_STEP_2A), T(S_STEP_2B),
+                               T(S_STEP_3A), T(S_STEP_3B), T(S_ONLY_24)};
     for (int i = 0; i < 6; i++) text(l[i], 40, 232 + i * 22, 1, i == 5 ? AMBER : INK, 0);
-    wifi_buttons(g, "GERİ", "BAŞLAT");
+    wifi_buttons(g, T(S_BACK), T(S_START));
 }
 
 static void scene_wsession(const Game& g) {
     int st = g.wifi_stage;
     if (st <= WST_STARTING) {
-        text("HAZIRLANIYOR...", SCREEN_W / 2, 30, 2, YELLOW);
+        text(T(S_PREPARING), SCREEN_W / 2, 30, 2, YELLOW);
         wifi_glyph(SCREEN_W / 2, 230, 8, (g.clock_ms / 400) & 1 ? LILAC : DIM);
-        wifi_buttons(g, 0, "OYUNA DÖN");
+        wifi_buttons(g, 0, T(S_BACK_TO_PLAY));
         return;
     }
     if (st == WST_WAIT || st == WST_PHONE) {
-        text("TELEFONLA TARA", SCREEN_W / 2, 26, 2, YELLOW);
+        text(T(S_SCAN_PHONE), SCREEN_W / 2, 26, 2, YELLOW);
         qr_draw(g, SCREEN_W / 2, 50, 236);
-        char name[48] = "AĞ: ";
+        char name[96] = "";
+        cat(name, T(S_NET_IS));
         cat(name, g.wifi_ap);
         text(name, SCREEN_W / 2, 296, 1, INK);
         if (st == WST_PHONE) {
-            text("TELEFON BAĞLANDI!", SCREEN_W / 2, 320, 2, OK_GREEN);
-            text("SAYFADA EV AĞINI SEÇ", SCREEN_W / 2, 346, 1, DIM);
+            text(T(S_PHONE_JOINED), SCREEN_W / 2, 320, 2, OK_GREEN);
+            text(T(S_PICK_ON_PAGE), SCREEN_W / 2, 346, 1, DIM);
         } else {
-            static const char* l[2] = {"TELEFON 'İNTERNET YOK' DESE DE", "BU AĞDA KAL."};
+            const char* l[2] = {T(S_NO_INTERNET_1), T(S_NO_INTERNET_2)};
             lines(l, 2, 322);
         }
-        wifi_buttons(g, "YARDIM", "OYUNA DÖN");
+        wifi_buttons(g, T(S_HELP), T(S_BACK_TO_PLAY));
         return;
     }
     if (st < WST_OK) {                     // three steps, the current one blinking
-        text("BAĞLANIYOR", SCREEN_W / 2, 30, 2, YELLOW);
+        text(T(S_CONNECTING), SCREEN_W / 2, 30, 2, YELLOW);
         text(g.wifi_net, SCREEN_W / 2, 64, 2, INK);
-        static const char* steps[3] = {"AĞA KATILIYOR", "ADRES ALIYOR", "SAATİ AYARLIYOR"};
+        const char* steps[3] = {T(S_JOINING), T(S_ADDRESS), T(S_SETTING_CLOCK)};
         for (int i = 0; i < 3; i++) {
             int y = 130 + i * 56, cur = st - WST_JOIN;
             u16 c = i < cur ? OK_GREEN : i == cur ? ((g.clock_ms / 300) & 1 ? YELLOW : INK) : TRACK;
@@ -1327,56 +1388,57 @@ static void scene_wsession(const Game& g) {
             if (i < cur) { ellipse(70, y + 8, 7, 7, BLACK); ellipse(70, y + 8, 4, 4, c); }
             text(steps[i], 100, y, 2, i <= cur ? INK : DIM, 0);
         }
-        wifi_buttons(g, 0, "OYUNA DÖN");
+        wifi_buttons(g, 0, T(S_BACK_TO_PLAY));
         return;
     }
     const char *title = "", *a = "", *b = "";
     int mark = 1;
     switch (st) {
-    case WST_OK:         title = "BAĞLANDI"; a = g.wifi_net; b = "SAAT AYARLANDI"; mark = 0; break;
-    case WST_OK_NOCLOCK: title = "AĞ KAYDEDİLDİ"; a = g.wifi_net; b = "SAAT BİRAZ SONRA AYARLANACAK"; mark = 2; break;
-    case WST_BAD_PASS:   title = "BAĞLANAMADI"; a = "ŞİFREYİ YA DA MODEMİN"; b = "GÜVENLİK AYARINI KONTROL ET"; break;
-    case WST_NOT_FOUND:  title = "AĞ BULUNAMADI"; a = "MESAFEYİ VE 2.4 GHZ'İN"; b = "AÇIK OLDUĞUNU KONTROL ET"; break;
-    case WST_FULL:       title = "LİSTE DOLU"; a = "EN FAZLA 5 AĞ KAYDEDİLİR:"; b = "ÖNCE KAYITLI BİR AĞI SİL"; mark = 2; break;
-    default:             title = "SÜRE DOLDU"; a = "5 DAKİKA İÇİNDE AĞ SEÇİLMEDİ."; b = "TEKRAR DENEYEBİLİRSİN"; mark = 2; break;
+    case WST_OK:         title = T(S_CONNECTED); a = g.wifi_net; b = T(S_CLOCK_SET); mark = 0; break;
+    case WST_OK_NOCLOCK: title = T(S_NET_SAVED); a = g.wifi_net; b = T(S_CLOCK_LATER); mark = 2; break;
+    case WST_BAD_PASS:   title = T(S_CANT_CONNECT); a = T(S_CHECK_PASS_1); b = T(S_CHECK_PASS_2); break;
+    case WST_NOT_FOUND:  title = T(S_NOT_FOUND); a = T(S_CHECK_RANGE_1); b = T(S_CHECK_RANGE_2); break;
+    case WST_FULL:       title = T(S_LIST_FULL); a = T(S_FULL_1); b = T(S_FULL_2); mark = 2; break;
+    default:             title = T(S_TIMED_OUT); a = T(S_TIMEOUT_1); b = T(S_TIMEOUT_2); mark = 2; break;
     }
     big_mark(SCREEN_W / 2, 140, mark);
     text(title, SCREEN_W / 2, 196, 2, mark == 0 ? OK_GREEN : mark == 1 ? BAD_RED : AMBER);
     text(a, SCREEN_W / 2, 236, mark == 1 || st >= WST_FULL ? 1 : 2, INK);
     text(b, SCREEN_W / 2, 264, 1, DIM);
     bool ok = st == WST_OK || st == WST_OK_NOCLOCK || st == WST_FULL;
-    wifi_buttons(g, ok ? 0 : "BİTİR", ok ? "TAMAM" : "TEKRAR");
+    wifi_buttons(g, ok ? 0 : T(S_FINISH), ok ? T(S_OK) : T(S_RETRY));
 }
 
 static void scene_whelp(const Game& g) {
-    text("ELLE BAĞLAN", SCREEN_W / 2, 30, 2, YELLOW);
-    char ap[48] = "AĞ: ", pw[48] = "ŞİFRE: ";
+    text(T(S_BY_HAND), SCREEN_W / 2, 30, 2, YELLOW);
+    char ap[96] = "", pw[96] = "";
+    cat(ap, T(S_NET_IS)); cat(pw, T(S_PASS_IS));
     cat(ap, g.wifi_ap); cat(pw, g.wifi_pass);
-    text("1. TELEFONUN WIFI AYARLARINDA", 32, 80, 1, DIM, 0);
-    text("   ŞU AĞA BAĞLAN:", 32, 100, 1, DIM, 0);
+    text(T(S_HAND_1A), 32, 80, 1, DIM, 0);
+    text(T(S_HAND_1B), 32, 100, 1, DIM, 0);
     text(ap, 32, 128, 2, INK, 0);
     text(pw, 32, 156, 2, INK, 0);
-    text("2. TARAYICIDA ŞUNU AÇ:", 32, 206, 1, DIM, 0);
+    text(T(S_HAND_2), 32, 206, 1, DIM, 0);
     text("192.168.4.1", 32, 232, 3, YELLOW, 0);
-    text("SAYFA KENDİLİĞİNDEN DE AÇILABİLİR.", 32, 290, 1, DIM, 0);
-    wifi_buttons(g, 0, "GERİ");
+    text(T(S_HAND_3), 32, 290, 1, DIM, 0);
+    wifi_buttons(g, 0, T(S_BACK));
 }
 
 static void scene_wlist(const Game& g) {
-    text("KAYITLI AĞLAR", SCREEN_W / 2, 30, 2, YELLOW);
+    text(T(S_SAVED_NETS), SCREEN_W / 2, 30, 2, YELLOW);
     for (int i = 0; i < g.wifi_count; i++)
-        settings_row(g, i, g.wifi_names[i], (g.wifi_fixed & (1 << i)) ? "SABİT" : "SİL >", false);
-    settings_row(g, g.wifi_count, "GERİ", "", false);
-    if (!g.wifi_count) text("HENÜZ KAYITLI AĞ YOK", SCREEN_W / 2, 140, 1, DIM);
-    text("SABİT: FIRMWARE İÇİNDE (SECRETS.H)", SCREEN_W / 2, 420, 1, DIM);
+        settings_row(g, i, g.wifi_names[i], (g.wifi_fixed & (1 << i)) ? T(S_FIXED) : T(S_FORGET_MORE), false);
+    settings_row(g, g.wifi_count, T(S_BACK), "", false);
+    if (!g.wifi_count) text(T(S_NO_NETS), SCREEN_W / 2, 140, 1, DIM);
+    text(T(S_FIXED_NOTE), SCREEN_W / 2, 420, 1, DIM);
 }
 
 static void scene_wforget(const Game& g) {
-    text("AĞI UNUT?", SCREEN_W / 2, 30, 2, YELLOW);
+    text(T(S_FORGET_ASK), SCREEN_W / 2, 30, 2, YELLOW);
     wifi_glyph(SCREEN_W / 2, 170, 6, LILAC);
-    if (g.wifi_arg < g.wifi_count) text(g.wifi_names[g.wifi_arg], SCREEN_W / 2, 210, 2, INK);
-    text("BU AĞA ARTIK BAĞLANMAZ.", SCREEN_W / 2, 250, 1, DIM);
-    wifi_buttons(g, "GERİ", "UNUT");
+    if (g.wifi_arg < g.wifi_count) text_fit(g.wifi_names[g.wifi_arg], SCREEN_W / 2, 210, 2, INK);   // the whole name
+    text(T(S_FORGET_NOTE), SCREEN_W / 2, 250, 1, DIM);
+    wifi_buttons(g, T(S_BACK), T(S_FORGET));
 }
 
 // SC_SETTINGS: for grown-ups (BOOT: 3 quick presses, hold the last). Every value cycles on tap / PWR.
@@ -1392,28 +1454,29 @@ static void scene_settings(const Game& g) {
     case PG_WLIST:    scene_wlist(g); return;
     case PG_WFORGET:  scene_wforget(g); return;
     }
-    static const char* names[SET_ROWS] = {"SES", "OTURUM", "MOLA", "PARLAKLIK", "SAKİN MOD", "SALLAMA", "UYKU",
-                                          "SAAT", "ÇIKIŞ"};
-    static const char* vols[3] = {"NORMAL", "KISIK", "KAPALI"};
-    text("EBEVEYN AYARLARI", SCREEN_W / 2, 30, 2, YELLOW);
+    static const short names[SET_ROWS] = {S_VOLUME, S_SESSION, S_BREAK, S_BRIGHTNESS, S_CALM, S_SHAKE, S_SLEEP_ROW,
+                                          S_LANGUAGE, S_CLOCK_ROW, S_EXIT};
+    static const short vols[3] = {S_NORMAL, S_LOW, S_OFF};
+    text(T(S_SETTINGS), SCREEN_W / 2, 30, 2, YELLOW);
     for (int i = 0; i < SET_ROWS; i++) {
-        char v[32] = "";
+        char v[96] = "";
         switch (i) {
-        case SET_VOLUME: cat(v, vols[g.volume()]); break;
-        case SET_LIMIT:  utoa(g.play_limit_ms() / 60000, v); cat(v, " DK"); break;
-        case SET_BREAK:  utoa(g.break_ms() / 60000, v); cat(v, " DK"); break;
+        case SET_VOLUME: cat(v, T(vols[g.volume()])); break;
+        case SET_LIMIT:  fmt(v, S_MIN, g.play_limit_ms() / 60000); break;
+        case SET_BREAK:  fmt(v, S_MIN, g.break_ms() / 60000); break;
         case SET_BRIGHT: utoa(g.brightness() * 100 / 255, v); cat(v, "%"); break;
-        case SET_CALM:   cat(v, g.calm() ? "AÇIK" : "KAPALI"); break;
-        case SET_SHAKE:  cat(v, (g.s.opts & OPT_NO_SHAKE) ? "KAPALI" : "AÇIK"); break;
+        case SET_CALM:   cat(v, g.calm() ? T(S_ON) : T(S_OFF)); break;
+        case SET_SHAKE:  cat(v, (g.s.opts & OPT_NO_SHAKE) ? T(S_OFF) : T(S_ON)); break;
+        case SET_LANG:   cat(v, UP_LANG_NAME[LANG]); break;
         case SET_SLEEP: {                  // "19:30 - 07:00 >"
-            if (g.s.opts & OPT_NO_BEDTIME) { cat(v, "KAPALI >"); break; }
+            if (g.s.opts & OPT_NO_BEDTIME) { cat(v, T(S_OFF_MORE)); break; }
             char t[8];
             hhmm(g.s.bed10, t); cat(v, t); cat(v, " - "); hhmm(g.s.wake10, t); cat(v, t); cat(v, " >");
             break;
         }
         case SET_CLOCK: {                  // "31.10.2026 14:05 >" or a nudge to set it (and WiFi, behind it)
             Cal c = g.today();
-            if (!c.known) { cat(v, "AYARLA >"); break; }
+            if (!c.known) { cat(v, T(S_SET_IT)); break; }
             char t[8];
             two(c.mday, t); cat(v, t); cat(v, ".");
             two(c.month, t); cat(v, t); cat(v, ".");
@@ -1423,12 +1486,13 @@ static void scene_settings(const Game& g) {
             break;
         }
         }
-        settings_row(g, i, names[i], v, i == SET_EXIT || (i == SET_CLOCK && !g.today().known));
+        settings_row(g, i, T(names[i]), v, i == SET_EXIT || (i == SET_CLOCK && !g.today().known));
     }
-    char v[8], line[40] = "PİL ";
-    if (g.battery) { utoa(g.battery, v); cat(line, v); cat(line, "%"); } else cat(line, "?");
+    char line[64];
+    if (g.batt_known) { fmt(line, S_BATTERY, g.battery); cat(line, "%"); }
+    else { fmt(line, S_BATTERY, 0); for (int k = 0; line[k]; k++) if (line[k] == '0') { line[k] = '?'; break; } }
     text(line, SCREEN_W / 2, 412, 1, DIM);
-    text("BOOT: SEÇ · PWR: DEĞİŞTİR", SCREEN_W / 2, 428, 1, DIM);
+    text(T(S_HINT_MAIN), SCREEN_W / 2, 428, 1, DIM);
 }
 
 // LEAVE / AWAY / RETURN: she goes out to play with friends and hangs a sign on the door.
@@ -1451,7 +1515,7 @@ static void walker(const Game& g, const char* sub, const char* says) {
         int fstate = fwalk ? (fph < 2 ? ST_WALK : ST_WALK2) : M_HAPPY;
         const u8* spr = UP_SIDE + ((fc * UP_SIDE_STATES + fstate) * 2 + (fwalk ? (int)(fph & 1) : 0)) * sz;
         blit(spr, UP_SIDE_W, UP_SIDE_H, 4, fx - UP_SIDE_W * 2, 346 - UP_SIDE_FEET * 4 + burn_y(g), PAL, !leaving);
-        if (t >= arrive - 400 && t < arrive + 600) bubble(fx, 150, "HADİ!");
+        if (t >= arrive - 400 && t < arrive + 600) bubble(fx, 150, T(S_COME_ON));
     }
     if (says && side_x(g) < SCREEN_W - 120 && now(g) < 1200) bubble(side_x(g) + P(200), side_y(g) - P(6), says);
 }
@@ -1459,8 +1523,8 @@ static void walker(const Game& g, const char* sub, const char* says) {
 static void scene_away(const Game& g) {
     static const u16 WOOD = rgb(0x8B, 0x5A, 0x3C), WOOD2 = rgb(0x74, 0x48, 0x30), FRAME = rgb(0x4A, 0x30, 0x22);
     int shake = g.wobbling ? wave(g.clock_ms + g.acc_ms, 120, 3) : 0;
-    text(UP_NAMES[g.s.character], SCREEN_W / 2, 26, 2, PAL[UP_ACCENT[g.s.character]]);
-    text("ARKADAŞLARIYLA OYNUYOR", SCREEN_W / 2, 48, 1, DIM);
+    text(T(S_NAME_0 + g.s.character), SCREEN_W / 2, 26, 2, PAL[UP_ACCENT[g.s.character]]);
+    text(T(S_OUT_PLAYING), SCREEN_W / 2, 48, 1, DIM);
     ellipse(SCREEN_W / 2, 352, 130, 10, GROUND1);
     int x0 = 108 + shake;
     fill(x0 - 8, 76, x0 + 160, 352, FRAME);
@@ -1480,8 +1544,8 @@ static void scene_away(const Game& g) {
              ky + (sy - ky) * i / 60 + 2, INK);
     }
     rrect(sx - 60, sy, sx + 60, sy + 64, 12, rgb(0xFF, 0xC2, 0xE0), rgb(0x8A, 0x1F, 0x5C), 3);
-    text("RAHATSIZ", sx, sy + 14, 1, rgb(0x3A, 0x0F, 0x2B));
-    text("ETMEYİN", sx, sy + 30, 1, rgb(0x3A, 0x0F, 0x2B));
+    text(T(S_SIGN_1), sx, sy + 14, 1, rgb(0x3A, 0x0F, 0x2B));
+    text(T(S_SIGN_2), sx, sy + 30, 1, rgb(0x3A, 0x0F, 0x2B));
     icon(IC_MOON, 1, sx - 4, sy + 46);
     // a calm picture of the friends playing: no countdown to keep checking (time is for grown-ups)
     for (int i = 0; i < 3; i++) {
@@ -1491,12 +1555,12 @@ static void scene_away(const Game& g) {
         blit(UP_FRONT + ((fc * UP_MOODS + M_HAPPY) * 2) * sz, UP_FRONT_W, UP_FRONT_H, 1,
              SCREEN_W / 2 - 100 + i * 76, 362 + hop, PAL);
     }
-    text("SEN DE DİNLEN!", SCREEN_W / 2, 422, 1, DIM);
+    text(T(S_REST_TOO), SCREEN_W / 2, 422, 1, DIM);
 }
 
 static void scene_game(const Game& g) {
     char line[24];
-    text("YILDIZ YAKALA!", SCREEN_W / 2, 18, 2, YELLOW);
+    text(T(S_STARS), SCREEN_W / 2, 18, 2, YELLOW);
     // rainbow time bar shrinking from both sides
     int left = (int)(GAME_MS - (g.scene_ms < GAME_MS ? g.scene_ms : GAME_MS));
     int half = 150 * left / GAME_MS;
@@ -1540,8 +1604,8 @@ static void cracks(int x0, int y0, int stage) {
 }
 
 static void scene_egg(const Game& g) {
-    text("YUMURTA", SCREEN_W / 2, 52, 2, YELLOW);
-    text("BİR ŞEY KIPIRDIYOR...", SCREEN_W / 2, 74, 1, DIM);
+    text(T(S_EGG), SCREEN_W / 2, 52, 2, YELLOW);
+    text(T(S_EGG_STIRS), SCREEN_W / 2, 74, 1, DIM);
     int wob = 0;
     u32 t = g.clock_ms + g.acc_ms;
     if (g.wobbling) {                      // a damped wobble after each tap
@@ -1556,14 +1620,14 @@ static void scene_egg(const Game& g) {
     if (g.s.egg_ms > EGG_HATCH_MS * 2 / 3 && stage < 2) stage = 2;
     egg_draw(g.s.character, x0, y0, 8, stage);
     ellipse(SCREEN_W / 2, 318, 90, 9, GROUND1);
-    text("DOKUN, ÇATLASIN!", SCREEN_W / 2, 360, 2, INK);
+    text(T(S_EGG_TAP), SCREEN_W / 2, 360, 2, INK);
     if (g.taps == 0) hand_hint(g, SCREEN_W / 2 + 70, 250);     // wordless: tap here
     for (int i = 0; i < EGG_TAPS; i++)
         ellipse(SCREEN_W / 2 - 48 + i * 24, 404, 6, 6, i < g.taps ? YELLOW : TRACK);
 }
 
 static void scene_hatch(const Game& g) {
-    text(UP_NAMES[g.s.character], SCREEN_W / 2, 52, 2, PAL[UP_ACCENT[g.s.character]]);
+    text(T(S_NAME_0 + g.s.character), SCREEN_W / 2, 52, 2, PAL[UP_ACCENT[g.s.character]]);
     u32 t = g.scene_ms;
     if (t < 700) {                         // the shell splits: top flies up, bottom settles
         int lift = (int)(t * 90 / 700), drop = (int)(t * 20 / 700);
@@ -1581,7 +1645,7 @@ static void scene_hatch(const Game& g) {
         sparkle(70, 140 + 8 * g.frame, 5, YELLOW);
         sparkle(300, 120 - 8 * g.frame, 4, PINK);
         sparkle(84, 300, 3, LILAC);
-        if (t >= 940) text("MERHABA!", SCREEN_W / 2, 372 + arc(t - 940, 360, 8), 3, YELLOW);
+        if (t >= 940) text(T(S_HELLO), SCREEN_W / 2, 372 + arc(t - 940, 360, 8), 3, YELLOW);
         return;
     }
     particles(g);
@@ -1623,13 +1687,15 @@ static void plant(int cx, int base, int stage, u32 t, bool calm, int style) {
 
 // SC_ALBUM: a picture for every day she was cared for, and the garden those days grew
 static void scene_album(const Game& g) {
-    char title[24] = "ANILARIMIZ";
-    if (g.books() > 1) {                   // "ANILARIMIZ 3": which book this is
-        int k = 10;
-        title[k++] = ' ';
-        utoa(g.book + 1, title + k);
+    char title[48] = "";
+    cat(title, T(S_ALBUM));
+    if (g.books() > 1) {                   // "OUR MEMORIES 3": which book this is
+        char n[8];
+        utoa(g.book + 1, n);
+        cat(title, " ");
+        cat(title, n);
     }
-    text(title, 32, 30, 2, YELLOW, 0);
+    text(title, 32, 30 + (text_w(title, 2) > 252 ? 4 : 0), text_w(title, 2) > 252 ? 1 : 2, YELLOW, 0);   // clear of the house
     house_button();
     int n = g.album();
     u16 edge = g.book ? RAINBOW[g.book % 7] : PAL[UP_ACCENT[g.s.character]];
@@ -1659,23 +1725,23 @@ static void scene_album(const Game& g) {
 }
 
 static void scene_info(const Game& g) {
-    static const char* says[] = {"İYİYİM!", "ÇOK MUTLUYUM!", "KARNIM AÇ!", "UYKUM VAR...", "SARILALIM MI?"};
+    static const short says[] = {S_SAY_FINE, S_SAY_HAPPY, S_SAY_HUNGRY, S_SAY_SLEEPY, S_SAY_HUG};
     static const int icons[NSTATS] = {IC_APPLE, IC_HEART, IC_STAR, IC_BUBBLE};
     Mood m = g.mood();
     // sound on/off toggle (hit box SOUND_X0 / SOUND_Y1 in unicorn.h), clear of the rounded corner
     bool off = g.volume() == VOL_OFF;
     rrect(SOUND_X0 + 8, 14, SCREEN_W - 30, 40, 10, SEL, off ? TRACK : PAL[UP_ACCENT[g.s.character]], 2);
-    text(off ? "SES KAPALI" : "SES AÇIK", (SOUND_X0 + 8 + SCREEN_W - 30) / 2, 23, 1, off ? DIM : INK);
+    text(off ? T(S_SOUND_OFF) : T(S_SOUND_ON), (SOUND_X0 + 8 + SCREEN_W - 30) / 2, 23, 1, off ? DIM : INK);
     int lift = g.album_unseen && !g.calm() ? wave(now(g), 900, 3) : 0;   // something new inside
     book(36, 14 + lift, g.album_unseen ? YELLOW : TRACK);
     if (g.album_unseen && g.scene_ms > 1500) hand_hint(g, 84, 54);
-    text(UP_NAMES[g.s.character], SCREEN_W / 2, 52, 2, PAL[UP_ACCENT[g.s.character]]);
+    text(T(S_NAME_0 + g.s.character), SCREEN_W / 2, 52, 2, PAL[UP_ACCENT[g.s.character]]);
     battery_icon(g, SCREEN_W - 52, 54);
     unicorn_front(g, m, 72);
     static const int STARS[4] = {0, 1, 2, 4};               // grown-up stars around her portrait
     static const short SX[4] = {58, 282, 58, 282}, SY[4] = {92, 92, 270, 270};
     for (int k = 0; k < STARS[g.stage()]; k++) icon(IC_STAR, 3, SX[k], SY[k]);
-    text(says[m], SCREEN_W / 2, 326, 2, INK);
+    text(T(says[m]), SCREEN_W / 2, 326, 2, INK);
     for (int i = 0; i < NSTATS; i++) {
         int y = 352 + i * 22;
         icon(icons[i], 2, 64, y);
@@ -1686,6 +1752,7 @@ static void scene_info(const Game& g) {
 
 void render(const Game& g, u16* fb) {
     FB = fb;
+    LANG = g.s.lang < STR_LANGS ? g.s.lang : 0;
     SC = g.stage() == STAGE_FOAL ? 4 : 6;
     palettes();
     fill(0, 0, SCREEN_W, SCREEN_H, BLACK);
@@ -1695,22 +1762,17 @@ void render(const Game& g, u16* fb) {
     case SC_HATCH: scene_hatch(g); break;
     case SC_INFO:  scene_info(g); break;
     case SC_GAME:  scene_game(g); break;
-    case SC_EAT:   home_like(g, ST_EAT, "YEMEK YİYOR", false, -1, 0, false); break;
+    case SC_EAT:   home_like(g, ST_EAT, T(S_EATING), false, -1, 0, false); break;
     case SC_FEED:  scene_feed(g); break;
     case SC_SETTINGS: scene_settings(g); break;
     case SC_PLAY: {                        // celebration after the mini-game
-        utoa(g.score, line);
-        int n = 0;
-        while (line[n]) n++;
-        const char* tail = " YILDIZ! ALKIŞ!";
-        for (int i = 0; tail[i]; i++) line[n++] = tail[i];
-        line[n] = 0;
+        fmt(line, S_STARS_DONE, g.score);
         squash_now = g.calm() ? 0 : squash_for(now(g) % 700, 700 - SQUASH_MS);
         home_like(g, ST_PLAY, line, false, 0, g.calm() ? 0 : arc(now(g) % 700, 700 - SQUASH_MS, 30), false);
         squash_now = 0;
         break;
     }
-    case SC_WASH:  home_like(g, ST_WASH, "BANYO ZAMANI", false, -1, 0, false); bath_foam(g); break;
+    case SC_WASH:  home_like(g, ST_WASH, T(S_BATH), false, -1, 0, false); bath_foam(g); break;
     case SC_EGG_PICK: scene_egg_pick(g); break;
     case SC_TOYS:  scene_toys(g); break;
     case SC_MUSIC: scene_music(g); break;
@@ -1719,8 +1781,8 @@ void render(const Game& g, u16* fb) {
     case SC_ALBUM: scene_album(g); break;
     case SC_LOUNGE: scene_lounge(g); break;
     case SC_SLEEP: scene_sleep(g); break;
-    case SC_LEAVE: walker(g, "ARKADAŞLARI ÇAĞIRIYOR", "İŞİM VAR!"); break;
-    case SC_RETURN: walker(g, "EVE DÖNDÜ", g.vel_x ? (const char*)0 : "GELDİM!"); break;
+    case SC_LEAVE: walker(g, T(S_FRIEND_CALLS), T(S_BUSY)); break;
+    case SC_RETURN: walker(g, T(S_BACK_HOME), g.vel_x ? (const char*)0 : T(S_IM_BACK)); break;
     case SC_AWAY:  scene_away(g); break;
     case SC_REFUSE: scene_refuse(g); break;
     default:       scene_home(g); break;

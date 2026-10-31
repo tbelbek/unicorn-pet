@@ -129,15 +129,17 @@ static void read_accel() {                // once per loop; shake and tilt both 
 }
 
 static bool shaken() {
-    static uint32_t first_jolt, cooldown_until;
-    if (!acc_fresh || millis() < cooldown_until) return false;
+    static uint32_t first_jolt, last_shake;
+    static bool shook;
+    if (!acc_fresh || (shook && millis() - last_shake < 1500)) return false;   // wrap-safe cool-down
     float x = acc_x, y = acc_y, z = acc_z;
     float g = sqrtf(x * x + y * y + z * z);
     if (fabsf(g - 1.0f) < SHAKE_G) return false;
     uint32_t now = millis();
     if (!panel_on || (first_jolt && now - first_jolt < 500)) {
         first_jolt = 0;
-        cooldown_until = now + 1500;
+        last_shake = now;
+        shook = true;
         return true;
     }
     first_jolt = now;
@@ -146,21 +148,35 @@ static bool shaken() {
 
 // ---- save ----------------------------------------------------------------------------------
 
+static bool keep_old_save;                    // an unreadable save could not be backed up: leave it alone
+
 static void save_game() {
+    if (keep_old_save) return;
     uint8_t buf[up::SAVE_SIZE];
     game.save(buf);
     prefs.putBytes("save", buf, sizeof buf);
 }
 
 static void load_game() {
-    static uint8_t buf[512];                  // older saves are shorter, a newer firmware's longer
     size_t len = prefs.getBytesLength("save");
-    size_t n = len && len <= sizeof buf ? prefs.getBytes("save", buf, len) : 0;
-    if (n && game.load(buf, n)) { Serial.println("save loaded"); return; }
-    Serial.println("no valid save: new egg");
-    // Keep an unreadable save (a newer firmware's, or a bad write) instead of overwriting it with
-    // the new egg: a later firmware can still read it back from "save_bad".
-    if (n && !prefs.isKey("save_bad")) prefs.putBytes("save_bad", buf, n);
+    if (!len) { Serial.println("no save: new egg"); return; }
+    uint8_t* buf = (uint8_t*)malloc(len);     // any size: a newer firmware's save may be longer
+    size_t n = buf ? prefs.getBytes("save", buf, len) : 0;
+    if (n && game.load(buf, n)) { Serial.println("save loaded"); free(buf); return; }
+    Serial.println("unreadable save: new egg");
+    // Keep it (a newer firmware's, or a bad write) instead of overwriting it with the new egg: a
+    // later firmware can still read it back from "save_bad". If it cannot be kept, never overwrite.
+    bool kept = false;
+    if (n && prefs.isKey("save_bad")) {       // already a backup: is it this very save?
+        size_t m = prefs.getBytesLength("save_bad");
+        uint8_t* old = m == n ? (uint8_t*)malloc(m) : nullptr;
+        kept = old && prefs.getBytes("save_bad", old, m) == m && !memcmp(old, buf, n);
+        free(old);
+    } else if (n) {
+        kept = prefs.putBytes("save_bad", buf, n) == n;
+    }
+    if (!kept) keep_old_save = true;          // a second unreadable save, or no room: never overwrite it
+    free(buf);
 }
 
 // ---- power ---------------------------------------------------------------------------------
@@ -213,7 +229,8 @@ void setup() {
     game.init(esp_random());
     clock_begin(prefs);
     wifi_setup_begin(game);                   // saved networks, shown in the settings
-    game.set_wall(clock_local(), clock_trusted());   // before the save, so time spent off counts
+    { uint32_t utc = rtc_now();             // one read: local and UTC agree
+      game.set_wall(clock_local(utc), clock_trusted(), utc); }   // before the save, so time spent off counts
     load_game();
     push_frame();
 }
@@ -241,12 +258,13 @@ void loop() {
     static uint32_t last_rtc, last_batt;
     if (now - last_rtc >= 1000) {
         last_rtc = now;
-        game.set_wall(clock_local(), clock_trusted());
+        { uint32_t utc = rtc_now();             // one read: local and UTC agree
+      game.set_wall(clock_local(utc), clock_trusted(), utc); }   // local for the day, UTC for breaks
         if (pmu_ok) game.set_plugged(pmu.isVbusIn());   // USB power, not isCharging(): that ends at 100%
     }
     if (now - last_batt >= 30000 || !last_batt) {        // battery % for the indicator
         last_batt = now ? now : 1;
-        if (pmu_ok && pmu.isBatteryConnect()) game.set_battery(pmu.getBatteryPercent());
+        game.set_battery(pmu_ok && pmu.isBatteryConnect() ? pmu.getBatteryPercent() : -1);   // -1 on a PMU error too
     }
     static int bright = -1;                              // parent settings: brightness, volume
     if (panel_on && game.brightness() != bright) { bright = game.brightness(); lcd->setBrightness(bright); }

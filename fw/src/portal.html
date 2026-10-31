@@ -3,7 +3,7 @@
      it at http://192.168.4.1; tools/embed_portal.py turns it into portal.gen.h). No external files:
      the phone has no internet while it is on the toy's network. Network names are shown with
      textContent only. -->
-<html lang="tr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -50,35 +50,35 @@
 </head>
 <body>
 <h1>🦄 Unicorn Pet <span>WiFi</span></h1>
-<p class="sub">Unicorn bu ağı sadece saatini ayarlamak için kullanır.</p>
+<p class="sub" data-t="sub"></p>
 
 <section class="card" id="pick">
-  <h2>1 · Ev ağını seç</h2>
-  <ul id="nets"><li class="hint">Ağlar yükleniyor…</li></ul>
-  <p class="hint">Ağın listede yok mu? Unicorn sadece <b>2.4 GHz</b> ağları görür; modemde 2.4 GHz açık olmalı.</p>
+  <h2 data-t="pick"></h2>
+  <ul id="nets"><li class="hint" data-t="loading"></li></ul>
+  <p class="hint" data-t="missing"></p>
 </section>
 
 <section class="card" id="form" hidden>
-  <h2>2 · Şifreyi yaz</h2>
+  <h2 data-t="pass_h"></h2>
   <div id="chosen" class="name"></div>
   <div id="pwbox">
-    <label for="pw">WiFi şifresi</label>
+    <label for="pw" data-t="pass"></label>
     <div class="pw"><input id="pw" type="password" autocomplete="off" autocapitalize="off" spellcheck="false">
-      <button class="ghost" id="show" type="button">Göster</button></div>
+      <button class="ghost" id="show" type="button" data-t="show"></button></div>
   </div>
   <p class="err" id="err"></p>
-  <button class="go" id="connect" type="button">Bağlan</button>
+  <button class="go" id="connect" type="button" data-t="connect"></button>
 </section>
 
 <section class="card" id="progress" hidden>
-  <h2>Bağlanıyor</h2>
-  <ol class="steps"><li id="s0">Ağa katılıyor</li><li id="s1">Adres alıyor</li><li id="s2">Saati ayarlıyor</li></ol>
-  <p class="hint" id="note">Telefon bir an kopabilir; sonucu unicorn'un ekranı da gösterir.</p>
+  <h2 data-t="progress"></h2>
+  <ol class="steps"><li id="s0" data-t="s0"></li><li id="s1" data-t="s1"></li><li id="s2" data-t="s2"></li></ol>
+  <p class="hint" id="note" data-t="note"></p>
 </section>
 
 <section class="card result" id="done" hidden>
   <div id="icon" style="font-size:44px"></div><b id="title"></b><p id="msg" class="hint"></p>
-  <button class="go" id="again" type="button" hidden>Tekrar dene</button>
+  <button class="go" id="again" type="button" hidden data-t="again"></button>
 </section>
 
 <script>
@@ -91,7 +91,471 @@ const api = (window.parent !== window && window.parent.portalApi) || {
   status: () => fetch("/status").then((r) => r.json()),
 };
 const $ = (id) => document.getElementById(id);
-let chosen = null, polling = null;
+// The page speaks the phone's language (the toy's ten); anything else gets English.
+const WORDS = {
+ "title": {
+  "tr": "WiFi",
+  "en": "WiFi",
+  "es": "WiFi",
+  "fr": "WiFi",
+  "de": "WiFi",
+  "pt": "WiFi",
+  "it": "WiFi",
+  "ru": "WiFi",
+  "sv": "WiFi",
+  "id": "WiFi"
+ },
+ "sub": {
+  "tr": "Unicorn bu ağı sadece saatini ayarlamak için kullanır.",
+  "en": "The unicorn uses this network only to set its clock.",
+  "es": "El unicornio solo usa esta red para ajustar su reloj.",
+  "fr": "La licorne utilise ce réseau uniquement pour régler son horloge.",
+  "de": "Das Einhorn nutzt dieses Netzwerk nur, um seine Uhr zu stellen.",
+  "pt": "O unicórnio só usa esta rede para acertar o relógio.",
+  "it": "L'unicorno usa questa rete solo per impostare l'ora.",
+  "ru": "Единорог использует эту сеть только для настройки часов.",
+  "sv": "Enhörningen använder bara nätverket för att ställa klockan.",
+  "id": "Unicorn hanya memakai jaringan ini untuk mengatur jamnya."
+ },
+ "pick": {
+  "tr": "1 · Ev ağını seç",
+  "en": "1 · Pick your home network",
+  "es": "1 · Elige tu red de casa",
+  "fr": "1 · Choisis ton réseau domestique",
+  "de": "1 · Wähle dein Heimnetzwerk",
+  "pt": "1 · Escolhe a rede de casa",
+  "it": "1 · Scegli la rete di casa",
+  "ru": "1 · Выбери домашнюю сеть",
+  "sv": "1 · Välj ditt hemnätverk",
+  "id": "1 · Pilih jaringan rumahmu"
+ },
+ "loading": {
+  "tr": "Ağlar yükleniyor…",
+  "en": "Loading networks…",
+  "es": "Cargando redes…",
+  "fr": "Chargement des réseaux…",
+  "de": "Netzwerke werden geladen…",
+  "pt": "A carregar redes…",
+  "it": "Caricamento delle reti…",
+  "ru": "Загрузка сетей…",
+  "sv": "Laddar nätverk…",
+  "id": "Memuat jaringan…"
+ },
+ "missing": {
+  "tr": "Ağın listede yok mu? Unicorn sadece 2.4 GHz ağları görür; modemde 2.4 GHz açık olmalı.",
+  "en": "Network not listed? The unicorn only sees 2.4 GHz networks; 2.4 GHz must be on in your router.",
+  "es": "¿No aparece tu red? El unicornio solo detecta redes de 2.4 GHz. Activa 2.4 GHz en tu router.",
+  "fr": "Ton réseau n'apparaît pas ? La licorne détecte uniquement les réseaux 2.4 GHz. Active le 2.4 GHz sur ton routeur.",
+  "de": "Dein Netzwerk fehlt? Das Einhorn erkennt nur Netzwerke mit 2.4 GHz. Aktiviere 2.4 GHz an deinem Router.",
+  "pt": "A tua rede não aparece? O unicórnio só deteta redes de 2.4 GHz. Ativa 2.4 GHz no router.",
+  "it": "La tua rete non c'è? L'unicorno rileva solo reti a 2.4 GHz. Attiva 2.4 GHz sul router.",
+  "ru": "Твоей сети нет в списке? Единорог видит только сети 2.4 GHz. Включи 2.4 GHz на роутере.",
+  "sv": "Saknas ditt nätverk? Enhörningen hittar bara nätverk på 2.4 GHz. Aktivera 2.4 GHz på routern.",
+  "id": "Jaringanmu tidak ada? Unicorn hanya mendeteksi jaringan 2.4 GHz. Aktifkan 2.4 GHz di router."
+ },
+ "none": {
+  "tr": "Hiç 2.4 GHz ağ bulunamadı.",
+  "en": "No 2.4 GHz networks found.",
+  "es": "No se encontraron redes de 2.4 GHz.",
+  "fr": "Aucun réseau 2.4 GHz trouvé.",
+  "de": "Keine Netzwerke mit 2.4 GHz gefunden.",
+  "pt": "Não foram encontradas redes de 2.4 GHz.",
+  "it": "Nessuna rete a 2.4 GHz trovata.",
+  "ru": "Сети 2.4 GHz не найдены.",
+  "sv": "Inga nätverk på 2.4 GHz hittades.",
+  "id": "Tidak ada jaringan 2.4 GHz yang ditemukan."
+ },
+ "open": {
+  "tr": "açık",
+  "en": "open",
+  "es": "abierta",
+  "fr": "ouvert",
+  "de": "offen",
+  "pt": "aberta",
+  "it": "aperta",
+  "ru": "открытая",
+  "sv": "öppet",
+  "id": "terbuka"
+ },
+ "pass_h": {
+  "tr": "2 · Şifreyi yaz",
+  "en": "2 · Type the password",
+  "es": "2 · Escribe la contraseña",
+  "fr": "2 · Saisis le mot de passe",
+  "de": "2 · Gib das Passwort ein",
+  "pt": "2 · Introduz a palavra-passe",
+  "it": "2 · Inserisci la password",
+  "ru": "2 · Введи пароль",
+  "sv": "2 · Skriv lösenordet",
+  "id": "2 · Masukkan kata sandi"
+ },
+ "pass": {
+  "tr": "WiFi şifresi",
+  "en": "WiFi password",
+  "es": "Contraseña de WiFi",
+  "fr": "Mot de passe WiFi",
+  "de": "WiFi-Passwort",
+  "pt": "Palavra-passe do WiFi",
+  "it": "Password WiFi",
+  "ru": "Пароль WiFi",
+  "sv": "WiFi-lösenord",
+  "id": "Kata sandi WiFi"
+ },
+ "show": {
+  "tr": "Göster",
+  "en": "Show",
+  "es": "Mostrar",
+  "fr": "Afficher",
+  "de": "Anzeigen",
+  "pt": "Mostrar",
+  "it": "Mostra",
+  "ru": "Показать",
+  "sv": "Visa",
+  "id": "Tampilkan"
+ },
+ "hide": {
+  "tr": "Gizle",
+  "en": "Hide",
+  "es": "Ocultar",
+  "fr": "Masquer",
+  "de": "Verbergen",
+  "pt": "Ocultar",
+  "it": "Nascondi",
+  "ru": "Скрыть",
+  "sv": "Dölj",
+  "id": "Sembunyikan"
+ },
+ "connect": {
+  "tr": "Bağlan",
+  "en": "Connect",
+  "es": "Conectar",
+  "fr": "Connecter",
+  "de": "Verbinden",
+  "pt": "Ligar",
+  "it": "Connetti",
+  "ru": "Подключиться",
+  "sv": "Anslut",
+  "id": "Hubungkan"
+ },
+ "progress": {
+  "tr": "Bağlanıyor",
+  "en": "Connecting",
+  "es": "Conectando",
+  "fr": "Connexion en cours",
+  "de": "Verbindung wird hergestellt",
+  "pt": "A ligar",
+  "it": "Connessione in corso",
+  "ru": "Подключение",
+  "sv": "Ansluter",
+  "id": "Menghubungkan"
+ },
+ "s0": {
+  "tr": "Ağa katılıyor",
+  "en": "Joining the network",
+  "es": "Conectando a la red",
+  "fr": "Connexion au réseau",
+  "de": "Verbindung zum Netzwerk wird hergestellt",
+  "pt": "A ligar à rede",
+  "it": "Connessione alla rete",
+  "ru": "Подключение к сети",
+  "sv": "Ansluter till nätverket",
+  "id": "Menghubungkan ke jaringan"
+ },
+ "s1": {
+  "tr": "Adres alıyor",
+  "en": "Getting an address",
+  "es": "Obteniendo una dirección",
+  "fr": "Obtention d'une adresse",
+  "de": "Adresse wird abgerufen",
+  "pt": "A obter um endereço",
+  "it": "Recupero dell'indirizzo",
+  "ru": "Получение адреса",
+  "sv": "Hämtar en adress",
+  "id": "Mendapatkan alamat"
+ },
+ "s2": {
+  "tr": "Saati ayarlıyor",
+  "en": "Setting the clock",
+  "es": "Ajustando el reloj",
+  "fr": "Réglage de l'horloge",
+  "de": "Uhr wird gestellt",
+  "pt": "A acertar o relógio",
+  "it": "Impostazione dell'ora",
+  "ru": "Настройка часов",
+  "sv": "Ställer klockan",
+  "id": "Mengatur jam"
+ },
+ "note": {
+  "tr": "Telefon bir an kopabilir; sonucu unicorn'un ekranı da gösterir.",
+  "en": "The phone may drop off for a moment; the unicorn's screen shows the result too.",
+  "es": "El teléfono puede desconectarse un momento. El resultado también aparece en la pantalla del unicornio.",
+  "fr": "Le téléphone peut se déconnecter un instant. Le résultat s'affiche aussi sur l'écran de la licorne.",
+  "de": "Dein Handy kann kurz die Verbindung verlieren. Das Ergebnis siehst du auch auf dem Bildschirm des Einhorns.",
+  "pt": "O telemóvel pode desligar-se da rede por um momento. O resultado também aparece no ecrã do unicórnio.",
+  "it": "Il telefono potrebbe disconnettersi per un momento. Il risultato appare anche sullo schermo dell'unicorno.",
+  "ru": "Телефон может ненадолго отключиться от сети. Результат также появится на экране единорога.",
+  "sv": "Telefonen kan tappa anslutningen en kort stund. Resultatet visas också på enhörningens skärm.",
+  "id": "Ponsel mungkin terputus sebentar. Hasilnya juga muncul di layar unicorn."
+ },
+ "reconnect": {
+  "tr": "Bağlantı yenileniyor… (unicorn'un ekranına da bakabilirsin)",
+  "en": "Reconnecting… (you can also look at the unicorn's screen)",
+  "es": "Reconectando… (también puedes mirar la pantalla del unicornio)",
+  "fr": "Reconnexion… (tu peux aussi regarder l'écran de la licorne)",
+  "de": "Verbindung wird wiederhergestellt… (schau auch auf den Bildschirm des Einhorns)",
+  "pt": "A voltar a ligar… (também podes ver o ecrã do unicórnio)",
+  "it": "Riconnessione… (puoi anche guardare lo schermo dell'unicorno)",
+  "ru": "Повторное подключение… (можно также посмотреть на экран единорога)",
+  "sv": "Ansluter igen… (du kan också titta på enhörningens skärm)",
+  "id": "Menghubungkan ulang… (kamu juga bisa melihat layar unicorn)"
+ },
+ "again": {
+  "tr": "Tekrar dene",
+  "en": "Try again",
+  "es": "Reintentar",
+  "fr": "Réessayer",
+  "de": "Erneut versuchen",
+  "pt": "Tentar novamente",
+  "it": "Riprova",
+  "ru": "Попробовать снова",
+  "sv": "Försök igen",
+  "id": "Coba lagi"
+ },
+ "ok_t": {
+  "tr": "Bağlandı!",
+  "en": "Connected!",
+  "es": "¡Conectado!",
+  "fr": "Connexion réussie !",
+  "de": "Verbunden!",
+  "pt": "Ligado!",
+  "it": "Connesso!",
+  "ru": "Подключено!",
+  "sv": "Ansluten!",
+  "id": "Terhubung!"
+ },
+ "ok_m": {
+  "tr": "Saat ayarlandı. Bu sayfayı kapatabilirsin.",
+  "en": "The clock is set. You can close this page.",
+  "es": "El reloj está ajustado. Puedes cerrar esta página.",
+  "fr": "L'horloge est réglée. Tu peux fermer cette page.",
+  "de": "Die Uhr ist gestellt. Du kannst diese Seite schließen.",
+  "pt": "O relógio está certo. Podes fechar esta página.",
+  "it": "L'ora è impostata. Puoi chiudere questa pagina.",
+  "ru": "Часы настроены. Можешь закрыть эту страницу.",
+  "sv": "Klockan är ställd. Du kan stänga den här sidan.",
+  "id": "Jam sudah diatur. Kamu bisa menutup halaman ini."
+ },
+ "noclock_t": {
+  "tr": "Ağ kaydedildi",
+  "en": "Network saved",
+  "es": "Red guardada",
+  "fr": "Réseau enregistré",
+  "de": "Netzwerk gespeichert",
+  "pt": "Rede guardada",
+  "it": "Rete salvata",
+  "ru": "Сеть сохранена",
+  "sv": "Nätverket sparat",
+  "id": "Jaringan tersimpan"
+ },
+ "noclock_m": {
+  "tr": "Saat biraz sonra ayarlanacak. Bu sayfayı kapatabilirsin.",
+  "en": "The clock will be set a little later. You can close this page.",
+  "es": "El reloj se ajustará en un rato. Puedes cerrar esta página.",
+  "fr": "L'horloge sera réglée un peu plus tard. Tu peux fermer cette page.",
+  "de": "Die Uhr wird etwas später gestellt. Du kannst diese Seite schließen.",
+  "pt": "O relógio será acertado daqui a pouco. Podes fechar esta página.",
+  "it": "L'ora verrà impostata tra poco. Puoi chiudere questa pagina.",
+  "ru": "Часы настроятся чуть позже. Можешь закрыть эту страницу.",
+  "sv": "Klockan ställs om en liten stund. Du kan stänga den här sidan.",
+  "id": "Jam akan diatur sebentar lagi. Kamu bisa menutup halaman ini."
+ },
+ "badpass_t": {
+  "tr": "Bağlanamadı",
+  "en": "Could not connect",
+  "es": "No se pudo conectar",
+  "fr": "Connexion impossible",
+  "de": "Verbindung fehlgeschlagen",
+  "pt": "Não foi possível ligar",
+  "it": "Connessione non riuscita",
+  "ru": "Не удалось подключиться",
+  "sv": "Kunde inte ansluta",
+  "id": "Tidak bisa terhubung"
+ },
+ "badpass_m": {
+  "tr": "Şifreyi ya da modemin güvenlik ayarını kontrol et.",
+  "en": "Check the password or the router's security setting.",
+  "es": "Revisa la contraseña o los ajustes de seguridad del router.",
+  "fr": "Vérifie le mot de passe ou les paramètres de sécurité du routeur.",
+  "de": "Prüfe das Passwort oder die Sicherheitseinstellungen deines Routers.",
+  "pt": "Verifica a palavra-passe ou as definições de segurança do router.",
+  "it": "Controlla la password o le impostazioni di sicurezza del router.",
+  "ru": "Проверь пароль или настройки безопасности роутера.",
+  "sv": "Kontrollera lösenordet eller routerns säkerhetsinställningar.",
+  "id": "Periksa kata sandi atau pengaturan keamanan router."
+ },
+ "notfound_t": {
+  "tr": "Ağ bulunamadı",
+  "en": "Network not found",
+  "es": "Red no encontrada",
+  "fr": "Réseau introuvable",
+  "de": "Netzwerk nicht gefunden",
+  "pt": "Rede não encontrada",
+  "it": "Rete non trovata",
+  "ru": "Сеть не найдена",
+  "sv": "Nätverket hittades inte",
+  "id": "Jaringan tidak ditemukan"
+ },
+ "notfound_m": {
+  "tr": "Unicorn'u modeme yaklaştır; 2.4 GHz açık mı?",
+  "en": "Bring the unicorn closer to the router; is 2.4 GHz on?",
+  "es": "Acerca el unicornio al router. ¿Está activado 2.4 GHz?",
+  "fr": "Rapproche la licorne du routeur. Le 2.4 GHz est-il activé ?",
+  "de": "Stell das Einhorn näher an den Router. Ist 2.4 GHz aktiviert?",
+  "pt": "Aproxima o unicórnio do router. O 2.4 GHz está ativo?",
+  "it": "Avvicina l'unicorno al router. 2.4 GHz è attivo?",
+  "ru": "Поднеси единорога ближе к роутеру. Включён ли 2.4 GHz?",
+  "sv": "Flytta enhörningen närmare routern. Är 2.4 GHz aktiverat?",
+  "id": "Dekatkan unicorn ke router. Apakah 2.4 GHz sudah aktif?"
+ },
+ "full_t": {
+  "tr": "Liste dolu",
+  "en": "List full",
+  "es": "Lista llena",
+  "fr": "Liste pleine",
+  "de": "Liste voll",
+  "pt": "Lista cheia",
+  "it": "Elenco pieno",
+  "ru": "Список заполнен",
+  "sv": "Listan är full",
+  "id": "Daftar penuh"
+ },
+ "full_m": {
+  "tr": "En fazla 5 ağ kaydedilir. Önce unicorn'un ayarlarından bir ağı sil.",
+  "en": "Up to 5 networks are kept. First forget one in the unicorn's settings.",
+  "es": "Se pueden guardar hasta 5 redes. Primero elimina una en los ajustes del unicornio.",
+  "fr": "Tu peux enregistrer jusqu'à 5 réseaux. Supprime d'abord un réseau dans les paramètres de la licorne.",
+  "de": "Du kannst bis zu 5 Netzwerke speichern. Lösche zuerst eines in den Einstellungen des Einhorns.",
+  "pt": "Podes guardar até 5 redes. Primeiro, elimina uma nas definições do unicórnio.",
+  "it": "Puoi salvare fino a 5 reti. Prima eliminane una nelle impostazioni dell'unicorno.",
+  "ru": "Можно сохранить до 5 сетей. Сначала удали одну в настройках единорога.",
+  "sv": "Du kan spara upp till 5 nätverk. Ta först bort ett i enhörningens inställningar.",
+  "id": "Maksimal 5 jaringan bisa disimpan. Hapus satu dulu di pengaturan unicorn."
+ },
+ "timeout_t": {
+  "tr": "Süre doldu",
+  "en": "Time is up",
+  "es": "Se acabó el tiempo",
+  "fr": "Temps écoulé",
+  "de": "Zeit abgelaufen",
+  "pt": "O tempo acabou",
+  "it": "Tempo scaduto",
+  "ru": "Время истекло",
+  "sv": "Tiden är ute",
+  "id": "Waktu habis"
+ },
+ "timeout_m": {
+  "tr": "Unicorn'un ekranında yeniden BAŞLAT'a dokun.",
+  "en": "Tap START on the unicorn's screen again.",
+  "es": "Toca START de nuevo en la pantalla del unicornio.",
+  "fr": "Appuie à nouveau sur START sur l'écran de la licorne.",
+  "de": "Tippe auf dem Bildschirm des Einhorns erneut auf START.",
+  "pt": "Toca novamente em START no ecrã do unicórnio.",
+  "it": "Tocca di nuovo START sullo schermo dell'unicorno.",
+  "ru": "Снова нажми START на экране единорога.",
+  "sv": "Tryck på START igen på enhörningens skärm.",
+  "id": "Ketuk START lagi di layar unicorn."
+ },
+ "e_len": {
+  "tr": "WiFi şifresi 8-63 karakter olur.",
+  "en": "A WiFi password has 8-63 characters.",
+  "es": "La contraseña de WiFi debe tener entre 8 y 63 caracteres.",
+  "fr": "Le mot de passe WiFi doit contenir entre 8 et 63 caractères.",
+  "de": "Das WiFi-Passwort muss 8 bis 63 Zeichen lang sein.",
+  "pt": "A palavra-passe do WiFi deve ter entre 8 e 63 caracteres.",
+  "it": "La password WiFi deve contenere da 8 a 63 caratteri.",
+  "ru": "Пароль WiFi должен содержать от 8 до 63 символов.",
+  "sv": "WiFi-lösenordet måste ha 8–63 tecken.",
+  "id": "Kata sandi WiFi harus terdiri dari 8–63 karakter."
+ },
+ "e_stale": {
+  "tr": "Ağ listesi değişti; sayfayı yenile.",
+  "en": "The network list changed; reload the page.",
+  "es": "La lista de redes cambió. Recarga la página.",
+  "fr": "La liste des réseaux a changé. Actualise la page.",
+  "de": "Die Netzwerkliste hat sich geändert. Lade die Seite neu.",
+  "pt": "A lista de redes mudou. Atualiza a página.",
+  "it": "L'elenco delle reti è cambiato. Ricarica la pagina.",
+  "ru": "Список сетей изменился. Обнови страницу.",
+  "sv": "Nätverkslistan har ändrats. Ladda om sidan.",
+  "id": "Daftar jaringan berubah. Muat ulang halaman."
+ },
+ "e_ssid": {
+  "tr": "Ağ adı geçersiz.",
+  "en": "That network name is not valid.",
+  "es": "El nombre de la red no es válido.",
+  "fr": "Ce nom de réseau n'est pas valide.",
+  "de": "Dieser Netzwerkname ist ungültig.",
+  "pt": "O nome da rede é inválido.",
+  "it": "Il nome della rete non è valido.",
+  "ru": "Недопустимое имя сети.",
+  "sv": "Nätverksnamnet är ogiltigt.",
+  "id": "Nama jaringan tidak valid."
+ },
+ "e_busy": {
+  "tr": "Unicorn şu an meşgul, biraz bekle.",
+  "en": "The unicorn is busy; wait a moment.",
+  "es": "El unicornio está ocupado. Espera un momento.",
+  "fr": "La licorne est occupée. Patiente un instant.",
+  "de": "Das Einhorn ist gerade beschäftigt. Warte einen Moment.",
+  "pt": "O unicórnio está ocupado. Espera um pouco.",
+  "it": "L'unicorno è occupato. Aspetta un momento.",
+  "ru": "Единорог занят. Подожди немного.",
+  "sv": "Enhörningen är upptagen. Vänta en stund.",
+  "id": "Unicorn sedang sibuk. Tunggu sebentar."
+ },
+ "e_list": {
+  "tr": "Ağ listesi alınamadı; sayfayı yenile.",
+  "en": "Could not get the network list; reload the page.",
+  "es": "No se pudo obtener la lista de redes. Recarga la página.",
+  "fr": "Impossible de récupérer la liste des réseaux. Actualise la page.",
+  "de": "Die Netzwerkliste konnte nicht geladen werden. Lade die Seite neu.",
+  "pt": "Não foi possível obter a lista de redes. Atualiza a página.",
+  "it": "Impossibile recuperare l'elenco delle reti. Ricarica la pagina.",
+  "ru": "Не удалось получить список сетей. Обнови страницу.",
+  "sv": "Kunde inte hämta nätverkslistan. Ladda om sidan.",
+  "id": "Tidak bisa mengambil daftar jaringan. Muat ulang halaman."
+ },
+ "e_retry": {
+  "tr": "Bağlantı başlamadı; tekrar dene.",
+  "en": "The connection didn't start; try again.",
+  "es": "La conexión no empezó; inténtalo de nuevo.",
+  "fr": "La connexion n'a pas démarré ; réessaie.",
+  "de": "Die Verbindung hat nicht begonnen; versuche es noch einmal.",
+  "pt": "A conexão não começou; tente de novo.",
+  "it": "La connessione non è partita; riprova.",
+  "ru": "Подключение не началось; попробуй ещё раз.",
+  "sv": "Anslutningen startade inte; försök igen.",
+  "id": "Koneksi belum dimulai; coba lagi."
+ },
+ "e_lost": {
+  "tr": "Unicorn'a ulaşılamıyor. Telefon hâlâ unicorn'un ağında mı?",
+  "en": "Can't reach the unicorn. Is the phone still on the unicorn's network?",
+  "es": "No se encuentra al unicornio. ¿Sigue el teléfono en su red?",
+  "fr": "Impossible de joindre la licorne. Le téléphone est-il encore sur son réseau ?",
+  "de": "Das Einhorn ist nicht erreichbar. Ist das Handy noch in seinem Netzwerk?",
+  "pt": "Não foi possível falar com o unicórnio. O telefone ainda está na rede dele?",
+  "it": "Impossibile raggiungere l'unicorno. Il telefono è ancora sulla sua rete?",
+  "ru": "Единорог не отвечает. Телефон всё ещё в его сети?",
+  "sv": "Når inte enhörningen. Är telefonen kvar i dess nätverk?",
+  "id": "Unicorn tidak terjangkau. Apakah ponsel masih di jaringannya?"
+ }
+};
+const lang = (navigator.languages || [navigator.language || "en"]).map((l) => l.slice(0, 2).toLowerCase())
+  .find((l) => WORDS.sub && WORDS.sub[l]) || "en";
+const t = (key) => (WORDS[key] && (WORDS[key][lang] || WORDS[key].en)) || key;
+document.documentElement.lang = lang;
+for (const el of document.querySelectorAll("[data-t]")) el.textContent = t(el.dataset.t);
+let chosen = null, polling = null, unsure = false, misses = 0;
 
 function bars(rssi) {
   const n = rssi > -55 ? 4 : rssi > -67 ? 3 : rssi > -78 ? 2 : 1, b = document.createElement("span");
@@ -103,12 +567,12 @@ function bars(rssi) {
 function show(list) {
   const ul = $("nets");
   ul.textContent = "";
-  if (!list.length) { const li = document.createElement("li"); li.className = "hint"; li.textContent = "Hiç 2.4 GHz ağ bulunamadı."; ul.append(li); return; }
+  if (!list.length) { const li = document.createElement("li"); li.className = "hint"; li.textContent = t("none"); ul.append(li); return; }
   for (const n of list) {
     const li = document.createElement("li"), b = document.createElement("button"), name = document.createElement("span"),
           meta = document.createElement("span");
     name.className = "name"; name.textContent = n.s;
-    meta.className = "meta"; meta.textContent = n.l ? "🔒" : "açık";
+    meta.className = "meta"; meta.textContent = n.l ? "🔒" : t("open");
     b.type = "button"; b.append(name, meta, bars(n.r)); b.setAttribute("aria-pressed", "false");
     b.onclick = () => {
       chosen = n;
@@ -128,13 +592,9 @@ function valid(pass) {           // WPA: 8-63 characters, or 64 hex digits
 }
 
 const STAGES = { join: 0, addr: 1, clock: 2 };
-const RESULTS = {
-  ok:       ["✅", "Bağlandı!", "Saat ayarlandı. Bu sayfayı kapatabilirsin.", true],
-  noclock:  ["🕒", "Ağ kaydedildi", "Saat biraz sonra ayarlanacak. Bu sayfayı kapatabilirsin.", true],
-  badpass:  ["❌", "Bağlanamadı", "Şifreyi ya da modemin güvenlik ayarını kontrol et.", false],
-  notfound: ["❌", "Ağ bulunamadı", "Unicorn'u modeme yaklaştır; 2.4 GHz açık mı?", false],
-  full:     ["📋", "Liste dolu", "En fazla 5 ağ kaydedilir. Önce unicorn'un ayarlarından bir ağı sil.", false],
-  timeout:  ["⏱️", "Süre doldu", "Unicorn'un ekranında yeniden BAŞLAT'a dokun.", false],
+const RESULTS = {                // icon, then the title and message keys; true = it worked
+  ok: ["✅", true], noclock: ["🕒", true], badpass: ["❌", false], notfound: ["❌", false],
+  full: ["📋", false], timeout: ["⏱️", false],
 };
 
 function stage(st) {
@@ -148,34 +608,51 @@ function stage(st) {
   if (!r) return false;
   $("progress").hidden = true;
   $("done").hidden = false;
-  $("done").className = "card result " + (r[3] ? "ok" : "bad");
-  $("icon").textContent = r[0]; $("title").textContent = r[1]; $("msg").textContent = r[2];
-  $("again").hidden = r[3] || st.stage === "timeout";
+  $("done").className = "card result " + (r[1] ? "ok" : "bad");
+  $("icon").textContent = r[0]; $("title").textContent = t(st.stage + "_t"); $("msg").textContent = t(st.stage + "_m");
+  $("again").hidden = r[1] || st.stage === "timeout";
   return true;
+}
+
+function back_to_form(msg) {               // the attempt never started (or the toy is gone): try again
+  clearInterval(polling);
+  $("progress").hidden = $("done").hidden = true;
+  $("pick").hidden = $("form").hidden = false;
+  $("connect").disabled = false;
+  $("err").textContent = msg;
 }
 
 function poll() {
   clearInterval(polling);
+  misses = 0;
   polling = setInterval(() => {
-    api.status().then((st) => { $("note").textContent = "Telefon bir an kopabilir; sonucu unicorn'un ekranı da gösterir."; if (stage(st)) clearInterval(polling); })
-      .catch(() => { $("note").textContent = "Bağlantı yenileniyor… (unicorn'un ekranına da bakabilirsin)"; });
+    api.status().then((st) => {
+      misses = 0;
+      $("note").textContent = t("note");
+      if (st.stage === "wait" && unsure) { unsure = false; back_to_form(t("e_retry")); return; }   // the POST was lost
+      if (stage(st)) clearInterval(polling);
+    }).catch(() => {
+      $("note").textContent = t("reconnect");
+      if (++misses >= 40) back_to_form(t("e_lost"));   // 40 s without the toy: its network may be gone
+    });
   }, 1000);
 }
 
-$("show").onclick = () => { const p = $("pw"); p.type = p.type === "password" ? "text" : "password"; $("show").textContent = p.type === "password" ? "Göster" : "Gizle"; };
+$("show").onclick = () => { const p = $("pw"); p.type = p.type === "password" ? "text" : "password"; $("show").textContent = t(p.type === "password" ? "show" : "hide"); };
 $("connect").onclick = () => {
   const pass = $("pw").value;
   if (!chosen) return;
-  if (!valid(pass)) { $("err").textContent = "WiFi şifresi 8-63 karakter olur."; return; }
+  if (!valid(pass)) { $("err").textContent = t("e_len"); return; }
   $("connect").disabled = true;
   api.connect(chosen, chosen.l ? pass : "").then((r) => {
     $("connect").disabled = false;
-    if (r && r.error) { $("err").textContent = r.error; return; }
+    if (r && r.error) { $("err").textContent = t("e_" + r.error); return; }
+    unsure = false;
     stage({ stage: "join" }); poll();
-  }).catch(() => { $("connect").disabled = false; stage({ stage: "join" }); poll(); });
+  }).catch(() => { $("connect").disabled = false; unsure = true; stage({ stage: "join" }); poll(); });
 };
 $("again").onclick = () => { $("done").hidden = true; $("pick").hidden = $("form").hidden = false; $("connect").disabled = false; };
-api.scan().then(show).catch(() => { $("nets").textContent = "Ağ listesi alınamadı; sayfayı yenile."; });
+api.scan().then(show).catch(() => { $("nets").textContent = t("e_list"); });
 </script>
 </body>
 </html>

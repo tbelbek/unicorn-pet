@@ -34,6 +34,7 @@ static u8 SAVEBUF[64];   // >= SAVE_SIZE; also takes older, shorter saves
 
 API(up_init) void up_init(u32 seed) { G.init(seed); render(G, FBUF); }
 API(up_save_buf) u8* up_save_buf() { return SAVEBUF; }
+API(up_save_buf_len) int up_save_buf_len() { return (int)sizeof SAVEBUF; }
 API(up_save_size) u32 up_save_size() { return SAVE_SIZE; }
 API(up_save) u32 up_save() { return G.save(SAVEBUF); }
 API(up_load) int up_load(u32 len) { int ok = G.load(SAVEBUF, len); render(G, FBUF); return ok; }
@@ -60,7 +61,7 @@ API(up_melody_len) int up_melody_len(int sfx) { int n; melody(sfx, &n); return n
 API(up_muted) int up_muted() { return G.s.muted; }
 API(up_play_ms) u32 up_play_ms() { return G.play_ms; }
 API(up_away_ms) u32 up_away_ms() { return G.away_ms; }
-API(up_set_wall) void up_set_wall(u32 local_s, int calendar) { G.set_wall(local_s, calendar != 0); }
+API(up_set_wall) void up_set_wall(u32 local_s, int calendar, u32 utc_s) { G.set_wall(local_s, calendar != 0, utc_s); }
 API(up_phase) int up_phase() { return G.phase(); }
 API(up_wall) u32 up_wall() { return G.wall_s; }
 API(up_stage) int up_stage() { return G.stage(); }
@@ -78,6 +79,7 @@ API(up_set_boot) void up_set_boot(int down) { G.set_boot(down != 0); }
 static char TEXT[256];
 API(up_text_buf) char* up_text_buf() { return TEXT; }
 API(up_wifi_req) int up_wifi_req() { return G.wifi_req; }
+API(up_cloud_x) int up_cloud_x() { return G.cloud_x; }
 API(up_wifi_arg) int up_wifi_arg() { return G.wifi_arg; }
 API(up_wifi_take) void up_wifi_take() { G.wifi_req = WREQ_NONE; }
 API(up_wifi_stage) int up_wifi_stage() { return G.wifi_stage; }

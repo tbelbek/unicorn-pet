@@ -31,8 +31,12 @@ def framed(img, text):
         y += 20
     return out
 
+files = sorted(src.glob("*.ppm"))
+caps = caps[:len(times)]                   # the file ends with a newline
+if not (len(files) == len(times) == len(caps)) or [p.stem for p in files] != [f"{i:04d}" for i in range(len(files))]:
+    raise SystemExit(f"{len(files)} frames, {len(times)} times, {len(caps)} captions: re-run make -C test tour")
 frames, durations, last = [], [], None
-for p, ms, cap in zip(sorted(src.glob("*.ppm")), times, caps):
+for p, ms, cap in zip(files, times, caps):
     img = framed(Image.open(p).convert("RGB"), cap)
     key = img.tobytes()
     if key == last:

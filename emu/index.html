@@ -167,7 +167,8 @@ let wallMs = Date.now() + Number(localStorage.getItem(WALL_KEY) || 0);
 // the board's RTC holds local time, as seconds since 2000-01-01 (no DST handling, like the board)
 const LOCAL_2000 = Date.UTC(2000, 0, 1);
 const localMs = () => wallMs - new Date(wallMs).getTimezoneOffset() * 60000;
-const wallNow = () => ($("rtc").checked ? Math.floor((localMs() - LOCAL_2000) / 1000) : 0);
+const wallNow = () => ($("rtc").checked ? Math.max(0, Math.floor((localMs() - LOCAL_2000) / 1000)) : 0);
+const utcNow = () => ($("rtc").checked ? Math.max(0, Math.floor((wallMs - LOCAL_2000) / 1000)) : 0);   // breaks
 const PHASES = ["gündüz", "akşam", "gece"], STAGES = ["tay", "genç", "büyük", "hikâyeci"];
 // the computer's own battery as a start, until a battery control is touched by hand (once, not per boot)
 let hostBattery = true;
@@ -191,8 +192,10 @@ function showClock() {
 }
 $("ntp").onclick = () => { wallMs = Date.now(); $("rtc").checked = true; save(); };   // like a WiFi sync
 $("clock").onchange = () => {              // jump the virtual clock (the value is local time)
-  const t = new Date($("clock").value).getTime();
-  if (!isNaN(t)) { wallMs = t; save(); }
+  const d = new Date($("clock").value), y = d.getFullYear();
+  if (isNaN(d) || y < 2001 || y > 2099) { showClock(); return; }   // the toy counts from 2000 (u32 seconds)
+  wallMs = d.getTime();
+  save();
 };
 
 function blit() {
@@ -214,14 +217,17 @@ function save() {
 }
 function boot() {                                   // like the firmware: fresh state, then NVS
   w.up_init((Math.random() * 2 ** 32) >>> 0);
-  w.up_set_wall(wallNow(), 1);                         // like the firmware: read the RTC before NVS
+  w.up_set_wall(wallNow(), 1, utcNow());                         // like the firmware: read the RTC before NVS
   const saved = localStorage.getItem(KEY);
   if (saved) {
-    const bytes = Uint8Array.from(atob(saved), (c) => c.charCodeAt(0));
-    new Uint8Array(w.memory.buffer, w.up_save_buf(), bytes.length).set(bytes);
-    if (!w.up_load(bytes.length) && !localStorage.getItem(KEY + "-bad"))   // keep it, like the board
+    let bytes = null;
+    try { bytes = Uint8Array.from(atob(saved), (c) => c.charCodeAt(0)); } catch { bytes = null; }   // not even Base64
+    const fits = bytes && bytes.length <= w.up_save_buf_len();
+    if (fits) new Uint8Array(w.memory.buffer, w.up_save_buf(), bytes.length).set(bytes);
+    if (!(fits && w.up_load(bytes.length)) && !localStorage.getItem(KEY + "-bad"))   // keep it, like the board
       localStorage.setItem(KEY + "-bad", saved);
   }
+  pushList();                                       // the saved networks survive a power cut (NVS on the board)
   screenOn = true;
   blit();
 }
@@ -233,7 +239,7 @@ const WREQ = { START: 1, STOP: 2, RETRY: 3, FORGET: 4 };
 const STAGE_NAMES = ["wait", "wait", "wait", "wait", "join", "addr", "clock", "ok", "noclock", "badpass", "notfound", "full", "timeout"];
 const mock = {
   nets: [{ s: "Ev WiFi 2.4", r: -46, l: 1 }, { s: "Komşu Modem", r: -71, l: 1 }, { s: "Kafe Misafir", r: -80, l: 0 }],
-  saved: [],
+  saved: JSON.parse(localStorage.getItem("unicorn-pet-wifi") || "[]"),
 };
 function putText(...strs) {
   const buf = new Uint8Array(w.memory.buffer, w.up_text_buf(), 256), enc = new TextEncoder();
@@ -246,11 +252,42 @@ function pushList() {
   for (const s of mock.saved) { putText(s); w.up_wifi_list_add(0); }
 }
 let wifiGen = 0;                             // a stopped session's pending steps do nothing
-const later = (ms, fn) => { const gen = wifiGen; setTimeout(() => { if (gen === wifiGen) fn(); }, ms / speed); };
+// The pretend toy runs on the emulator's own (sped-up) time, like the board's timers would.
+let virt = 0, session = null;
+const timers = [];
+const later = (ms, fn) => timers.push({ at: virt + ms, gen: wifiGen, fn });
+function runTimers(ms) {
+  virt += ms;
+  for (let i = 0; i < timers.length;) {
+    const tm = timers[i];
+    if (tm.at > virt) { i++; continue; }
+    timers.splice(i, 1);
+    if (tm.gen === wifiGen) tm.fn();
+  }
+  if (!session) return;
+  const st = w.up_wifi_stage();
+  let shown = false;                                      // has the phone shown a result yet?
+  try { shown = !$("portal").contentDocument.getElementById("done").hidden; } catch {}
+  if (!shown) session.shownAt = undefined;
+  else session.shownAt ??= performance.now();
+  // sped up, minutes of toy time pass in a blink: a result stays on the phone for a few real seconds
+  const seen = shown && performance.now() - session.shownAt >= 8000;
+  if (st === WST.OK || st === WST.OK_NOCLOCK) {           // like the board: the radio goes off a minute later
+    session.okAt ??= virt;
+    if (virt - session.okAt >= 60000 && seen) { wifiStatus(WST.OFF); endWifi(); }
+  } else if ((st === WST.BAD_PASS || st === WST.NOT_FOUND || st === WST.FULL) && !seen) {
+    // not read yet: the session's five minutes wait for it
+  } else if (st !== WST.JOIN && st !== WST.ADDR && st !== WST.CLOCK && virt >= session.deadline) {
+    wifiStatus(WST.TIMEOUT); endWifi();                   // 5 minutes, never in the middle of a join
+  }
+}
+const WIFI_KEY = "unicorn-pet-wifi";                      // the board keeps these in NVS
+const saveNets = () => localStorage.setItem(WIFI_KEY, JSON.stringify(mock.saved));
 window.portalApi = {                         // what the toy would answer at /scan, /connect, /status
   scan: () => new Promise((ok) => later(400, () => ok(mock.nets))),
   connect: (net, pass) => {
     const ssid = net.s;
+    if (!session || virt >= session.deadline) return Promise.resolve({ error: "busy" });   // the session is over
     if (!mock.saved.includes(ssid) && mock.saved.length >= 5) { wifiStatus(WST.FULL, ssid); return Promise.resolve({ ok: true }); }
     wifiStatus(WST.JOIN, ssid);
     later(900, () => wifiStatus(WST.ADDR));
@@ -259,6 +296,7 @@ window.portalApi = {                         // what the toy would answer at /sc
       wifiStatus(WST.CLOCK);
       later(900, () => {
         mock.saved = [ssid, ...mock.saved.filter((s) => s !== ssid)];
+        saveNets();
         pushList();
         wallMs = Date.now(); $("rtc").checked = true;
         wifiStatus(WST.OK);
@@ -268,6 +306,12 @@ window.portalApi = {                         // what the toy would answer at /sc
   },
   status: () => Promise.resolve({ stage: STAGE_NAMES[w.up_wifi_stage()] || "wait" }),
 };
+function endWifi() {                           // power cut, a new egg or the end of a session
+  wifiGen++;
+  session = null;
+  $("phone").hidden = true;
+  $("portal").src = "about:blank";
+}
 function wifiRequest() {
   const req = w.up_wifi_req(), arg = w.up_wifi_arg();
   w.up_wifi_take();
@@ -280,14 +324,17 @@ function wifiRequest() {
       $("phone").hidden = false;
       $("portal").src = "../fw/src/portal.html";      // as if the phone scanned the QR
       $("portal").onload = () => { if (w.up_wifi_stage() === WST.WAIT) wifiStatus(WST.PHONE); };
+      session = { deadline: virt + 5 * 60000 };
     });
   } else if (req === WREQ.STOP) {
+    session = null;
     $("phone").hidden = true;
     $("portal").src = "about:blank";
   } else if (req === WREQ.RETRY) {
-    wifiStatus(WST.PHONE);
+    if (session && virt < session.deadline) wifiStatus(WST.PHONE);   // late: the timeout follows
   } else if (req === WREQ.FORGET) {
     mock.saved.splice(arg, 1);
+    saveNets();
     pushList();
   }
 }
@@ -322,6 +369,7 @@ function play(id) {
   }
 }
 
+function stopSound() { for (const o of voices) try { o.stop(); } catch {} voices = []; }
 function silenceIfOff() {
   if (w.up_volume() === 2 && voices.length) { for (const o of voices) try { o.stop(); } catch {} voices = []; }
 }
@@ -335,7 +383,7 @@ addEventListener("deviceorientation", (e) => {
 });
 $("tilt").oninput = () => { $("tiltv").textContent = $("tilt").value; sliderAt = performance.now(); };
 function step(dt) {
-  w.up_set_wall(wallNow(), 1);
+  w.up_set_wall(wallNow(), 1, utcNow());
   w.up_set_battery(+$("batt").value);               // like the board's PMU: level and USB power
   w.up_set_plugged($("plug").checked ? 1 : 0);
   w.up_set_boot(bootDown ? 1 : 0);
@@ -344,8 +392,8 @@ function step(dt) {
   else if (+$("tilt").value !== 0 || t0 - sliderAt < 300) w.up_set_tilt(+$("tilt").value);   // 0 is a real sample
   const f = w.up_tick(Math.max(0, dt) >>> 0);
   if (f & F.CLOCK) {                              // a parent set the clock: move the virtual RTC
-    const local = LOCAL_2000 + w.up_wall() * 1000;
-    wallMs = local + new Date(local).getTimezoneOffset() * 60000;
+    const f = new Date(LOCAL_2000 + w.up_wall() * 1000);   // the core's local reading, as fields
+    wallMs = new Date(f.getUTCFullYear(), f.getUTCMonth(), f.getUTCDate(), f.getUTCHours(), f.getUTCMinutes()).getTime();
     $("rtc").checked = true;
     save();
   }
@@ -362,7 +410,7 @@ function step(dt) {
 }
 
 // time: virtual ms so a hidden tab (paused rAF) can't dump hours into one tick
-let last = performance.now();
+let last = performance.now(), simLeft = 0;
 function frame(now) {
   // clamp both ways: the first rAF timestamp can be *earlier* than performance.now() taken at
   // load, and a negative dt would wrap to ~49.7 days once it crosses into the wasm u32
@@ -370,9 +418,16 @@ function frame(now) {
   const real = Math.min(raw, 250);                // ...but the simulation takes it in small bites
   last = now;
   wallMs += raw * speed;                          // the RTC runs on, powered or not
-  if (powered) step(Math.round(real * speed));
+  simLeft += real * speed;                        // keep the fraction: 60 Hz frames are 16.67 ms
+  const dt = Math.floor(simLeft);
+  simLeft -= dt;
+  if (powered) step(dt);
+  if (powered) runTimers(dt); else if (session) endWifi();
   if (powered) panel();
-  if (Math.floor(now / 500) !== Math.floor((now - raw) / 500)) showClock();
+  if (Math.floor(now / 500) !== Math.floor((now - raw) / 500)) {
+    showClock();
+    localStorage.setItem(WALL_KEY, String(Math.round(wallMs - Date.now())));   // the RTC's lead, even unsaved
+  }
   requestAnimationFrame(frame);
 }
 
@@ -385,7 +440,9 @@ canvas.addEventListener("pointerdown", (e) => {
 let bootDown = false;
 const bootKey = (down) => { bootDown = down; $("boot").classList.toggle("down", down); };
 $("boot").onpointerdown = (e) => { e.preventDefault(); bootKey(true); };
-$("boot").onpointerup = $("boot").onpointerleave = () => bootKey(false);
+$("boot").onpointerup = $("boot").onpointerleave = $("boot").onpointercancel = () => bootKey(false);
+addEventListener("blur", () => bootKey(false));          // released somewhere we cannot see
+document.addEventListener("visibilitychange", () => { if (document.hidden) bootKey(false); });
 $("pwr").onclick = () => input(IN.SELECT);
 addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT") return;
@@ -423,7 +480,7 @@ const sliders = STATS.map((name, i) => {
   row.className = "stat";
   row.innerHTML = `<span>${name}</span><input type="range" min="0" max="${w.up_max_stat()}" step="100"><output></output>`;
   const range = row.querySelector("input");
-  range.oninput = () => { w.up_set_stat(i, +range.value); step(0); };
+  range.oninput = () => { if (!powered) return; w.up_set_stat(i, +range.value); step(0); };
   $("stats").append(row);
   return { range, out: row.querySelector("output") };
 });
@@ -449,7 +506,7 @@ $("power").onclick = () => {
   $("power").textContent = powered ? "GÜCÜ KES" : "GÜCÜ AÇ";
   device.classList.toggle("power-off", !powered);
   $("offNote").innerHTML = powered ? "EKRAN KAPALI<br>DOKUN" : "GÜÇ KAPALI<br>ZAMAN DURDU";
-  if (powered) boot(); else black();
+  if (powered) boot(); else { black(); stopSound(); endWifi(); }
   panel();
 };
 $("size").onclick = () => {
@@ -460,7 +517,12 @@ $("shot").onclick = () => {
   const a = document.createElement("a");
   a.download = `unicorn-${Date.now()}.png`; a.href = canvas.toDataURL(); a.click();
 };
-$("reset").onclick = () => { localStorage.removeItem(KEY); localStorage.removeItem(WALL_KEY); wallMs = Date.now(); boot(); };
+$("reset").onclick = () => {
+  localStorage.removeItem(KEY); localStorage.removeItem(WALL_KEY); wallMs = Date.now();
+  stopSound(); endWifi(); mock.saved = []; saveNets();
+  if (!powered) $("power").click();               // a new egg comes with the power on
+  boot();
+};
 
 boot();
 requestAnimationFrame(frame);

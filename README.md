@@ -196,8 +196,9 @@ of `core/unicorn.h`.
   unlikely to do that by chance, and the presses on the way never move the menu cursor: a short
   BOOT press counts once it is over (0.4 s later). Volume
   (normal / low / off), session length (5/10/15/20 min), break length (15/30/45/60 min),
-  brightness, calm mode (no bobbing or hops, fewer particles), shake on/off, the battery %, and
-  the date and time ("AYARLA" when the clock is not trusted). **SAAT** opens a second page: year, month, day, hour, minute and her
+  brightness, calm mode (no bobbing or hops, fewer particles), shake on/off, bedtime, the
+  language, the battery %, and the date and time ("AYARLA" when the clock is not trusted).
+  **SAAT** opens a small hub: DATE AND TIME and WIFI. The date page has year, month, day, hour, minute and her
   birthday (month and day, once she has hatched). Tap the left half of a row for -1 and the right
   half for +1, or use BOOT for the next row and PWR for +1; every value wraps around. KAYDET sets
   the clock and the birthday. A birthday set to today gets its party today, and one already past
@@ -219,7 +220,7 @@ make -C test               # host: every event, mini-game, petting, idle life, p
                            # save/load, screen-off, tick-size independence, a week of neglect;
                            # dumps a screenshot per event to test/out/*.png
 make -C test wasm          # the same events through emu/unicorn.wasm in Node
-make -C test all           # all of it, plus the time-zone, portal and emulator-script checks
+make -C test all           # all of it, plus the time-zone, language, portal and emulator-script checks
 make -C test record        # scripted play-through from the real core -> design/gameplay.gif
 ```
 
@@ -232,6 +233,22 @@ bad write) is copied to `save_bad` before a new egg could overwrite it. A runnin
 too: a new build only resets it from its build time if the clock is behind that or had stopped.
 Things that do wipe her: "Erase Flash" in an IDE, `pio run -t erase`, or changing the partition
 table or the NVS names.
+
+## Languages
+
+The toy speaks ten languages: Turkish, English, Spanish, French, German, Portuguese, Italian,
+Russian, Swedish and Indonesian. A parent picks one under parent settings > **DİL · LANGUAGE**
+(every tap is the next language; the row always says "LANGUAGE" too, so it can be found from any
+of them). The unicorns' names are translated as well. A save from before keeps Turkish.
+Chinese, Hindi, Arabic and Japanese would need glyphs the 8-pixel font cannot hold.
+
+- Every word is in `tools/i18n.py` (one key, ten languages). `tools/export_i18n.py` writes
+  `core/strings.gen.h`, and `tools/export_c.py` adds every letter the languages use to the pixel
+  font. Accented capitals get the font's spare top row for the accent and a full-height letter.
+- Text that is too wide for the screen at the large size drops to the small size by itself, and
+  `make -C test` renders every scene, page and overlay in every language and fails if any text
+  still runs off the screen. `make -C test i18n` fails if a language is missing a string.
+- The phone setup page speaks the phone's own language (any of the ten, English otherwise).
 
 ## WiFi and location
 

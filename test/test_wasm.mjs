@@ -194,13 +194,19 @@ test("RTC: the break also passes while powered off", () => {
   assert.equal(w.up_scene(), 12, "walks back in");
 });
 
-test("parent settings from the BOOT long-press", () => {
+test("parent settings from the BOOT gesture (three presses, the last held)", () => {
   hatch();
-  w.up_input(IN.PARENT ?? 5, 0, 0);
-  assert.equal(w.up_scene(), SC.SETTINGS);
-  w.up_input(IN.TOUCH, 184, 64 + 0 * 38 + 18);        // volume: normal -> low
+  const press = (ms, gap) => {
+    for (let t = 0; t < ms; t += 10) { w.up_set_boot(1); w.up_tick(10); }
+    for (let t = 0; t < gap; t += 10) { w.up_set_boot(0); w.up_tick(10); }
+  };
+  press(80, 150); press(80, 150);
+  for (let t = 0; t < 3100; t += 10) { w.up_set_boot(1); w.up_tick(10); }
+  w.up_set_boot(0);
+  assert.equal(w.up_scene(), SC.SETTINGS, "the gesture opens the settings");
+  w.up_input(IN.TOUCH, 184, 64 + 0 * 34 + 17);        // volume: normal -> low
   assert.equal(w.up_volume(), 1);
-  w.up_input(IN.TOUCH, 184, 64 + 3 * 38 + 18);        // brightness steps
+  w.up_input(IN.TOUCH, 184, 64 + 3 * 34 + 17);        // brightness steps
   assert.notEqual(w.up_brightness(), 180);
 });
 
@@ -216,7 +222,11 @@ test("toy box: music, tilt-a-cloud and the mirror", () => {
   tapMenu(1);
   w.up_input(IN.TOUCH, 116, 264);
   assert.equal(w.up_scene(), SC.CLOUD);
+  const x0 = w.up_cloud_x();
   for (let i = 0; i < 10; i++) { w.up_set_tilt(100); w.up_tick(100); }
+  const right = w.up_cloud_x();
+  for (let i = 0; i < 20; i++) { w.up_set_tilt(-100); w.up_tick(100); }
+  assert.ok(right > x0 && w.up_cloud_x() < right, "tilting steers the cloud both ways");
   w.up_input(IN.TOUCH, 320, 40);
   tapMenu(1);
   w.up_input(IN.TOUCH, 252, 264);

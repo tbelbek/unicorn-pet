@@ -760,7 +760,7 @@ TEST(ten_minutes_of_play_and_she_goes_out) {
     run(g, 100); 
     while (g.scene == SC_LEAVE) g.tick(100);
     EQ(g.scene, SC_AWAY);
-    EQ(g.away_ms, AWAY_MS - (g.away_ms < AWAY_MS ? AWAY_MS - g.away_ms : 0));
+    CHECK(g.away_ms <= AWAY_MS && g.away_ms + 10000 >= AWAY_MS);   // the whole break, less the seconds she is out
     shot(g, "16_door");
 }
 
@@ -799,8 +799,6 @@ static Game gone_out() {
 
 TEST(away_freezes_needs_and_keeps_the_screen_short) {
     Game g = gone_out();
-    u32 f = g.tick(100);
-    CHECK(f & F_SAVE || g.want_save == 0);
     int hunger = g.stat(HUNGER);
     run(g, AWAY_SCREEN_OFF_MS - 300);
     CHECK(g.screen_on);
@@ -1232,9 +1230,11 @@ TEST(butterfly_visits_quietly) {
     int stats[NSTATS];
     for (int i = 0; i < NSTATS; i++) stats[i] = g.stat(i);
     g.input(IN_NEXT, 0, 0);
-    run(g, VISIT_FIRST_MS + 1500);
+    g.take_sfx();                          // the cursor's own click
+    int sounds = 0;
+    for (int t = 0; t < VISIT_FIRST_MS + 1500; t += 100) if (g.tick(100) & F_SOUND) sounds++;
     EQ(g.visitor, 1);
-    CHECK(g.take_sfx() == SFX_NONE || true);
+    EQ(sounds, 0);                         // she arrives in silence
     shot(g, "23_butterfly");
     run(g, VISIT_MS);
     EQ(g.visitor, 0);                      // flew off, will come back later
@@ -1754,18 +1754,21 @@ TEST(a_foal_is_drawn_smaller) {
     CHECK(foal * 10 < young * 7);          // about (4/6)^2 of the pixels
 }
 
+// counts trick onsets; the gap to the previous onset is measured across calls (the state is kept)
+struct TrickWatch { int last = IDLE_NONE; u32 prev = 0; bool any = false; int gaps = 0; };
+static TrickWatch watch;
 static int count_tricks(Game& g, int ms, int* kinds, u32* min_gap) {   // kinds: per trick
-    int n = 0, last = IDLE_NONE;
-    u32 prev = 0;
+    int n = 0;
     for (int t = 0; t < ms / 100; t++) {
         g.tick(100);
-        if (g.idle_act >= IDLE_HUM && last < IDLE_HUM) {
+        if (g.idle_act >= IDLE_HUM && watch.last < IDLE_HUM) {
             kinds[g.idle_act - IDLE_HUM]++;
-            if (n && g.clock_ms - prev < *min_gap) *min_gap = g.clock_ms - prev;
-            prev = g.clock_ms;
+            if (watch.any) { if (g.clock_ms - watch.prev < *min_gap) *min_gap = g.clock_ms - watch.prev; watch.gaps++; }
+            watch.prev = g.clock_ms;
+            watch.any = true;
             n++;
         }
-        last = g.idle_act;
+        watch.last = g.idle_act;
     }
     return n;
 }
@@ -1781,6 +1784,7 @@ TEST(tricks_learned_over_the_days) {
         EQ(g.tricks(), known[k]);
         int kinds[TRICKS] = {0}, first = -1;
         u32 gap = 1u << 30;
+        watch = TrickWatch();
         int n = 0;
         for (int r = 0; r < 12 * TRICKS; r++) {
             g.input(IN_NEXT, 0, 0);
@@ -1791,6 +1795,7 @@ TEST(tricks_learned_over_the_days) {
         EQ(first, known[k] - 1);               // a newly learned trick is shown off first
         EQ(g.s.tricks_seen, known[k]);
         CHECK(gap >= TRICK_GAP_MS);
+        CHECK(watch.gaps >= 3);                // gaps were really measured, across the windows
         for (int j = 0; j < TRICKS; j++) CHECK(j < known[k] ? kinds[j] > 0 : kinds[j] == 0);
         CHECK(g.facing == 1 || g.facing == -1);
     }
@@ -1920,7 +1925,14 @@ TEST(parent_sets_the_birthday) {
     tap_clock(f, CLK_BDAY, +1, 14); EQ(f.ed_bday, 29);
     tap_clock(f, CLK_SAVE, +1);
     Cal h = calendar(f.s.hatch_day * 86400u);
-    EQ(h.month, 2); EQ(h.mday, 28);            // 2027 has no 29 February
+    EQ(h.month, 2); EQ(h.mday, 29); EQ(h.year, 2024);   // born on a real 29 February (a leap year)
+    f.input(IN_TOUCH, 184, SET_Y0 + HUB_BACK * SET_ROW_H + 18);
+    f.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    f.tick(0);                                 // the platform takes F_CLOCK and writes its RTC
+    f.set_wall(at(2028, 2, 29, 10, 0)); run(f, 400);
+    EQ(f.party, PARTY_REUNION);                // months later: first the welcome...
+    run(f, PARTY_MS + 400);
+    EQ(f.party, PARTY_BIRTHDAY);               // ...then the cake, on the 29th when there is one
     Game e = picked(5);                        // still an egg: the birthday rows do nothing
     e.set_wall(at(2027, 6, 15, 10, 0));
     open_clock_page(e);
@@ -2132,6 +2144,75 @@ TEST(bedtime_edges) {
     p.input(IN_PARENT, 0, 0); EQ(p.scene, SC_SETTINGS);
     p.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
     EQ(p.scene, SC_SLEEP); EQ(p.standing, 0);  // and closes them: she is still asleep, lying down
+    Game z = hatched();                        // the settings do not restart a sleep (no second nap bonus)
+    z.set_stat(ENERGY, 1000);
+    tap_menu(z, MENU_SLEEP);
+    run(z, NAP_MS + 200);
+    EQ(z.stat(ENERGY), 1000 + NAP_BONUS + SLEEP_ENERGY_GAIN);
+    for (int i = 0; i < 3; i++) {
+        z.input(IN_SELECT, 0, 0); z.input(IN_PARENT, 0, 0); EQ(z.scene, SC_SETTINGS);
+        z.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18); EQ(z.scene, SC_SLEEP);
+        run(z, NAP_MS + 200);
+    }
+    CHECK(z.stat(ENERGY) <= 1000 + NAP_BONUS + 5 * SLEEP_ENERGY_GAIN);
+    Game n = hatched();                        // a nap at 18:00, the settings left open all night
+    at_time(n, 18, 0); n.tick(100);
+    n.set_stat(ENERGY, 1000);
+    tap_menu(n, MENU_SLEEP); run(n, 300); EQ(n.scene, SC_SLEEP);
+    n.input(IN_PARENT, 0, 0); EQ(n.scene, SC_SETTINGS);
+    at_time(n, 22, 0); n.tick(100);
+    at_time(n, 7, 30); n.set_wall(at(2026, 11, 4, 7, 30)); n.tick(100);
+    n.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    EQ(n.scene, SC_HOME);                      // the night passed: good morning, not a nap until noon
+}
+
+TEST(fifth_pass_fixes) {
+    Game g = hatched();                        // a daytime nap on the charger, the screen dark
+    g.set_plugged(true); g.set_plugged(true);
+    g.set_stat(ENERGY, MAX_STAT - 200);
+    tap_menu(g, MENU_SLEEP); run(g, 300); EQ(g.scene, SC_SLEEP);
+    g.screen_on = 0;
+    g.tick(2 * 3600 * 1000u);                  // rested, she gets up: back onto the lounger, not home
+    EQ(g.scene, SC_LOUNGE);
+    u16 e = g.stat(ENERGY);
+    g.tick(600000u);
+    CHECK(g.stat(ENERGY) >= e);                // and the charger keeps her rested
+    Game b = hatched();                        // an empty battery is not an unknown one
+    render(b, fb); int none = lit_pixels(SCREEN_W - 60, 40, SCREEN_W, 74);
+    b.set_battery(0); render(b, fb);
+    CHECK(lit_pixels(SCREEN_W - 60, 40, SCREEN_W, 74) > none);
+    b.set_battery(-1); render(b, fb);
+    EQ(lit_pixels(SCREEN_W - 60, 40, SCREEN_W, 74), none);
+    Game m = hatched();                        // asleep on the charger all night, the screen dark
+    at_time(m, 22, 0); m.tick(100); run(m, 300);
+    EQ(m.scene, SC_SLEEP);
+    m.set_plugged(true); m.set_plugged(true);
+    m.screen_on = 0;
+    at_time(m, 7, 30); m.set_wall(at(2026, 11, 4, 7, 30)); m.tick(100);
+    EQ(m.scene, SC_LOUNGE);                    // morning: onto the lounger, still charging
+}
+
+TEST(old_local_break_deadlines_are_not_read_as_utc) {
+    Game g = hatched();
+    g.set_wall(at(2026, 11, 3, 11, 0));
+    g.play_ms = g.play_limit_ms(); run(g, LEAVE_MS + 300); EQ(g.scene, SC_AWAY);
+    u8 buf[SAVE_SIZE];
+    g.save(buf);
+    Save sv; std::memcpy(&sv, buf, SAVE_SIZE);
+    CHECK(sv.life_flags & LIFE_UTC_AWAY);
+    CHECK(sv.away_until);
+    sv.life_flags &= (u8)~LIFE_UTC_AWAY;       // as an older firmware wrote it (a local deadline)
+    std::memcpy(buf, &sv, SAVE_SIZE);
+    u32 c = 2166136261u;
+    for (int i = 0; i < SAVE_SIZE - 4; i++) c = (c ^ buf[i]) * 16777619u;
+    std::memcpy(buf + SAVE_SIZE - 4, &c, 4);
+    Game h; h.init(4);
+    CHECK(h.load(buf, SAVE_SIZE));
+    EQ(h.s.away_until, 0u);                    // dropped: what was left is counted on powered time
+    EQ(h.scene, SC_AWAY);
+    u32 left = h.away_ms;
+    h.set_wall(at(2026, 11, 3, 11, 40));       // a UTC reading 40 minutes "later" changes nothing
+    EQ(h.scene, SC_AWAY); EQ(h.away_ms, left);
 }
 
 // BOOT pressed for `hold` ms, then released, sampled every 10 ms like a firmware loop
@@ -2241,6 +2322,195 @@ TEST(wifi_setup_from_the_toy) {
     CHECK(q.qr_side > 0);
 }
 
+static void copy_name_test(Game& g) {
+    if (!g.wifi_ap[0]) g.wifi_session("Unicorn-A7C2", "kq7m4xtz9p2w");
+    for (int i = 0; i < 20; i++) g.wifi_net[i] = "Ev WiFi 2.4 GHz Modem"[i];
+}
+
+static u32 region_hash(int x0, int y0, int x1, int y1) {
+    u32 h = 2166136261u;
+    for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) h = (h ^ fb[y * SCREEN_W + x]) * 16777619u;
+    return h;
+}
+
+TEST(text_edge_cases) {
+    Game a = hatched();                        // a 4-byte character after a longer name in the same slot
+    a.wifi_list_clear(); a.wifi_list_add("ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", false);
+    a.wifi_list_clear(); a.wifi_list_add("\xF0\x9F\x8C\x88", false);   // a rainbow emoji
+    Game b = hatched();
+    b.wifi_list_clear(); b.wifi_list_add("\xF0\x9F\x8C\x88", false);
+    for (Game* g : {&a, &b}) { g->input(IN_PARENT, 0, 0); g->set_page = PG_WLIST; g->set_row = 1; }
+    render(a, fb); u32 ha = region_hash(16, SET_Y0, SCREEN_W - 16, SET_Y0 + SET_ROW_H);
+    render(b, fb); u32 hb = region_hash(16, SET_Y0, SCREEN_W - 16, SET_Y0 + SET_ROW_H);
+    EQ(ha, hb);                                // no stale letters after the emoji
+    Game c = hatched();                        // long names that differ only at the end look different
+    c.wifi_list_clear();
+    c.wifi_list_add("ABCDEFGHIJKLMNOPQRSTU1", false); c.wifi_list_add("ABCDEFGHIJKLMNOPQRSTU2", false);
+    c.input(IN_PARENT, 0, 0); c.set_page = PG_WLIST; c.set_row = 2;
+    render(c, fb);
+    CHECK(region_hash(16, SET_Y0, SCREEN_W - 16, SET_Y0 + SET_ROW_H) !=
+          region_hash(16, SET_Y0 + SET_ROW_H, SCREEN_W - 16, SET_Y0 + 2 * SET_ROW_H));
+    EQ(text_overflows(), 0);
+    const char* broken[] = {"\xC3", "A\xE2\x82", "\xF0\x9F", "\xFF\xFE", "\xC3\xC3\xC3"};   // cut-off UTF-8
+    for (const char* s : broken) { c.wifi_list_clear(); c.wifi_list_add(s, false); render(c, fb); }
+}
+
+// Every scene, page and overlay in every language: no text may run off the screen.
+static int overflow_scan(int lang, char* where, int where_n) {
+    int total = 0;
+    auto check = [&](Game& g, const char* what) {
+        render(g, fb);
+        int n = text_overflows();
+        if (n && std::getenv("OVERFLOW_DEBUG")) std::printf("      lang %d %s: %d\n", lang, what, n);
+        if (n && !total) std::snprintf(where, where_n, "%s", what);
+        total += n;
+    };
+    Game g = hatched();
+    g.s.lang = (u8)lang;
+    g.set_wall(at(2026, 11, 3, 11, 0));
+    g.wifi_list_clear(); g.wifi_list_add("HomeNet", true); g.wifi_list_add("ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", false);
+    g.s.care_days = 250; g.s.milestones = 15; g.s.tricks_seen = TRICKS;
+    const int scenes[] = {SC_EGG, SC_HATCH, SC_HOME, SC_EAT, SC_PLAY, SC_WASH, SC_SLEEP, SC_INFO, SC_REFUSE, SC_GAME,
+                          SC_LEAVE, SC_AWAY, SC_RETURN, SC_FEED, SC_EGG_PICK, SC_TOYS, SC_MUSIC, SC_CLOUD, SC_DRESS,
+                          SC_ALBUM, SC_LOUNGE};
+    for (int sc : scenes) {
+        for (int t = 0; t < 4; t++) { g.scene = (u8)sc; g.scene_ms = (u32)t * 1300; g.anim_ms = g.scene_ms; check(g, "scene"); }
+    }
+    g.scene = SC_HOME;
+    for (int p = PARTY_REUNION; p <= PARTY_MILESTONE; p++)
+        for (int a = 0; a < MILESTONES; a++) { g.party = (u8)p; g.party_arg = (u8)a; g.party_end = g.clock_ms + 1000; check(g, "party"); }
+    g.party = 0; g.greeting = 1; g.greet_end = g.clock_ms + 1000; check(g, "greeting"); g.greeting = 0;
+    g.set_wall(at(2026, 11, 3, 19, 45)); check(g, "drowsy");
+    g.scene = SC_SLEEP; g.standing = 1; check(g, "standing"); g.standing = 0;
+    g.scene = SC_SETTINGS;
+    for (int pg = PG_MAIN; pg <= PG_WFORGET; pg++)
+        for (int st = WST_OFF; st <= WST_TIMEOUT; st++) {
+            g.set_page = (u8)pg; g.wifi_stage = (u8)st; g.wifi_arg = 1;
+            copy_name_test(g);
+            char what[32];
+            std::snprintf(what, sizeof what, "settings page %d stage %d", pg, st);
+            check(g, what);
+        }
+    Game e = picked(7);                        // an egg: its own words on the clock page ("after hatching")
+    e.s.lang = (u8)lang;
+    e.input(IN_PARENT, 0, 0);
+    for (int pg = PG_MAIN; pg <= PG_WFORGET; pg++) { e.set_page = (u8)pg; e.wifi_stage = WST_WAIT; copy_name_test(e); check(e, "egg settings"); }
+    return total;
+}
+
+TEST(every_language_fits_the_screen) {
+    for (int l = 0; l < LANG_COUNT; l++) {
+        char where[32] = "";
+        int n = overflow_scan(l, where, sizeof where);
+        if (n) std::printf("    language %d: %d overflows (first in %s)\n", l, n, where);
+        EQ(n, 0);
+    }
+}
+
+TEST(review_fixes_bug_hunt) {
+    Game g = hatched();                        // a save with a nonsense volume is refused, not a crash later
+    u8 buf[SAVE_SIZE]; g.s.volume = 200; g.save(buf);
+    Game v; v.init(1); CHECK(!v.load(buf, SAVE_SIZE));
+    Game e = picked(3);                        // WiFi setup opened on an egg: "play on" goes back to the egg
+    e.input(IN_PARENT, 0, 0);
+    e.set_page = PG_WSESSION; e.wifi_stage = WST_WAIT;
+    e.input(IN_TOUCH, 280, (WBTN_Y0 + WBTN_Y1) / 2);
+    EQ(e.scene, SC_EGG);
+    Game w = hatched();                        // a timed-out setup lets the screen sleep
+    w.input(IN_PARENT, 0, 0); w.set_page = PG_WSESSION; w.wifi_status(WST_TIMEOUT, 0);
+    run(w, SCREEN_OFF_MS + 500); CHECK(!w.screen_on);
+    Game n = hatched();                        // the cable at night leaves the room dark
+    n.set_wall(at(2026, 11, 3, 20, 0)); n.s.opts |= OPT_NO_BEDTIME; n.set_plugged(false);
+    run(n, SCREEN_OFF_MS + 500); CHECK(!n.screen_on);
+    n.set_plugged(true); n.set_plugged(true);
+    CHECK(!n.screen_on); EQ(n.scene, SC_LOUNGE);
+    n.set_plugged(false); n.set_plugged(false);
+    CHECK(!n.screen_on);
+    Game l = hatched();                        // the goodbye is saved the moment it starts
+    l.play_ms = l.play_limit_ms();
+    u32 f = l.tick(100);
+    EQ(l.scene, SC_LEAVE); CHECK(f & F_SAVE);
+    while (l.scene == SC_LEAVE) f = l.tick(100);
+    EQ(l.scene, SC_AWAY); CHECK(f & F_SAVE);   // and again once she is out
+    Game p = hatched();                        // petting gains get saved (at most once a minute)
+    p.tick(0);
+    p.input(IN_TOUCH, 184 + p.pet_x, 200);
+    CHECK(p.tick(0) & F_SAVE);
+    run(p, PET_COOLDOWN_MS + 100); p.input(IN_TOUCH, 184 + p.pet_x, 200);
+    EQ(p.tick(0) & F_SAVE, 0u);
+    run(p, 60000); p.input(IN_SELECT, 0, 0); p.input(IN_TOUCH, 184 + p.pet_x, 200);
+    CHECK(p.tick(0) & F_SAVE);
+    Game b = hatched();                        // BOOT still works after 25+ days without a press
+    boot_press(b, 80, 500); EQ(b.menu, 1);
+    b.tick(0x80000000u);
+    b.input(IN_TOUCH, 184, 200);               // wake the screen
+    boot_press(b, 80, 500); EQ(b.menu, 2);
+    Game c = hatched();                        // ...and so does the petting reward
+    c.input(IN_TOUCH, 184 + c.pet_x, 200);
+    c.tick(0x80000000u);
+    c.input(IN_TOUCH, 184, 200);
+    int h0 = c.stat(HAPPY);
+    c.input(IN_TOUCH, 184 + c.pet_x, 200);
+    CHECK(c.stat(HAPPY) > h0);
+    Game a = hatched(), a2 = hatched();        // a huge tick is not lost to an overflow
+    run(a, SCREEN_OFF_MS + 500); run(a2, SCREEN_OFF_MS + 500);
+    a.acc_ms = 1; a2.acc_ms = 1;
+    a.tick(0xffffffffu);
+    a2.tick(0x7fffffffu); a2.tick(0x80000000u);
+    EQ(a.s.age_s, a2.s.age_s); CHECK(a.s.age_s > 4000000);
+    Game q;                                    // a hello does not use up play time
+    q.init(5); u8 sv[SAVE_SIZE]; Game src = hatched(); src.save(sv); CHECK(q.load(sv, SAVE_SIZE));
+    CHECK(q.greeting);
+    u32 before = q.play_ms; q.tick(1000);
+    EQ(q.play_ms, before);
+    Game d = hatched();                        // three dreams a night, never a repeat
+    d.set_stat(ENERGY, 1000);
+    tap_menu(d, MENU_SLEEP);
+    int seen[DREAMS + 1] = {0}, shown = 0;
+    for (int t = 0; t < 60000; t += 100) {
+        d.idle_ms = 0;                         // someone keeps looking
+        d.tick(100);
+        int now = d.dream();
+        if (now && (!shown || seen[shown - 1] != now)) { CHECK(shown < DREAMS); if (shown < DREAMS + 1) seen[shown++] = now; }
+    }
+    EQ(shown, DREAMS);
+}
+
+TEST(review_fixes_third_pass) {
+    Game g = hatched();                        // summer time: the local clock jumps an hour, the break does not
+    g.s.opts |= OPT_NO_BEDTIME;                // (01:50 is past bedtime: she would sleep instead)
+    g.set_wall(at(2027, 3, 28, 1, 50), true, at(2027, 3, 28, 0, 50));
+    g.play_ms = g.play_limit_ms(); run(g, LEAVE_MS + 300);
+    EQ(g.scene, SC_AWAY);
+    g.set_wall(at(2027, 3, 28, 3, 0), true, at(2027, 3, 28, 1, 0));   // ten minutes later, local 03:00
+    run(g, 200);
+    CHECK(g.away_ms >= 19 * 60000);            // twenty minutes still to go
+    g.set_wall(at(2027, 3, 28, 2, 55), true, at(2027, 3, 28, 0, 55));   // the clock goes back five minutes
+    u32 left = g.away_ms;
+    run(g, 200);
+    CHECK(g.away_ms <= left);                  // ...and the break does not grow
+    Game b = hatched();                        // time is up at bedtime: a touch puts her to sleep, not out
+    b.set_wall(at(2026, 11, 3, 19, 40)); settle(b);
+    b.play_ms = b.play_limit_ms();
+    b.input(IN_TOUCH, 184, 60);
+    CHECK(b.scene == SC_SLEEP);
+    Game m = hatched();                        // the morning comes while the settings are open
+    m.set_stat(ENERGY, 1000);
+    m.set_wall(at(2026, 11, 3, 22, 0)); m.tick(100); run(m, 300);
+    EQ(m.scene, SC_SLEEP);
+    m.set_wall(at(2026, 11, 4, 6, 59)); run(m, 300);
+    m.input(IN_SELECT, 0, 0); m.input(IN_PARENT, 0, 0); EQ(m.scene, SC_SETTINGS);
+    m.set_wall(at(2026, 11, 4, 7, 5)); run(m, 300);
+    m.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    run(m, 300);
+    EQ(m.scene, SC_HOME);                      // up for the day, not stuck asleep
+    Game r = hatched();                        // a long album title stays clear of the house button
+    r.s.lang = LANG_RU; r.s.care_days = 13;
+    tap_header(r); r.input(IN_TOUCH, 70, 30); EQ(r.scene, SC_ALBUM);
+    r.book = 1; render(r, fb);
+    EQ(text_overflows(), 0);
+}
+
 // ---- rendering --------------------------------------------------------------------------------
 
 TEST(every_scene_renders_for_every_character) {
@@ -2311,7 +2581,8 @@ int main() {
         T(charging_on_the_sun_lounger), T(charging_at_night_and_elsewhere),
         T(bedtime_sways_then_sleeps_on_her_feet), T(put_to_bed_stays_asleep_till_morning), T(bedtime_edges),
         T(bedtime_is_tick_size_independent), T(boot_taps_and_the_grown_up_gesture),
-        T(wifi_setup_from_the_toy), T(album_opens_from_the_info_screen),
+        T(wifi_setup_from_the_toy), T(text_edge_cases), T(every_language_fits_the_screen),
+        T(review_fixes_bug_hunt), T(review_fixes_third_pass), T(old_local_break_deadlines_are_not_read_as_utc), T(fifth_pass_fixes), T(album_opens_from_the_info_screen),
         T(every_scene_renders_for_every_character),
     };
     for (auto& t : tests) {

@@ -53,7 +53,7 @@ enum Phase { PH_DAY, PH_EVENING, PH_NIGHT };
 // She never dies; she grows up through the days you share. Stages only add looks, never take away.
 enum Stage { STAGE_FOAL, STAGE_YOUNG, STAGE_GROWN, STAGE_STORYKEEPER };
 enum Party { PARTY_NONE, PARTY_REUNION, PARTY_BIRTHDAY, PARTY_MILESTONE };
-enum { LIFE_ADOPTED = 1, MILESTONES = 4 };      // from the wall clock; unknown clock = day
+enum { LIFE_ADOPTED = 1, LIFE_UTC_AWAY = 2, MILESTONES = 4 };      // from the wall clock; unknown clock = day
 enum Mood { M_IDLE, M_HAPPY, M_HUNGRY, M_SLEEPY, M_SAD };
 enum Menu { MENU_FEED, MENU_PLAY, MENU_SLEEP, MENU_WASH, MENU_COUNT };
 enum Treat { TREAT_APPLE, TREAT_STRAWBERRY, TREAT_CARROT, TREAT_COUNT };
@@ -74,8 +74,10 @@ enum Opt { OPT_CALM = 1, OPT_NO_SHAKE = 2,        // calm: no bobbing/hops, fewe
 // night window she cannot be woken until the wake-up time. Needs a trusted calendar.
 enum Bedtime { BED_NONE, BED_DROWSY, BED_SLEEP };
 enum { BED_DEFAULT10 = 117, WAKE_DEFAULT10 = 42, DROWSY_MIN = 60 };   // 19:30, 07:00 (tens of minutes)
-enum SettingRow { SET_VOLUME, SET_LIMIT, SET_BREAK, SET_BRIGHT, SET_CALM, SET_SHAKE, SET_SLEEP, SET_CLOCK, SET_EXIT,
-                  SET_ROWS };
+enum SettingRow { SET_VOLUME, SET_LIMIT, SET_BREAK, SET_BRIGHT, SET_CALM, SET_SHAKE, SET_SLEEP, SET_LANG, SET_CLOCK,
+                  SET_EXIT, SET_ROWS };
+// Screen languages, in tools/i18n.py's order (Latin and Cyrillic: what the pixel font can draw).
+enum Lang { LANG_TR, LANG_EN, LANG_ES, LANG_FR, LANG_DE, LANG_PT, LANG_IT, LANG_RU, LANG_SV, LANG_ID, LANG_COUNT };
 // third settings page: bedtime on/off, bedtime, wake-up time (left half -1, right half +1: 10 minutes)
 enum BedRow { BEDR_ON, BEDR_BED, BEDR_WAKE, BEDR_BACK, BEDR_ROWS };
 // Settings pages, and the WiFi setup flow (the toy shows a QR code for a temporary network of its
@@ -151,7 +153,7 @@ struct Save {
     u16 stat[NSTATS];
     u32 egg_ms;
     u16 away_s, play_s;       // v2: time left out of the house, screen-time used
-    u32 away_until;           // v3: wall-clock second she comes back (0 = no clock, count down)
+    u32 away_until;           // v3: UTC second she comes back (0 = no clock, count down)
     u8 volume, limit_min, break_min, bright, opts;           // v4: parent settings, 0 = default
     u8 birth_flags, accessory, last_treat;                    // v5: egg chosen (bit 0), dress-up,
                                                               //     last snack + 1 (0 = none yet)
@@ -162,10 +164,12 @@ struct Save {
     u8 party_year;            //     years since 2000 of the last birthday party
     u8 milestones;            //     care-day milestones already celebrated (bit per MILESTONE_DAYS)
     u8 life_flags;            //     LIFE_ADOPTED: hatch_day is the first trusted day, not the real one
+                              //     LIFE_UTC_AWAY: away_until is UTC (older saves stored local time)
     u8 bed10;                 // v7 (was v6's pad): bedtime in tens of minutes after midnight (117 = 19:30)
     u8 wake10;                //     wake-up time, the same way (42 = 07:00)
     u8 tricks_seen;           //     tricks she has shown off already (a newly learned one comes first)
-    u8 spare[2];
+    u8 lang;                  //     screen language (Lang, 0 = Turkish: older saves stay Turkish)
+    u8 spare;
     u32 check;                // FNV-1a over everything above
 };
 enum { SAVE_VERSION = 7, SAVE_SIZE = sizeof(Save), SAVE_V1_SIZE = 24, SAVE_V2_SIZE = 28, SAVE_V3_SIZE = 32,
@@ -192,7 +196,7 @@ struct Game {
     u8 idle_act, treat, score, sel, wash_messes, celebrated;
     u32 idle_next, idle_end, pet_react_end, pet_gain_at, wobble_end;   // deadlines, see due()
     u8 petting, pet_cooling, wobbling;
-    u8 hint_pet, napped, press_item, set_row, battery;   // battery: % from the PMU, 0 = unknown
+    u8 hint_pet, napped, press_item, set_row, battery, batt_known;   // battery: % from the PMU
     u8 plugged, plug_raw, plug_known;     // USB power (debounced: two equal samples), raw sample
     u32 unplug_at;                        // when the cable last came out (0 = never)
     u32 press_end, sleep_ms;
@@ -205,6 +209,7 @@ struct Game {
     struct Feather { i16 x, y; u8 state; } fea[FEATHERS];   // state: 0 waiting, 1 falling, 2 on cloud, 3 floor
     u32 play_ms, dark_ms, away_ms;        // screen time used, dark streak, time left out
     u32 wall_s;                           // local wall clock from the board's RTC, 0 = unknown
+    u32 utc_s;                            // the same moment in UTC: what break deadlines count in
     u8 cal_ok, greeting, tucked;          // cal_ok: the RTC's date can be believed
     u8 did, dreams[DREAMS];               // what she did since waking, tonight's dreams
     u16 tuck_ms;                          // scene_ms when the blanket went over her
@@ -213,6 +218,7 @@ struct Game {
     u8 party, party_arg;                  // a celebration on the home screen right now (Party)
     u8 idle_count, trick_next;            // every second idle moment may be a trick, in turn
     u32 trick_at;                         // when the last trick started (0 = none yet)
+    u32 pet_saved_at;                     // petting gains are saved at most once a minute
     // WiFi setup: the platform runs the radio and reports back; the core draws every screen
     u8 wifi_stage, wifi_req, wifi_arg, wifi_count, wifi_sel, qr_side;
     u16 wifi_fixed;                       // bit i: list entry i is built in (secrets.h), read-only
@@ -223,7 +229,8 @@ struct Game {
     u32 boot_t;                           // time of its last edge
     u8 set_page, want_clock;              // settings page (0 main, 1 clock, 2 bedtime); F_CLOCK pending
     u8 standing, night_sleep, bed_seen;   // asleep on her feet; asleep in the night window; checked once
-    u8 back_scene;                        // where the settings were opened from
+    u8 back_scene, back_standing, back_night;   // where the settings were opened from (and how she slept)
+    u32 back_ms;                          // her sleep's scene time, so it carries on afterwards
     u16 ed_year;                          // the clock page's fields while a parent edits them
     u8 ed_month, ed_day, ed_hour, ed_min, ed_bmonth, ed_bday;
     u32 party_end;
@@ -241,8 +248,13 @@ struct Game {
     // Local wall-clock seconds since 2000-01-01 from an RTC that keeps running while the board is
     // off (0 = none). Breaks use it; needs still freeze while powered off. calendar = false: the
     // clock ticks but its date is a guess (flat battery), so day/night falls back to daytime.
-    void set_wall(u32 local_s, bool calendar = true);
-    void set_battery(int percent) { battery = (u8)(percent < 0 ? 0 : percent > 100 ? 100 : percent); }
+    // utc_s (seconds since 2000, 0 = same as local_s) times the breaks: a summer-time jump must not
+    // end a 30-minute break after ten.
+    void set_wall(u32 local_s, bool calendar = true, u32 utc_s = 0);
+    void set_battery(int percent) {        // < 0: unknown (no battery, or the PMU could not tell)
+        batt_known = percent >= 0;
+        battery = (u8)(percent < 0 ? 0 : percent > 100 ? 100 : percent);
+    }
     void set_tilt(int v);                        // -100..100 from the IMU (or a slider); cloud game only
     void set_plugged(bool usb);                  // USB power present, sampled about once a second
     void set_boot(bool down);                    // the BOOT key, raw: call every loop (taps, gesture)
@@ -280,6 +292,9 @@ struct Game {
     int particles() const;                       // live particles
     int stat(int i) const { return s.stat[i]; }
     bool due(u32 t) const { return (int)(clock_ms - t) >= 0; }   // wrap-safe (49.7-day clock)
+    // "when did it happen": stamp() is never 0 (0 means never); since() is the time elapsed, wrap-safe
+    u32 stamp() const { return clock_ms + 1; }
+    u32 since(u32 st) const { return clock_ms + 1 - st; }
     void set_stat(int i, int v);                 // debug / tests
 
 private:
@@ -320,6 +335,8 @@ private:
     void doze(bool on_her_feet);
     bool rested() const;
     void bed_input(int type, int x, int y);
+    void leave_settings();
+    void pet_gain();
     void wifi_input(int type, int x, int y);
     void wifi_request(int req, int arg = 0);
     void burst(int kind, int x, int y, int n);
@@ -329,6 +346,7 @@ private:
 };
 
 void render(const Game& g, u16* fb);             // fb = SCREEN_W * SCREEN_H RGB565
+int text_overflows();                            // text drawn off the screen since the last call (tests)
 
 // QR code (version <= QR_MAX_VERSION, medium error correction) as side*side bytes of 0/1.
 // Returns the side, or 0 if the text does not fit.
@@ -340,7 +358,7 @@ int qr_encode(const char* text, u8* modules, int max_side);
 enum { MENU_Y0 = 368, MENU_Y1 = 434, MENU_X0 = 10, MENU_STEP = 92, MENU_BTN_W = 72 };
 enum { PET_X0 = 64, PET_Y0 = 100, PET_X1 = 304, PET_Y1 = 350 };   // shifted by Game::pet_x
 enum { HEADER_Y1 = 92 };
-enum { SET_Y0 = 64, SET_ROW_H = 38 };             // settings rows (both pages)
+enum { SET_Y0 = 64, SET_ROW_H = 34 };             // settings rows (all pages)
 enum { WBTN_Y0 = 384, WBTN_Y1 = 440 };            // WiFi pages: two big buttons along the bottom                          // status bar + name: opens the info screen
 enum { SOUND_X0 = 236, SOUND_Y1 = 48 };          // info screen: sound on/off toggle, top right
 enum { BOOK_X1 = 132, BOOK_Y1 = 56 };            // info screen: the album, top left

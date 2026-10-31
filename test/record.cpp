@@ -85,8 +85,10 @@ int main() {
     g.input(IN_TOUCH, 104, 190); play(g, 300);
     play(g, ACTION_MS - 1200);
     g.input(IN_TOUCH, 46 + 2 * MENU_STEP, 400);               // good night
+    play(g, 1200);
+    g.input(IN_TOUCH, 184, 200);                              // the first touch tucks her in
     play(g, 2500);
-    g.input(IN_TOUCH, 184, 200);                              // wake her up again...
+    g.input(IN_TOUCH, 184, 200);                              // the next wakes her up again...
     play(g, 800);
     g.play_ms = PLAY_LIMIT_MS;                                // ...after a long play session
     play(g, LEAVE_MS + 300);                                  // "I have things to do!"

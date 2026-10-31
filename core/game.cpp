@@ -57,11 +57,13 @@ bool Game::load(const u8* data, u32 len) {
     copy((u8*)&tmp, data, size - 4);
     if (data[0] < 5) { tmp.birth_flags = BIRTH_CHOSEN; tmp.accessory = ACC_NONE; tmp.last_treat = 0; }
     if (data[0] < 7) { tmp.bed10 = BED_DEFAULT10; tmp.wake10 = WAKE_DEFAULT10; tmp.tricks_seen = 0; }
+    if (!(tmp.life_flags & LIFE_UTC_AWAY)) tmp.away_until = 0;   // a local-time deadline: count powered time
     tmp.version = SAVE_VERSION;
     if (tmp.accessory >= ACC_COUNT || (tmp.birth_flags & ~BIRTH_CHOSEN) || tmp.last_treat > TREAT_COUNT)
         return false;
     if (tmp.character > 3 || tmp.care_days > CARE_DAYS_MAX || tmp.milestones >> MILESTONES) return false;
-    if (tmp.bed10 >= 144 || tmp.wake10 >= 144 || tmp.tricks_seen > TRICKS) return false;
+    if (tmp.volume > VOL_OFF) return false;   // indexes the settings' volume names
+    if (tmp.bed10 >= 144 || tmp.wake10 >= 144 || tmp.tricks_seen > TRICKS || tmp.lang >= LANG_COUNT) return false;
     for (int i = 0; i < NSTATS; i++) if (tmp.stat[i] > MAX_STAT) return false;
     s = tmp;
     play_ms = (u32)s.play_s * 1000;
@@ -95,9 +97,12 @@ Cal calendar(u32 t) {
     return c;
 }
 
-void Game::set_wall(u32 local_s, bool calendar) {
+void Game::set_wall(u32 local_s, bool calendar, u32 utc) {
     if (want_clock) return;                // a parent's new time is waiting for the RTC write (F_CLOCK)
     wall_s = local_s;
+    u32 now = utc ? utc : local_s;
+    if (now && utc_s && now < utc_s) s.away_until = 0;   // the clock went back: count the break's own time
+    utc_s = now;
     cal_ok = calendar;
     sync_away();
 }
@@ -106,9 +111,9 @@ void Game::set_wall(u32 local_s, bool calendar) {
 // A clock that went backwards (RTC lost power and restarted) is not trusted: fall back to
 // counting powered time from what was left.
 void Game::sync_away() {
-    if (scene != SC_AWAY || !s.away_until || !wall_s) return;
-    if (wall_s + break_ms() / 1000 < s.away_until) { s.away_until = 0; return; }
-    u32 left = wall_s >= s.away_until ? 0 : (s.away_until - wall_s) * 1000;
+    if (scene != SC_AWAY || !s.away_until || !utc_s) return;
+    if (utc_s + break_ms() / 1000 < s.away_until) { s.away_until = 0; return; }
+    u32 left = utc_s >= s.away_until ? 0 : (s.away_until - utc_s) * 1000;
     if (left != away_ms) { away_ms = left; dirty = 1; }
 }
 
@@ -117,7 +122,8 @@ u32 Game::save(u8* out) const {
     bool out_now = scene == SC_LEAVE || scene == SC_AWAY;
     tmp.away_s = (u16)(scene == SC_LEAVE ? break_ms() / 1000 : out_now ? (away_ms + 999) / 1000 : 0);
     tmp.play_s = (u16)(play_ms / 1000 > 65535 ? 65535 : play_ms / 1000);
-    tmp.away_until = !out_now ? 0 : scene == SC_LEAVE ? (wall_s ? wall_s + break_ms() / 1000 : 0) : s.away_until;
+    tmp.away_until = !out_now ? 0 : scene == SC_LEAVE ? (utc_s ? utc_s + break_ms() / 1000 : 0) : s.away_until;
+    tmp.life_flags |= LIFE_UTC_AWAY;
     tmp.check = fnv((const u8*)&tmp, SAVE_SIZE - 4);
     copy(out, (const u8*)&tmp, SAVE_SIZE);
     return SAVE_SIZE;
@@ -144,6 +150,7 @@ void Game::go(u8 sc) {
     greeting = 0;
     party = 0;
     standing = 0;
+    memory_at = 0;                         // a picture that was floating up starts again at home
     static const u8 DID_BY_SCENE[] = {0, 0, 0, DID_FEED, 0, DID_WASH, 0, 0, 0, DID_STARS, 0, 0, 0, 0, 0, 0, 0,
                                       DID_MUSIC, DID_CLOUD, DID_DRESS, 0, 0};   // indexed by Scene
     if (sc < sizeof DID_BY_SCENE) did |= DID_BY_SCENE[sc];
@@ -165,6 +172,7 @@ void Game::hatch() {
 
 void Game::start_leave() {                 // a friend comes by; she says goodbye and goes out
     go(SC_LEAVE);
+    want_save = 1;                         // saved now: a power cut during the goodbye skips no break
     cue(SFX_BYE);
     facing = 1;
 }
@@ -325,7 +333,8 @@ int Game::dream_ms() const {
 
 int Game::dream() const {                  // a dream every 8 s while someone is looking
     if (dream_ms() < 0) return 0;
-    return 1 + dreams[(scene_ms - DREAM_FIRST_MS) / DREAM_EVERY_MS % DREAMS];
+    u32 k = (scene_ms - DREAM_FIRST_MS) / DREAM_EVERY_MS;
+    return k < DREAMS ? 1 + dreams[k] : 0;   // three dreams a night, then just sleep
 }
 
 void Game::come_back() {                   // she walks in from the left
@@ -338,7 +347,7 @@ void Game::come_back() {                   // she walks in from the left
 
 void Game::wake() {
     if (scene == SC_SLEEP && bed_locked()) return;   // the night belongs to sleep: only morning wakes her
-    go(SC_HOME);
+    go(plugged && !screen_on ? SC_LOUNGE : SC_HOME);   // dark, on the charger: straight back to the lounger
     cue(SFX_WAKE);
 }
 
@@ -377,10 +386,11 @@ void Game::check_bedtime() {
     if (today().known) bed_seen = 1;
     if (scene == SC_SLEEP && night_sleep && b == BED_NONE && today().known) {   // good morning
         night_sleep = 0;
-        go(SC_HOME);
+        go(plugged && !screen_on ? SC_LOUNGE : SC_HOME);   // dark, on the charger: onto the lounger
         if (screen_on) { cue(SFX_WAKE); greet(); }
         return;
     }
+    if (scene == SC_SETTINGS && back_scene == SC_SLEEP && b != BED_NONE) back_night = 1;   // night fell meanwhile
     night_sleep = scene == SC_SLEEP && b != BED_NONE;
     if (b != BED_SLEEP) return;
     if (scene == SC_HOME && !party) { greeting = 0; doze(!first); }   // up past bedtime: asleep on her feet
@@ -481,12 +491,17 @@ void Game::pet() {
     cue(SFX_PET);
     remember();
     did |= DID_PET;
-    if (!pet_cooling || due(pet_gain_at)) { // hearts every time, happiness rationed
-        s.stat[HAPPY] = (u16)clamp(s.stat[HAPPY] + PET_HAPPY);
-        pet_gain_at = clock_ms + PET_COOLDOWN_MS;
-        pet_cooling = 1;
-    }
+    pet_gain();
     dirty = 1;
+}
+
+// Hearts every time, happiness rationed. Saved too, but at most once a minute (flash wear).
+void Game::pet_gain() {
+    if (pet_cooling && !due(pet_gain_at)) return;
+    s.stat[HAPPY] = (u16)clamp(s.stat[HAPPY] + PET_HAPPY);
+    pet_gain_at = clock_ms + PET_COOLDOWN_MS;
+    pet_cooling = 1;
+    if (!pet_saved_at || since(pet_saved_at) >= 60000) { want_save = 1; pet_saved_at = stamp(); }
 }
 
 void Game::minute() {
@@ -567,9 +582,9 @@ void Game::settings_input(int type, int x, int y) {
     case SET_SHAKE: s.opts ^= OPT_NO_SHAKE; break;
     case SET_CLOCK: set_page = PG_HUB; set_row = 0; cue(SFX_TAP); dirty = 1; return;   // the clock & WiFi hub
     case SET_SLEEP: set_page = 2; set_row = 0; cue(SFX_TAP); dirty = 1; return;
-    case SET_EXIT:                         // back to sleep if that is where the grown-up found her
-        if (back_scene == SC_SLEEP) doze(false);
-        else go(s.hatched ? SC_HOME : SC_EGG);
+    case SET_LANG:  s.lang = (u8)((s.lang + 1) % LANG_COUNT); break;   // every tap: the next language
+    case SET_EXIT:
+        leave_settings();
         break;
     }
     want_save = 1;
@@ -674,7 +689,9 @@ void Game::save_clock() {
         int y = h.known ? h.year : ed_year;
         auto on = [&](int yr) { int d = ed_bday > month_days(yr, ed_bmonth) ? month_days(yr, ed_bmonth) : ed_bday;
                                 return day_number(yr, ed_bmonth, d); };
-        if (on(y) > today_n) y--;          // she cannot be born in the future
+        bool feb29 = ed_bmonth == 2 && ed_bday == 29;
+        auto fits = [&](int yr) { return !feb29 || leap(yr); };   // a 29 February birthday needs a leap year
+        while (!fits(y) || on(y) > today_n) y--;   // she cannot be born in the future
         s.hatch_day = (u16)on(y);
         s.life_flags &= (u8)~LIFE_ADOPTED;
         int last = on(ed_year) < today_n ? ed_year : ed_year - 1;   // the last birthday before today
@@ -784,7 +801,7 @@ void Game::wifi_input(int type, int x, int y) {
             break;
         }
         if (btn == 0 && !under_way) { set_page = PG_WHELP; break; }   // YARDIM
-        if (btn == 1) go(SC_HOME);         // OYUNA DÖN: play on, the setup carries on
+        if (btn == 1) leave_settings();    // OYUNA DÖN: play on, the setup carries on
         break;
     case PG_WHELP:
         set_page = PG_WSESSION;
@@ -801,6 +818,22 @@ void Game::wifi_input(int type, int x, int y) {
     }
     dirty = 1;
     cue(SFX_TAP);
+}
+
+// Out of the settings, back to where the grown-up found her: an egg stays an egg, a sleeper sleeps.
+void Game::leave_settings() {
+    if (!s.hatched) go((s.birth_flags & BIRTH_CHOSEN) ? SC_EGG : SC_EGG_PICK);
+    else if (back_scene == SC_SLEEP && back_night && !bedtime() && today().known) {   // morning came meanwhile
+        go(SC_HOME);
+        cue(SFX_WAKE);
+        greet();
+    } else if (back_scene == SC_SLEEP) {   // the same sleep goes on: no new nap bonus, no new dreams
+        go(SC_SLEEP);
+        scene_ms = back_ms;
+        standing = back_standing;
+        night_sleep = back_night || bedtime() != BED_NONE;
+    }
+    else go(SC_HOME);
 }
 
 void Game::choose_egg() {                  // this one is mine: her colours are set for life
@@ -895,19 +928,18 @@ void Game::set_plugged(bool usb) {
     plug_raw = p;
     if (!agree || p == plugged) return;
     plugged = p;
-    if (!p) unplug_at = clock_ms | 1;
+    if (!p) unplug_at = stamp();
     // Only at home (or on the lounger) does the cable light the screen and change the scene: not
     // while she sleeps, not on the door, not an egg, not mid-action or in the settings.
     if (scene != SC_HOME && scene != SC_INFO && scene != SC_LOUNGE) return;
-    screen_on = 1;
-    idle_ms = 0;
+    if (phase() != PH_NIGHT) { screen_on = 1; idle_ms = 0; }   // at night the room stays dark
     dirty = 1;
     if (!p) {
         if (scene == SC_LOUNGE) { go(SC_HOME); cue(SFX_WAKE); burst(P_SPARKLE, SCREEN_W / 2 + pet_x, 200, 4); }
         return;
     }
     if (scene == SC_LOUNGE) return;
-    bool quiet = unplug_at && (int)(clock_ms - unplug_at) < PLUG_QUIET_MS;
+    bool quiet = unplug_at && since(unplug_at) < PLUG_QUIET_MS;
     pet_x = 0;
     facing = 1;
     if (phase() == PH_NIGHT && s.stat[ENERGY] < NEED_LOW) { act(MENU_SLEEP); return; }   // tired: to bed
@@ -920,8 +952,8 @@ void Game::set_plugged(bool usb) {
 void Game::set_boot(bool down) {
     u32 now = clock_ms + acc_ms;
     if (down != (bool)boot_down) {
-        if ((int)(now - boot_t) < KEY_BOUNCE_MS && boot_t) return;   // contact bounce
-        if (down && boot_taps && (int)(now - boot_t) > TAP_GAP_MS) {  // a late press: the old taps first
+        if (boot_t && now + 1 - boot_t < KEY_BOUNCE_MS) return;   // contact bounce (unsigned: wrap-safe)
+        if (down && boot_taps && now + 1 - boot_t > TAP_GAP_MS) {  // a late press: the old taps first
             int n = boot_taps;
             boot_taps = 0;
             while (n--) input(IN_NEXT, 0, 0);
@@ -929,14 +961,14 @@ void Game::set_boot(bool down) {
         boot_down = down;
         if (!down && !boot_fired) boot_taps++;
         boot_fired = 0;
-        boot_t = now | 1;
+        boot_t = now + 1;
     }
-    if (boot_down && !boot_fired && boot_taps >= PARENT_TAPS - 1 && (int)(now - boot_t) >= PARENT_HOLD_MS) {
+    if (boot_down && !boot_fired && boot_taps >= PARENT_TAPS - 1 && now + 1 - boot_t >= PARENT_HOLD_MS) {
         boot_fired = 1;                    // the grown-up gesture
         boot_taps = 0;
         input(IN_PARENT, 0, 0);
     }
-    if (!boot_down && boot_taps && (int)(now - boot_t) >= TAP_GAP_MS) {   // just taps: move along
+    if (!boot_down && boot_taps && now + 1 - boot_t >= TAP_GAP_MS) {   // just taps: move along
         int n = boot_taps;
         boot_taps = 0;
         while (n--) input(IN_NEXT, 0, 0);
@@ -1049,6 +1081,9 @@ void Game::input(int type, int x, int y) {
         if (scene == SC_AWAY || scene == SC_LEAVE) { away_ms = 0; come_back(); }
         else if (scene == SC_HOME || scene == SC_EGG || scene == SC_INFO || scene == SC_LOUNGE || scene == SC_SLEEP) {
             back_scene = scene;
+            back_ms = scene_ms;
+            back_standing = standing;
+            back_night = night_sleep;
             set_row = 0;
             set_page = wifi_busy() ? PG_WSESSION : PG_MAIN;   // a WiFi setup under way: straight back to it
             wifi_sel = 1;
@@ -1061,6 +1096,15 @@ void Game::input(int type, int x, int y) {
         screen_on = 1;
         idle_ms = 0;
         dirty = 1;
+        // deadlines set before a long dark spell would read as "in the future" after ~25 days of
+        // dark (u32 wrap): start the cosmetic ones afresh
+        pet_cooling = 0;
+        wobbling = 0;
+        idle_act = IDLE_NONE;
+        idle_next = clock_ms + 1000;
+        trick_at = 0;
+        visitor = 0;
+        visit_due = 0;
         if (scene == SC_AWAY && away_ms == 0) { come_back(); }   // she's back!
         else if (scene == SC_HOME && dark_ms >= REST_RESET_MS) greet();   // after a real break
         return;
@@ -1141,14 +1185,14 @@ void Game::input(int type, int x, int y) {
         if (type == IN_TOUCH && y >= HEADER_Y1 && y < MENU_Y0) {
             burst(P_HEART, SCREEN_W / 2 + pet_x + facing * 60, 200, 2);
             cue(SFX_PET);
-            if (!pet_cooling || due(pet_gain_at)) { s.stat[HAPPY] = (u16)clamp(s.stat[HAPPY] + PET_HAPPY); pet_gain_at = clock_ms + PET_COOLDOWN_MS; pet_cooling = 1; }
+            pet_gain();
             remember();
             break;
         }
         go(SC_HOME);
         [[fallthrough]];
     case SC_HOME:
-        if (play_ms >= play_limit_ms()) { start_leave(); break; }   // time's up: no new activities
+        if (play_ms >= play_limit_ms()) { if (bedtime()) doze(true); else start_leave(); break; }   // time's up
         if (type == IN_NEXT) {
             menu = (u8)((menu + 1) % MENU_COUNT);
             dirty = 1;
@@ -1309,8 +1353,8 @@ void Game::step() {
         }
         if (greeting) { if (due(greet_end)) greeting = 0; changed = true; }
         if (memory_new) {                  // the day's picture floats up to the album (via the name)
-            if (!memory_at) memory_at = clock_ms | 1;
-            if ((int)(clock_ms - memory_at) >= MEMORY_SHOW_MS) memory_new = 0;
+            if (!memory_at) memory_at = stamp();
+            if (since(memory_at) >= MEMORY_SHOW_MS) memory_new = 0;
             changed = true;
         }
         if (petting && due(pet_react_end)) { petting = 0; changed = true; }
@@ -1329,7 +1373,7 @@ void Game::step() {
         int known = 0;
         for (int k = 0; k < tricks(); k++) if (!calm() || TRICK_CALM[k]) can[known++] = (u8)k;
         if (idle_act == IDLE_NONE && due(idle_next) && lively && known && !visitor && (++idle_count & 1) == 0 &&
-            (!trick_at || (int)(clock_ms - trick_at) >= TRICK_GAP_MS)) {
+            (!trick_at || since(trick_at) >= TRICK_GAP_MS)) {
             (void)crandom();               // the same random sequence as an ordinary idle moment
             int k = can[trick_next++ % known];
             if (s.tricks_seen < tricks()) {        // show off the newest one first
@@ -1340,7 +1384,7 @@ void Game::step() {
             }
             idle_act = (u8)(IDLE_HUM + k);
             idle_end = clock_ms + TRICK_MS[k];
-            trick_at = clock_ms | 1;
+            trick_at = stamp();
             changed = true;
         } else if (idle_act == IDLE_NONE && due(idle_next)) {
             u32 r = crandom() % 100;
@@ -1408,7 +1452,7 @@ void Game::step() {
         break;
     case SC_CLOUD: {
         int target = walk_to;              // steered by touch/buttons, or by tilting the toy
-        bool fresh = tilt_at && (int)(clock_ms - tilt_at) <= TILT_STALE_MS;
+        bool fresh = tilt_at && (u32)(clock_ms - tilt_at) <= TILT_STALE_MS;
         tilt_f = (i16)((3 * tilt_f + (fresh ? tilt : 0)) / 4);
         if (tilt_f > 15 || tilt_f < -15) target = SCREEN_W / 2 + tilt_f * 120 / 100;
         int d = target - cloud_x;
@@ -1424,7 +1468,7 @@ void Game::step() {
                 f.state = 2;               // lands softly on the cloud
                 landed++;
                 burst(P_SPARKLE, f.x, CLOUD_Y - 12, 2);
-                if (!land_cue_at || (int)(clock_ms - land_cue_at) >= 500) { cue(SFX_LAND); land_cue_at = clock_ms; }
+                if (!land_cue_at || (u32)(clock_ms - land_cue_at) >= 500) { cue(SFX_LAND); land_cue_at = clock_ms; }
             } else if (f.y >= 380) {
                 f.state = 3;               // drifts to the grass: no loss, just a feather on the floor
             }
@@ -1472,12 +1516,12 @@ void Game::advance(u32 ms) {
     save_ms += ms;
     if (screen_on) {                       // screen time, reset by a long enough break
         dark_ms = 0;
-        if (counts_as_play()) play_ms += ms;
+        if (counts_as_play() && !greeting) play_ms += ms;   // a hello is not play
     } else {
         dark_ms += ms;
         if (dark_ms >= REST_RESET_MS) play_ms = 0;
     }
-    if (scene == SC_AWAY && away_ms && !(s.away_until && wall_s))   // no clock: count powered time
+    if (scene == SC_AWAY && away_ms && !(s.away_until && utc_s))   // no clock: count powered time
         away_ms = away_ms > ms ? away_ms - ms : 0;
     u32 grow = 0;
     if (!s.hatched) {
@@ -1533,7 +1577,7 @@ void Game::scene_timers() {
     case SC_LEAVE:
         if (scene_ms >= LEAVE_MS) {
             away_ms = break_ms();
-            s.away_until = wall_s ? wall_s + break_ms() / 1000 : 0;
+            s.away_until = utc_s ? utc_s + break_ms() / 1000 : 0;   // in UTC: summer time cannot cut it
             want_save = 1;                 // saved right away, so a power cut is no shortcut
             idle_ms = 0;
             pet_x = 0;
@@ -1576,7 +1620,10 @@ void Game::scene_timers() {
 // mix of small ones end in exactly the same state. While the screen is dark at home or asleep
 // nothing visible can happen, so that time is fast-forwarded in one go (hours of light-sleep).
 u32 Game::tick(u32 dt) {
-    acc_ms += dt;
+    for (u32 left = dt;;) {                // in pieces of at most an hour: acc_ms can never wrap
+    u32 d = left > 3600000u ? 3600000u : left;
+    left -= d;
+    acc_ms += d;
     while (acc_ms >= STEP_MS) {
         if (s.hatched) check_bedtime();    // every step (dark fast-forward too): tick-size independent
         if (!screen_on && s.hatched && (scene == SC_HOME || scene == SC_SLEEP || scene == SC_AWAY ||
@@ -1594,9 +1641,12 @@ u32 Game::tick(u32 dt) {
         if (screen_on) step();             // cosmetics only run while someone can see them
         bool busy = scene == SC_EAT || scene == SC_PLAY || scene == SC_WASH || scene == SC_HATCH ||
                     scene == SC_GAME || scene == SC_LEAVE || scene == SC_RETURN ||
-                    (scene == SC_SETTINGS && set_page == PG_WSESSION && wifi_busy());   // QR up: stay lit
+                    (scene == SC_SETTINGS && set_page == PG_WSESSION && wifi_stage > WST_OFF &&
+                     wifi_stage < WST_OK);        // QR up or joining: stay lit; a result may go dark
         u32 off = scene == SC_AWAY ? AWAY_SCREEN_OFF_MS : SCREEN_OFF_MS;
         if (screen_on && !busy && idle_ms >= off) { screen_on = 0; visitor = 0; visit_due = 0; }
+    }
+    if (!left) break;
     }
 
     u32 period = 900;                      // breathing

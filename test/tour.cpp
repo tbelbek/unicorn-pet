@@ -184,6 +184,10 @@ int main() {
     g.input(IN_PARENT, 0, 0); play(g, 1500);
     tap_row(g, SET_SLEEP); play(g, 1500);
     tap_row(g, BEDR_BACK); play(g, 300);
+    chapter("10 dil: dil satırına her dokunuşta sıradaki");
+    for (int l = 1; l < LANG_COUNT; l++) { tap_row(g, SET_LANG); play(g, 900); }
+    tap_row(g, SET_LANG); play(g, 500);    // back to Turkish
+    chapter("Ebeveyn: BOOT'a 3 kez bas, sonuncuyu tut");
     tap_row(g, SET_CLOCK); play(g, 1200);
     chapter("WiFi: telefonla QR okut, ağı telefonda seç");
     tap_row(g, HUB_WIFI); play(g, 900);

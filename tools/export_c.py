@@ -22,7 +22,9 @@ SIDE_STATES = [("stand", m) for m in MOODS] + [("sleep", "idle"), ("eat", "idle"
                                                ("walk2", "idle")]
 ICONS = ["apple", "heart", "star", "bubble", "moon", "ball", "strawberry", "carrot", "hand",
          "note", "cloud", "mirror", "house", "bow", "flower", "tiara"]
-GLYPHS = [chr(c) for c in range(32, 127)] + list("ÇçĞğİıÖöŞşÜü·×")
+import i18n  # noqa: E402  (tools/i18n.py: the letters every language needs)
+BASE_GLYPHS = [chr(c) for c in range(32, 127)] + list("ÇçĞğİıÖöŞşÜü·×")
+GLYPHS = BASE_GLYPHS + [c for c in i18n.letters() if c not in BASE_GLYPHS]
 
 palette = ["#000000"]          # slot 0 = transparent
 index = {}
@@ -73,11 +75,13 @@ def font_bitmaps():
         d.fontmode = "1"
         d.text((0, pad), ch, font=font, fill=1)
         imgs.append(img)
-    rows = [y for img in imgs for y in range(img.height) if any(img.getpixel((x, y)) for x in range(8))]
+    base = imgs[:len(BASE_GLYPHS)]         # the row window comes from the original set only
+    rows = [y for img in base for y in range(img.height) if any(img.getpixel((x, y)) for x in range(8))]
     top, bottom = min(rows) - 1, max(rows) + 1   # one spare row on top for the dot on İ
     data = bytearray()
+    overrides = {**accented_overrides(font, pad, top, bottom), **OVERRIDES}
     for ch, img in zip(GLYPHS, imgs):
-        rows = OVERRIDES.get(ch)
+        rows = overrides.get(ch)
         for y in range(top, bottom):
             if rows:
                 r = rows[y - top] if y - top < len(rows) else "........"
@@ -91,6 +95,36 @@ def font_bitmaps():
 # full-height I (same as plain I) and its dot above, like every other capital.
 OVERRIDES = {"İ": ["...##...", ".######.", "...##...", "...##...", "...##...", "...##...", "...##...",
                    ".######.", "........"]}
+
+
+# Accented capitals: Press Start 2P squashes the letter to fit the accent into 8 rows, so they read
+# as lower case. Like İ, they get the spare top row for the accent and a full-height letter below.
+ACCENT_ROWS = {"acute": "....##..", "grave": "..##....", "circ": "..####..", "tilde": ".##..##.",
+               "dia": ".#...#..", "ring": "...##...", "breve": "..####.."}   # all different per base letter
+ACCENTED = {"À": ("A", "grave"), "Á": ("A", "acute"), "Â": ("A", "circ"), "Ã": ("A", "tilde"), "Ä": ("A", "dia"),
+            "Å": ("A", "ring"), "È": ("E", "grave"), "É": ("E", "acute"), "Ê": ("E", "circ"), "Ë": ("E", "dia"),
+            "Ì": ("I", "grave"), "Í": ("I", "acute"), "Î": ("I", "circ"), "Ï": ("I", "dia"), "Ñ": ("N", "tilde"),
+            "Ò": ("O", "grave"), "Ó": ("O", "acute"), "Ô": ("O", "circ"), "Õ": ("O", "tilde"), "Ö": ("O", "dia"),
+            "Ù": ("U", "grave"), "Ú": ("U", "acute"), "Û": ("U", "circ"), "Ü": ("U", "dia"),
+            "Ё": ("Е", "dia"), "Й": ("И", "breve")}
+
+
+def accented_overrides(font, pad, top, bottom):
+    out = {}
+    for ch, (base, mark) in ACCENTED.items():
+        img = Image.new("1", (8, 8 + 2 * pad), 0)
+        d = ImageDraw.Draw(img)
+        d.fontmode = "1"
+        d.text((0, pad), base, font=font, fill=1)
+        rows = ["".join("#" if img.getpixel((x, y)) else "." for x in range(8)) for y in range(top, bottom)]
+        rows[0] = ACCENT_ROWS[mark]
+        out[ch] = rows
+    seen = {}
+    for ch, rows in out.items():           # two accents on one letter drawn alike: a silent typo on screen
+        key = (ACCENTED[ch][0], tuple(rows))   # (Ё and Ë may match: they are the same shape in print too)
+        assert key not in seen, f"{ch} and {seen.get(key)} would look the same"
+        seen[key] = ch
+    return out
 
 
 def main():

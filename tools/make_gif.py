@@ -10,8 +10,11 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 rec = ROOT / "test/out/rec"
 times = [int(t) for t in (rec / "times.txt").read_text().split()]
+files = sorted(rec.glob("*.ppm"))
+if len(files) != len(times) or [p.stem for p in files] != [f"{i:04d}" for i in range(len(files))]:
+    raise SystemExit(f"{len(files)} frames vs {len(times)} times (or a gap in the numbering): re-run make -C test record")
 frames, durations = [], []
-for p, ms in zip(sorted(rec.glob("*.ppm")), times):
+for p, ms in zip(files, times):
     img = Image.open(p).convert("RGB")
     if frames and img.tobytes() == frames[-1].tobytes():
         durations[-1] += ms

@@ -56,7 +56,9 @@ static const char* fixed_rule() {
     const char* z = TIMEZONE;
     if (!*z) return 0;
     const char* r = tz::posix_for(z);
-    return r ? r : strchr(z, '/') ? 0 : z;
+    if (r) return r;
+    bool posix = strchr(z, ',') || z[0] == '<' || !strchr(z, '/');   // "EST5EDT,M3.2.0/2,M11.1.0/2" is a rule
+    return posix ? z : 0;
 }
 
 // The zone: config.h wins, then the one looked up over WiFi, then the fallback.
@@ -78,21 +80,22 @@ void clock_begin(Preferences& prefs) {
     bool fresh = prefs.getUInt("build", 0) != build, lost = rtc_lost();
     uint32_t now = rtc_now();
     bool seed = lost || (fresh && (!now || to_local(now) < build));
-    if (seed) rtc_set(to_utc(build));
-    if (fresh) { prefs.putUInt("build", build); if (seed) prefs.putBool("cal", true); }   // a kept clock keeps its trust
-    else if (lost) prefs.putBool("cal", false);
+    bool seeded = seed && rtc_set(to_utc(build));
+    if (fresh && (!seed || seeded)) {      // a failed write is retried on the next boot of this build
+        prefs.putUInt("build", build);
+        if (seeded) prefs.putBool("cal", true);   // a kept clock keeps its trust
+    } else if (lost) {
+        prefs.putBool("cal", false);       // an old build's time after a flat battery is only a guess
+    }
     trusted = prefs.getBool("cal", false);
 }
 
-uint32_t clock_local() {
-    uint32_t utc = rtc_now();
-    return utc ? to_local(utc) : 0;
-}
+uint32_t clock_local(uint32_t utc) { return utc ? to_local(utc) : 0; }
 
 bool clock_trusted() { return trusted; }
 
 void clock_set_local(uint32_t local) {
-    rtc_set(to_utc(local));
+    if (!rtc_set(to_utc(local))) return;   // only a clock that took the time is trusted
     nv->putBool("cal", true);
     trusted = true;
 }
@@ -117,11 +120,12 @@ bool ntp_done(uint32_t* utc) {             // a fresh, sane answer has arrived
 
 void ntp_stop() { esp_sntp_stop(); }
 
-void clock_set_utc(uint32_t utc) {         // main task only (I2C)
-    rtc_set(utc);
+bool clock_set_utc(uint32_t utc) {         // main task only (I2C)
+    if (!rtc_set(utc)) return false;
     nv->putBool("cal", true);
     trusted = true;
     Serial.println("clock set over WiFi");
+    return true;
 }
 
 // ---- WiFi sync: a one-shot task per attempt, results handed over through a queue -----------

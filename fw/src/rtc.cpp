@@ -40,8 +40,8 @@ bool rtc_begin() {
 
 bool rtc_lost() { return lost; }
 
-void rtc_set(uint32_t t) {                 // UTC seconds since 2000-01-01; also clears OS
-    if (!present) return;
+bool rtc_set(uint32_t t) {                 // UTC seconds since 2000-01-01; also clears OS
+    if (!present) return false;
     uint32_t d = t / 86400, s = t % 86400;
     int y = 2000, m = 1;                   // walk the calendar: runs once per flash, not per frame
     for (;;) { int n = (y % 4 == 0 && (y % 100 || y % 400 == 0)) ? 366 : 365; if (d < (uint32_t)n) break; d -= n; y++; }
@@ -52,8 +52,9 @@ void rtc_set(uint32_t t) {                 // UTC seconds since 2000-01-01; also
     const uint8_t v[7] = {to_bcd(s % 60), to_bcd(s / 60 % 60), to_bcd(s / 3600), to_bcd(d + 1), 0,
                           to_bcd(m), to_bcd(y - 2000)};
     Wire.write(v, sizeof v);
-    Wire.endTransmission();
+    if (Wire.endTransmission() != 0) return false;   // NACK: the chip still has its old time
     lost = false;
+    return true;
 }
 
 uint32_t rtc_now() {
