@@ -101,6 +101,252 @@ static void blit(const u8* data, int w, int h, int scale, int x0, int y0, const 
     blit2(data, w, h, scale, scale, x0, y0, pal, flip);
 }
 
+// Small hand-drawn sprites: one char per pixel, '.' is clear, `keys` names the colours in `cols`.
+static void art(const char* const* rows, int h, const char* keys, const u16* cols, int x0, int y0, int s,
+                bool flip = false) {
+    for (int y = 0; y < h; y++) {
+        const char* r = rows[y];
+        int w = 0;
+        while (r[w]) w++;
+        for (int x = 0; x < w; x++) {
+            char c = r[flip ? w - 1 - x : x];
+            for (int k = 0; c != '.' && keys[k]; k++)
+                if (keys[k] == c) { fill(x0 + x * s, y0 + y * s, x0 + (x + 1) * s, y0 + (y + 1) * s, cols[k]); break; }
+        }
+    }
+}
+
+// sky things, drawn on a 3-5 px grid like everything else
+static const char* const SUN[17] = {
+    "........r........",
+    "........r........",
+    "..r...........r..",
+    "...r.........r...",
+    "......yyyyy......",
+    ".....yhhyyyo.....",
+    "....yhhhhyyyo....",
+    "....yhhhhyyyo....",
+    "rr..yyhhyyyyo..rr",
+    "....yyyyyyyoo....",
+    "....yyyyyyooo....",
+    ".....oyyyooo.....",
+    "......ooooo......",
+    "...r.........r...",
+    "..r...........r..",
+    "........r........",
+    "........r........",
+};
+static const char* const MOON_ART[13] = {
+    "............",
+    "...mmm......",
+    "..mmm.......",
+    ".mmmm.......",
+    ".mmmm.......",
+    "mmmmm.......",
+    "mmmmm.......",
+    "mmddmm......",
+    ".dddmmm.....",
+    ".mdmmmmmmmm.",
+    "..mmdddddd..",
+    "...dddddd...",
+    "............",
+};
+static const char* const CLOUD[11] = {
+    "...........www..........",
+    ".........wwwwwww........",
+    "........wwwwwwwww.......",
+    "........wwwwwwwww.......",
+    "....wwwwwwwwwwwwwwwww...",
+    "...wwwwwwwwwwwwwwwwwww..",
+    "...wwwwwwwwwwwwwwwwwww..",
+    "...wwwwwwwwwwwwwwwwwww..",
+    "...wwwwwwwwwwwwwwwwwww..",
+    "...swwwwwwwwwwwwwwwwws..",
+    "....sssssssssssssssss...",
+};
+
+static const char* const FOAM[9] = {
+    "......www.....",
+    "....wwwwww....",
+    "....wwhhwww...",
+    ".wwwwhwwwwwww.",
+    ".whwwwwwwwwww.",
+    ".wwwwwwwwwwwww",
+    ".wwwwwwwwwwwws",
+    ".ssssssssssss.",
+    "...ssssss.ss..",
+};
+static const char* const BUBBLE_ART[8] = {
+    "..cccc..",
+    ".c....c.",
+    "c.hh...c",
+    "c.h....c",
+    "c......c",
+    "c......c",
+    ".c....c.",
+    "..cccc..",
+};
+static const char* const CAKE[17] = {
+    ".......ooooooooooo.......",
+    "......occccccccccco......",
+    "......occccccccccco......",
+    "......oaccaaccabcco......",
+    "......oaacaagaabbco......",
+    "......oaayaaaaabbbo......",
+    "...ooooaaaaaaaubbboooo...",
+    "..occccccccccccccccccco..",
+    "..occccccccccccccccccco..",
+    "..oaccraccaaccaaccabcco..",
+    "..oaacaaaaayacaaauabbco..",
+    "..oaagaaaaaaaaaaaaabbbo..",
+    "..oaaaaaaaaaaaraaaabbbo..",
+    "..oaaaaauaaaaaaaaaabbbo..",
+    "..oaaaaaaaaaaaaaaaabbbo..",
+    "..pooooooooooooooooooop..",
+    ".ppppppppppppppppppppppp.",
+};
+static const char* const FLAME[2][4] = {{".o.", "oyo", "oyo", ".o."}, {"..o", ".oo", "oyo", ".o."}};
+
+// a curled little rainbow mess in three sizes
+static const char* const MESS1[5] = {
+    "...oo...",
+    "..owpo..",
+    ".opppgo.",
+    "obbbbbo.",
+    ".ooooo..",
+};
+static const char* const MESS2[7] = {
+    ".....oo....",
+    "....owgo...",
+    "...oggggo..",
+    "..oppggggo.",
+    ".opwppppo.",
+    "obbbbbbbbo.",
+    ".oooooooo..",
+};
+static const char* const MESS3[10] = {
+    "......oo......",
+    ".....owyo.....",
+    "....oyyyyo....",
+    "...oggggyo....",
+    "..ogwggggoo...",
+    "..opppgggggo..",
+    ".oppwpppppggo.",
+    "opppppppppppo.",
+    "obbbbbbbbbbbo.",
+    ".oooooooooooo.",
+};
+
+// the music garden's flowers (closed, open, bursting), a stem with two leaves, the sun lounger
+static const char* const FLOWER_BUD[17] = {
+    ".................",
+    ".................",
+    ".................",
+    ".................",
+    ".......ooo.......",
+    "......oppqo......",
+    ".....opppqqo.....",
+    ".....opppqqo.....",
+    "....oppppqqqo....",
+    "....oppppqqqo....",
+    "....oppppqqqo....",
+    ".....opppqqo.....",
+    "......olllo......",
+    ".......ooo.......",
+    ".................",
+    ".................",
+    ".................",
+};
+static const char* const FLOWER_OPEN[17] = {
+    ".................",
+    "........o........",
+    "......oopoo......",
+    ".....opppppo.....",
+    "...ooopppppooo...",
+    "..opppppppppppo..",
+    "..oppppcccppppo..",
+    ".oppppcccccppppo.",
+    "..opppcceecpppo..",
+    "...oppcceecppo...",
+    "...opppcccpppo...",
+    "...oqqqqqqqqqo...",
+    "...oqqqqqqqqqo...",
+    "....oqqqoqqqo....",
+    ".....ooo.ooo.....",
+    ".................",
+    ".................",
+};
+static const char* const FLOWER_BURST[17] = {
+    "........o........",
+    "......oopoo......",
+    ".....opppppo.....",
+    "....oopppppoo....",
+    "..oopopppppopoo..",
+    ".opppppppppppppo.",
+    ".opppppcccpppppo.",
+    ".oppppcccccppppo.",
+    ".oppppcceecppppo.",
+    "..opppcceecpppo..",
+    "...opppcccpppo...",
+    "..oqqqqqqqqqqqo..",
+    "..oqqqqqqqqqqqo..",
+    "...oqqqqoqqqqo...",
+    "....oqqo.oqqo....",
+    ".....oo...oo.....",
+    ".................",
+};
+static const char* const* const FLOWER[3] = {FLOWER_BUD, FLOWER_OPEN, FLOWER_BURST};
+static const char* const STEM[14] = {
+    "...ll....",
+    "...lm....",
+    "...lm....",
+    ".llllm...",
+    "lllolm...",
+    ".oo.lm...",
+    "....lmll.",
+    "....lmlll",
+    "....lm.oo",
+    "....lm...",
+    "....lm...",
+    "....lm...",
+    "....lm...",
+    "....lm...",
+};
+static const char* const LOUNGER[32] = {
+    "....................................bbbbbbbbbb.",
+    "....................................baaaaaaaab.",
+    "....................................baaaaaaaab.",
+    "...................................bwwwwwwwwb..",
+    "...................................bwwwwwwwwb..",
+    "...................................bwwwwwwwwb..",
+    "...................................baaaaaaaab..",
+    "..................................baaaaaaaab...",
+    "..................................baaaaaaaab...",
+    "..................................bwwwwwwwwb...",
+    ".................................bwwwwwwwwb....",
+    ".................................bwwwwwwwwb....",
+    ".................................baaaaaaaab....",
+    ".................................baaaaaaaab....",
+    "................................baaaaaaaab.....",
+    "................................bwwwwwwwwb.....",
+    "................................bwwwwwwwwb.....",
+    "...............................bwwwwwwwwb......",
+    "...............................baaaaaaaab......",
+    "...............................baaaaaaaab......",
+    "...............................baaaaaaaab......",
+    "..............................bwwwwwwwwb.......",
+    "..............................bwwwwwwwwb.......",
+    "..............................bwwwwwwwwb.......",
+    ".............................baaaaaaaab........",
+    ".............................baaaaaaaab........",
+    ".............................baaaaaaaab........",
+    ".............................bwwwwwwwwb........",
+    "aaawwwaaawwwaaawwwaaawwwaaawwwaaawwwaaawww.....",
+    "aaawwwaaawwwaaawwwaaawwwaaawwwaaawwwaaawww.....",
+    "ssssssssssssssssssssssssssssssssssssssssss.....",
+    "bbbbddbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbddbbbb.....",
+};
+
 static void icon(int i, int scale, int x, int y) {
     blit(UP_ICONS + i * UP_ICON_W * UP_ICON_H, UP_ICON_W, UP_ICON_H, scale, x, y, PAL);
 }
@@ -250,32 +496,26 @@ static void sky() {
         static const u16 star[3] = {rgb(0x5A, 0x5F, 0x9E), rgb(0x8C, 0x90, 0xD6), rgb(0xC9, 0xCC, 0xFF)};
         fill(x, y, x + s, y + s, star[(r >> 24) % 3]);
     }
-    ellipse(64, 126, 22, 22, MOON);        // top left: her Zz and dreams rise on the right
-    ellipse(85, 119, 21, 21, BLACK);
+    static const u16 MOON_COLS[2] = {MOON, rgb(0xE0, 0xC0, 0x70)};
+    art(MOON_ART, 13, "md", MOON_COLS, 40, 100, 4);   // top left: her Zz and dreams rise on the right
 }
 
 // Day and evening skies for the home screens (night uses sky()). Kept dim: it is a black AMOLED.
 static void backdrop(const Game& g) {
     int ph = g.phase();
     if (ph == PH_NIGHT) { sky(); return; }
-    u16 cloud = rgb(0x3A, 0x34, 0x5E), cloud2 = rgb(0x2E, 0x29, 0x4C);
+    u16 cloud[2] = {rgb(0x3A, 0x34, 0x5E), rgb(0x2E, 0x29, 0x4C)};
     if (ph == PH_DAY) {
-        int cx = SCREEN_W - 62, cy = 128;
-        for (int k = 0; k < 8; k++) {      // rays
-            static const i8 DX[8] = {0, 1, 1, 1, 0, -1, -1, -1}, DY[8] = {-1, -1, 0, 1, 1, 1, 0, -1};
-            int rx = cx + DX[k] * (DX[k] && DY[k] ? 22 : 30), ry = cy + DY[k] * (DX[k] && DY[k] ? 22 : 30);
-            fill(rx - 3, ry - 3, rx + 3, ry + 3, rgb(0xFF, 0xC8, 0x4D));
-        }
-        ellipse(cx, cy, 18, 18, YELLOW);
-    } else {                               // evening: a big low orange sun, a first star
-        ellipse(SCREEN_W - 60, 150, 24, 24, rgb(0xFF, 0x9F, 0x43));
-        cloud = rgb(0x4A, 0x2E, 0x52);
-        cloud2 = rgb(0x3A, 0x26, 0x46);
+        static const u16 SUN_COLS[4] = {YELLOW, rgb(0xFF, 0xB3, 0x47), rgb(0xFF, 0xF6, 0xC8), rgb(0xFF, 0xC8, 0x4D)};
+        art(SUN, 17, "yohr", SUN_COLS, SCREEN_W - 62 - 34, 128 - 34, 4);
+    } else {                               // evening: a big low orange sun, no rays, a first star
+        static const u16 DUSK[3] = {rgb(0xFF, 0x9F, 0x43), rgb(0xE8, 0x6A, 0x3A), rgb(0xFF, 0xC8, 0x7A)};
+        art(SUN, 17, "yoh", DUSK, SCREEN_W - 60 - 43, 150 - 43, 5);
+        cloud[0] = rgb(0x4A, 0x2E, 0x52);
+        cloud[1] = rgb(0x3A, 0x26, 0x46);
         sparkle(70, 180, 2, rgb(0xC9, 0xCC, 0xFF));
     }
-    ellipse(70, 128, 30, 12, cloud2);      // a soft cloud
-    ellipse(56, 122, 16, 12, cloud);
-    ellipse(80, 118, 18, 14, cloud);
+    art(CLOUD, 11, "ws", cloud, 70 - 36, 124 - 16, 3);   // a soft cloud
 }
 
 // a speech bubble with pictures instead of words (she cannot read either)
@@ -398,6 +638,7 @@ static void unicorn_side(const Game& g, int state, bool night, int frame, int dy
     int sx = SC + squash_now, sy = SC - squash_now;
     bool flip = g.facing * turn < 0;
     int x0 = side_x(g) - (sx - SC) * UP_SIDE_W / 2, top = side_y(g) + UP_SIDE_FEET * SC + dy - UP_SIDE_FEET * sy;
+    if (state != ST_SLEEP && dy < 0 && top < HEADER_Y1 - 3 * SC) top = HEADER_Y1 - 3 * SC;   // a high jump stops short of the name
     blit2(spr, UP_SIDE_W, UP_SIDE_H, sx, sy, x0, top, night ? NIGHT : PAL, flip);
     if (g.stage() >= STAGE_GROWN && state != ST_SLEEP && g.scene != SC_SLEEP) {   // her grown-up marks
         static const i8 FX[3] = {15, 11, 19}, FY[3] = {29, 32, 33};
@@ -434,12 +675,13 @@ static void unicorn_front(const Game& g, int mood, int y, int scale = 5) {
 
 // A small rainbow swirl: what a unicorn leaves behind when nobody washes her. size 0..4
 static void mess(int cx, int base, int size) {
-    static const int widths[4] = {8, 6, 4, 2};
-    for (int r = 0; r < size && r < 4; r++) {
-        int w = widths[r] * 6, y = base - (r + 1) * 7;
-        fill(cx - w / 2, y, cx + w / 2, y + 7, RAINBOW[r * 2]);
-    }
-    if (size >= 3) fill(cx + 3, base - 30, cx + 7, base - 26, INK);          // a glint
+    if (size <= 0) return;
+    static const u16 COLS[5] = {rgb(0x5B, 0x2A, 0x86), RAINBOW[0], YELLOW, RAINBOW[3], rgb(0xC0, 0x3A, 0x6A)};
+    static const u16 SHINE[1] = {INK};
+    const char* const* m = size >= 3 ? MESS3 : size == 2 ? MESS2 : MESS1;
+    int h = size >= 3 ? 10 : size == 2 ? 7 : 5, w = size >= 3 ? 14 : size == 2 ? 11 : 8, s = 4;
+    art(m, h, "opygb", COLS, cx - w * s / 2, base - h * s, s);
+    art(m, h, "w", SHINE, cx - w * s / 2, base - h * s, s);
 }
 
 static void particles(const Game& g) {
@@ -454,23 +696,20 @@ static void particles(const Game& g) {
         case P_SPARKLE:  sparkle(x, y, 3, p.col & 1 ? YELLOW : PINK); break;
         case P_CRUMB:    fill(x, y, x + 5, y + 5, RAINBOW[p.col % 3]); break;
         case P_CONFETTI: fill(x, y, x + 6, y + 6, RAINBOW[p.col % 7]); break;
-        case P_RING: {                     // an expanding outline where a star popped
-            int rr = 10 + (6 - p.life) * 6 + ahead(6, g), in = rr - 3;
-            for (int yy = -rr; yy <= rr; yy++)
-                for (int xx = -rr; xx <= rr; xx++) {
-                    int d2 = xx * xx + yy * yy;
-                    if (d2 <= rr * rr && d2 > in * in) px(x + xx, y + yy, YELLOW);
+        case P_RING: {                     // an expanding ring where a star popped, on a 4 px grid
+            int rr = 10 + (6 - p.life) * 6 + ahead(6, g), in = rr - 4, c = 4;
+            for (int yy = -rr - c; yy <= rr; yy += c)
+                for (int xx = -rr - c; xx <= rr; xx += c) {
+                    int mx = xx + c / 2, my = yy + c / 2, d2 = mx * mx + my * my;
+                    if (d2 <= rr * rr && d2 > in * in) fill(x + xx, y + yy, x + xx + c, y + yy + c, YELLOW);
                 }
             break;
         }
-        case P_BUBBLE:                     // a ring, so she shows through it
-            for (int yy = -7; yy <= 7; yy++)
-                for (int xx = -7; xx <= 7; xx++) {
-                    int d2 = xx * xx + yy * yy;
-                    if (d2 <= 49 && d2 > 25) px(x + xx, y + yy, rgb(0x6F, 0xD6, 0xFF));
-                }
-            fill(x - 3, y - 3, x - 1, y - 1, INK);
+        case P_BUBBLE: {                   // a ring, so she shows through it
+            static const u16 RING[2] = {rgb(0x6F, 0xD6, 0xFF), INK};
+            art(BUBBLE_ART, 8, "ch", RING, x - 8, y - 8, 2);
             break;
+        }
         }
     }
 }
@@ -496,7 +735,6 @@ static void home_like(const Game& g, int state, const char* sub, bool night, int
     status(g);
     battery_icon(g, SCREEN_W - 52, 46);
     if (g.wifi_busy()) wifi_glyph(SCREEN_W - 84, 60, 2, g.wifi_stage >= WST_OK ? rgb(0x5E, 0xE0, 0x7A) : LILAC);   // setup under way
-    header(g, sub);
     ground(g, night);
     // messes sit on the floor beside her; during a bath they shrink away
     int n = g.scene == SC_WASH ? g.wash_messes : g.scene == SC_SLEEP ? 0 : g.messes();
@@ -506,6 +744,7 @@ static void home_like(const Game& g, int state, const char* sub, bool night, int
     for (int i = 0; i < n; i++) mess(mx[i] + burn_x(g), 344 + burn_y(g), size);
     if (under) under(g, side_x(g), side_y(g) + dy);
     unicorn_side(g, state, night, frame, dy);
+    if (!g.party) header(g, sub);          // over a high jump's crown; a party's bubble takes its place
     int sx = side_x(g), sy = side_y(g) + dy;
     if (state == M_HAPPY) { sparkle(sx + P(34), sy + P(52), 4, YELLOW); sparkle(sx + P(230), sy + P(42), 3, PINK); }
     if (state == M_HUNGRY) thought(sx + P(g.facing < 0 ? 10 : 196), sy + P(6));
@@ -523,17 +762,27 @@ static void home_like(const Game& g, int state, const char* sub, bool night, int
 
 // ---- eggs: one shell per character, patterned in her mane colours -------------------------
 
-static void cracks(int x0, int y0, int stage);
+static void cracks(int x0, int y0, int scale, int stage);
 
-static void egg_draw(int c, int x0, int y0, int scale, int crack_stage) {
+// The line the shell breaks along: a jagged zigzag round the middle, the row per column where
+// the lower half starts. The cracks that come before the hatch trace this same line.
+static const u8 EGG_CUT[UP_EGG_W] = {12, 12, 13, 12, 11, 12, 13, 14, 13, 12, 11, 10, 11, 12, 13, 12, 11, 12, 13, 12};
+enum { EGG_WHOLE, EGG_TOP, EGG_BOTTOM };
+
+static void egg_draw(int c, int x0, int y0, int scale, int crack_stage, int part = EGG_WHOLE) {
     const u8* e = UP_EGG;
+    auto in = [&](int x, int y) {          // this pixel is shell, and in the part being drawn
+        if (x < 0 || y < 0 || x >= UP_EGG_W || y >= UP_EGG_H || !e[y * UP_EGG_W + x]) return false;
+        return part == EGG_WHOLE || (part == EGG_TOP) == (y < EGG_CUT[x]);
+    };
+    u8 rim = e[1 * UP_EGG_W + UP_EGG_W / 2];   // the outline's colour, for the broken edge too
     for (int y = 0; y < UP_EGG_H; y++)
         for (int x = 0; x < UP_EGG_W; x++) {
+            if (!in(x, y)) continue;
             u8 i = e[y * UP_EGG_W + x];
-            if (!i) continue;
-            bool edge = x == 0 || y == 0 || x == UP_EGG_W - 1 || y == UP_EGG_H - 1 || !e[y * UP_EGG_W + x - 1] ||
-                        !e[y * UP_EGG_W + x + 1] || !e[(y - 1) * UP_EGG_W + x] || !e[(y + 1) * UP_EGG_W + x];
-            u16 col = PAL[i];
+            bool edge = !in(x - 1, y) || !in(x + 1, y) || !in(x, y - 1) || !in(x, y + 1);
+            bool broken = edge && e[y * UP_EGG_W + x] != rim && part != EGG_WHOLE;
+            u16 col = broken ? PAL[rim] : PAL[i];
             if (!edge) {
                 bool mark = false;
                 int k = 0;
@@ -547,7 +796,7 @@ static void egg_draw(int c, int x0, int y0, int scale, int crack_stage) {
             }
             fill(x0 + x * scale, y0 + y * scale, x0 + (x + 1) * scale, y0 + (y + 1) * scale, col);
         }
-    if (crack_stage > 0) cracks(x0, y0, crack_stage);
+    if (crack_stage > 0 && part == EGG_WHOLE) cracks(x0, y0, scale, crack_stage);
 }
 
 static void house_button() {                // top-right: back home
@@ -575,21 +824,19 @@ static void scene_egg_pick(const Game& g) {
 
 // ---- bath foam -------------------------------------------------------------------------------
 
-static void foam_blob(int cx, int cy, int r, u16 c) {
-    ellipse(cx, cy, r, r, c);
-    ellipse(cx - r * 2 / 3, cy + r / 3, r * 2 / 3, r * 2 / 3, c);
-    ellipse(cx + r * 2 / 3, cy + r / 3, r * 2 / 3, r * 2 / 3, c);
+static void foam_blob(int cx, int cy, int r) {   // three lobes of suds, about 3r wide
+    static const u16 SUDS[3] = {rgb(0xF0, 0xF8, 0xFF), rgb(0xC8, 0xE8, 0xFF), rgb(0xFF, 0xFF, 0xFF)};
+    int s = r * 2 / 9 < 2 ? 2 : r * 2 / 9;
+    art(FOAM, 9, "wsh", SUDS, cx - 7 * s, cy - 5 * s, s);
 }
 
 static void bath_foam(const Game& g) {
     static const short FX[3] = {104, 184, 264}, FY[3] = {190, 150, 190};
-    u16 foam = rgb(0xF0, 0xF8, 0xFF), shade = rgb(0xC8, 0xE8, 0xFF);
     if (g.foam_window())
         for (int i = 0; i < 3; i++) {
             if (g.foam_mask & (1 << i)) continue;
             int bob = g.calm() ? 0 : wave(now(g) + i * 300, 1400, 3);
-            foam_blob(FX[i], FY[i] + bob + 3, 22, shade);
-            foam_blob(FX[i], FY[i] + bob, 22, foam);
+            foam_blob(FX[i], FY[i] + bob, 22);
             if (i == g.foam_sel) {         // which one PWR would pop
                 for (int a = 0; a < 64; a += 2) px(FX[i] + 34 * sin64(a) / 256, FY[i] + bob + 34 * sin64(a + 16) / 256, LILAC);
             }
@@ -597,12 +844,67 @@ static void bath_foam(const Game& g) {
     if (g.foam_mask && g.scene_ms < CROWN_TO_MS) {   // the first popped puff became a silly crown
         int ax = UP_HEAD[ST_WASH][g.frame][0], ay = UP_HEAD[ST_WASH][g.frame][1];
         int cx = side_x(g) + ax * SC, cy = side_y(g) + ay * SC - SC;
-        foam_blob(cx, cy, 16, foam);
-        foam_blob(cx + 14, cy - 10, 10, foam);
+        foam_blob(cx, cy, 16);
+        foam_blob(cx + 14, cy - 10, 10);
     }
 }
 
 // ---- butterfly neighbour --------------------------------------------------------------------
+
+static const char* const BFLY_OPEN[16] = {
+    "........oo.oo........",
+    "..........o..........",
+    "..oooo....k....oooo..",
+    ".owowoooo.k.oooowowo.",
+    "oowaaaaaookooaaaaawoo",
+    "owaabbbaavkvaabbbaawo",
+    "ooaabbaavakavaabbaaoo",
+    ".owaaaavaakaavaaaawo.",
+    ".ooaaavaaakaaavaaaoo.",
+    "..oooaaaaokoaaaaooo..",
+    ".owoovaaaokoaaavoowo.",
+    "oowaaavaaokoaavaaawoo",
+    "owaaaaaaao.oaaaaaaawo",
+    ".oowaaaao...oaaaawoo.",
+    "..owoooo.....oooowo..",
+    "...oo...........oo...",
+};
+static const char* const BFLY_UP[16] = {
+    "........oo.oo........",
+    "..........o..........",
+    "..........k..........",
+    "......ooo.k.ooo......",
+    ".....owwookoowwo.....",
+    ".....oabbakabbao.....",
+    ".....oabbvkvbbao.....",
+    "......oaavkvaao......",
+    "......oavakavao......",
+    "......ooaakaaoo......",
+    ".......ovakavo.......",
+    "......owaakaawo......",
+    "......oaao.oaao......",
+    ".......oo...oo.......",
+    ".....................",
+    ".....................",
+};
+static const char* const FEATHER[16] = {
+    ".......oo.",
+    "......oabo",
+    ".....oaabo",
+    "....oaaqbo",
+    "....oaqbbo",
+    "...oaaqbo.",
+    "..o.oqbbo.",
+    "..oaaqbo..",
+    ".oaaqbbo..",
+    ".oaaqbo...",
+    ".o.oqbo...",
+    "oaaqbbo...",
+    "ooaqbo....",
+    ".oqoo.....",
+    ".q........",
+    "q.........",
+};
 
 static void butterfly(const Game& g) {
     if (!g.visitor) return;
@@ -619,18 +921,10 @@ static void butterfly(const Game& g) {
     }
     bool resting = t >= 1000 && t < 3000;  // resting: wings mostly open, a slow flap now and then
     bool open = g.calm() || (resting ? (t / 500) % 3 != 0 : ((t / 120) & 1));
-    u16 wing = rgb(0xFF, 0xC8, 0x4D), body = rgb(0x2B, 0x18, 0x40);
-    int w = open ? 22 : 8;
-    u16 spot = PINK;
-    for (int k = 0; k < 16; k++) {          // upper wings, then smaller lower wings
-        int span = k < 10 ? w - k / 3 : (w * 2 / 3) - (k - 10) / 2;
-        fill(x - 3 - span, y - 14 + k * 2, x - 3, y - 12 + k * 2, wing);
-        fill(x + 3, y - 14 + k * 2, x + 3 + span, y - 12 + k * 2, wing);
-    }
-    if (open) { ellipse(x - 12, y - 6, 3, 3, spot); ellipse(x + 12, y - 6, 3, 3, spot); }
-    fill(x - 2, y - 16, x + 2, y + 18, body);     // body and feelers
-    fill(x - 6, y - 22, x - 4, y - 16, body);
-    fill(x + 4, y - 22, x + 6, y - 16, body);
+    // a monarch: orange cells between dark veins, a dark rim spotted white
+    static const u16 COLS[6] = {rgb(0x2B, 0x18, 0x40), rgb(0x4A, 0x2E, 0x6B), rgb(0xFF, 0x8C, 0x2E),
+                                rgb(0xFF, 0xC0, 0x4D), rgb(0x7A, 0x3A, 0x1A), rgb(0xF4, 0xEE, 0xFF)};
+    art(open ? BFLY_OPEN : BFLY_UP, 16, "okabvw", COLS, x - 31, y - 24, 3);
 }
 
 // ---- Oyna's toy box and its modes -------------------------------------------------------------
@@ -659,11 +953,13 @@ static void scene_music(const Game& g) {
         u32 since = g.flower_at[i] == 0xFFFF ? 100000 : g.scene_ms - g.flower_at[i];
         int open = since < 100 ? 10 : since < 500 ? 22 : 18;          // closes, bursts open, settles
         if (g.calm()) open = since < 500 ? 20 : 18;
-        fill(cx - 3, cy + 10, cx + 3, cy + 60, rgb(0x5E, 0xE0, 0x7A));   // stem
-        u16 petal = RAINBOW[petal_k[i]];
-        for (int a = 0; a < 64; a += 8)
-            ellipse(cx + open * sin64(a) / 256, cy + open * sin64(a + 16) / 256, 11, 11, petal);
-        ellipse(cx, cy, 10, 10, YELLOW);
+        static const u16 GREENS[3] = {rgb(0x5E, 0xE0, 0x7A), rgb(0x3A, 0xA8, 0x5A), rgb(0x5B, 0x2A, 0x86)};
+        art(STEM, 14, "lmo", GREENS, cx - 16, cy + 6, 4);
+        static const u16 SHADE[3] = {rgb(0xD0, 0x3A, 0x6A), rgb(0xE8, 0xB0, 0x30), rgb(0x2E, 0x9C, 0xC8)};
+        bool yellow = petal_k[i] == 2;     // a yellow flower gets an orange heart, so it still shows
+        u16 cols[5] = {rgb(0x5B, 0x2A, 0x86), RAINBOW[petal_k[i]], SHADE[i],
+                       yellow ? rgb(0xFF, 0x9F, 0x43) : YELLOW, yellow ? rgb(0xE8, 0x6A, 0x3A) : rgb(0xFF, 0x9F, 0x43)};
+        art(FLOWER[open <= 10 ? 0 : open >= 22 ? 2 : 1], 17, "opqce", cols, cx - 34, cy - 34, 4);
     }
     particles(g);
     // dots for the notes she will sing back
@@ -677,11 +973,8 @@ static void scene_cloud(const Game& g) {
     for (int i = 0; i < 3; i++) ellipse(64 + i * 120, CLOUD_Y + 50, 4, 4, TRACK);   // lane guides
     // the cloud, sliding smoothly toward where it is going
     int cx = g.cloud_x;
-    u16 white = rgb(0xF4, 0xF8, 0xFF), shade = rgb(0xC9, 0xD8, 0xF0);
-    ellipse(cx, CLOUD_Y + 6, 52, 16, shade);
-    ellipse(cx - 26, CLOUD_Y, 24, 16, white);
-    ellipse(cx + 26, CLOUD_Y, 24, 16, white);
-    ellipse(cx, CLOUD_Y - 10, 30, 20, white);
+    static const u16 WHITE_CLOUD[2] = {rgb(0xF4, 0xF8, 0xFF), rgb(0xC9, 0xD8, 0xF0)};
+    art(CLOUD, 11, "ws", WHITE_CLOUD, cx - 48, CLOUD_Y - 26, 4);
     int stacked = 0;
     for (int i = 0; i < FEATHERS; i++) {
         const Game::Feather& f = g.fea[i];
@@ -690,9 +983,15 @@ static void scene_cloud(const Game& g) {
         if (f.state == 1) { fy += ahead(FEATHER_FALL, g); fx += g.calm() ? 0 : wave(now(g) + i * 200, 1000, 8); }
         if (f.state == 2) { fx = cx - 30 + stacked * 12; fy = CLOUD_Y - 26; stacked++; }
         if (f.state == 3) fy = 382;
-        u16 vane = RAINBOW[i % 7];
-        fill(fx - 1, fy - 14, fx + 1, fy + 14, INK);                  // quill
-        for (int k = 0; k < 9; k++) fill(fx - 7 + k / 3, fy - 12 + k * 2, fx + 7 - k / 3, fy - 10 + k * 2, vane);
+        static const u16 VANE[5][3] = {    // light, shade, outline: pink, sky, lemon, mint, lilac
+            {rgb(0xFF, 0x9F, 0xC8), rgb(0xE0, 0x5C, 0x9A), rgb(0x7A, 0x2A, 0x5C)},
+            {rgb(0x9E, 0xEC, 0xFF), rgb(0x4C, 0xC9, 0xF0), rgb(0x1E, 0x4A, 0x8A)},
+            {rgb(0xFF, 0xEA, 0x88), rgb(0xFF, 0xB3, 0x47), rgb(0x8A, 0x4A, 0x10)},
+            {rgb(0xA8, 0xF0, 0xB8), rgb(0x5E, 0xC8, 0x7A), rgb(0x1F, 0x5E, 0x3A)},
+            {rgb(0xD8, 0xC8, 0xFF), rgb(0x9B, 0x6B, 0xFF), rgb(0x3A, 0x2C, 0x9C)}};
+        const u16* v = VANE[i % 5];
+        u16 cols[4] = {v[2], v[0], v[1], INK};
+        art(FEATHER, 16, "oabq", cols, fx - 15, fy - 24, 3, i & 1);
     }
     particles(g);
 }
@@ -710,8 +1009,11 @@ static void scene_dress(const Game& g) {
         int x0 = 24 + i * 86;
         u16 line = i == g.s.accessory ? PAL[UP_ACCENT[g.s.character]] : i == g.preview ? LILAC : TRACK;
         rrect(x0, 352, x0 + 78, 430, 14, SEL, line, 3);
-        if (icons[i] < 0) {                // "nothing": an empty ring
-            for (int a = 0; a < 64; a += 2) px(x0 + 39 + 16 * sin64(a) / 256, 391 + 16 * sin64(a + 16) / 256, DIM);
+        if (icons[i] < 0) {                // "nothing": a ring with a slash, on the icons' 5 px grid
+            static const char* const NONE[9] = {"..lllll..", ".l.....l.", "l.....l.l", "l....l..l", "l...l...l",
+                                                "l..l....l", "l.l.....l", ".l.....l.", "..lllll.."};
+            static const u16 NONE_COL[1] = {DIM};
+            art(NONE, 9, "l", NONE_COL, x0 + 39 - 22, 391 - 22, 5);
         } else {
             icon(icons[i], 5, x0 + 39 - UP_ICON_W * 5 / 2, 391 - UP_ICON_H * 5 / 2);
         }
@@ -722,22 +1024,18 @@ static void scene_dress(const Game& g) {
 // birthday cake: two tiers, icing, a candle per birthday (up to five), flickering flames
 static void cake(const Game& g, int cx, int base) {
     u32 t = g.clock_ms + g.acc_ms;
-    ellipse(cx, base, 50, 7, rgb(0xC9, 0xB8, 0xFF));                  // plate
-    rrect(cx - 42, base - 40, cx + 42, base - 2, 8, rgb(0xFF, 0x8F, 0xB8), rgb(0xFF, 0x8F, 0xB8), 1);
-    rrect(cx - 28, base - 64, cx + 28, base - 40, 8, rgb(0xFF, 0xF0, 0xF6), rgb(0xFF, 0xF0, 0xF6), 1);
-    for (int k = 0; k < 7; k++) {          // icing drips and sprinkles
-        int x = cx - 39 + k * 12;
-        fill(x, base - 40, x + 7, base - 33 - (k % 2) * 5, rgb(0xFF, 0xF0, 0xF6));
-        fill(cx - 36 + k * 11, base - 18, cx - 33 + k * 11, base - 15, RAINBOW[k]);
-    }
+    static const u16 COLS[9] = {rgb(0x5B, 0x2A, 0x86), rgb(0xFF, 0x8F, 0xB8), rgb(0xE8, 0x6A, 0x9A),
+                                rgb(0xFF, 0xF0, 0xF6), rgb(0xC9, 0xB8, 0xFF), YELLOW, RAINBOW[3], RAINBOW[4], RAINBOW[0]};
+    int x0 = cx - 50, y0 = base - 64;      // 25 x 17 on a 4 px grid, the plate on the table
+    art(CAKE, 17, "oabcpygur", COLS, x0, y0, 4);
     int n = g.years();
     n = n < 1 ? 1 : n > 5 ? 5 : n;
-    for (int i = 0; i < n; i++) {
-        int x = cx - (n - 1) * 8 + i * 16;
-        fill(x - 2, base - 80, x + 3, base - 64, RAINBOW[(i * 2) % 7]);
-        int fl = ((t / 120 + i) & 1) ? 6 : 5;
-        ellipse(x, base - 86, 3, fl, rgb(0xFF, 0x9F, 0x43));
-        ellipse(x, base - 85, 2, fl - 2, YELLOW);
+    static const u16 FIRE[2] = {rgb(0xFF, 0x9F, 0x43), YELLOW};
+    for (int i = 0; i < n; i++) {          // candles on the top tier, a flickering flame each
+        int x = cx - 4 + (i * 2 - (n - 1)) * 8;
+        fill(x - 4, y0 - 16, x, y0, RAINBOW[(i * 2) % 7]);   // two-tone, like a twisted candle
+        fill(x, y0 - 16, x + 4, y0, INK);
+        art(FLAME[(t / 120 + i) & 1], 4, "oy", FIRE, x - 6, y0 - 32, 4);
     }
 }
 
@@ -759,22 +1057,37 @@ static int rainbow_grow(const Game& g, u32 t) {   // 0..256, or -1 when no rainb
 }
 
 static u32 trick_t;                        // the frame's time, for the `under` hook
+static const char* const PUFF[5] = {         // a little cloud at each foot of the rainbow
+    "....www.....",
+    "..wwwwww.ww.",
+    ".wwwwwwwwwww",
+    "wwwwwwwwwwww",
+    ".ssssssssss.",
+};
 static void rainbow_behind(const Game& g, int sx, int sy) {
     (void)sy;
     int grow = rainbow_grow(g, trick_t);
     if (grow <= 0) return;
-    int cx = sx + UP_SIDE_W * SC / 2, base = 340;
-    for (int k = 0; k < 6; k++) {          // six bands of an arch over her, from the grass up
-        int rx = P(176 - k * 12) * grow / 256, ry = P(236 - k * 12) * grow / 256, in = P(12) * grow / 256;
-        for (int y = -ry; y <= 0; y++) {
-            int w = rx;
-            while (w > 0 && (long long)w * w * ry * ry + (long long)y * y * rx * rx > (long long)rx * rx * ry * ry) w--;
-            int x0 = w - in < 0 ? 0 : w - in;
-            if (base + y < HEADER_Y1) continue;
-            fill(cx - w, base + y, cx - x0, base + y + 1, RAINBOW[k]);
-            fill(cx + x0, base + y, cx + w + 1, base + y + 1, RAINBOW[k]);
+    // on her own pixel grid: six bands two pixels wide, swept in from the left like a brush stroke
+    int c = SC, cx = sx + UP_SIDE_W * SC / 2, base = 340;
+    int rx = P(176), ry = P(236), band = 2 * c;
+    int th = grow * 32 / 256;              // the sweep so far, in sin64 phases (32 = half a turn)
+    int ex = -sin64((u32)th + 16), ey = -sin64((u32)th);   // the sweep's leading edge, x256
+    int left = cx - (rx + c - 1) / c * c;
+    for (int y = base - c; y + c > HEADER_Y1 && y >= base - ry - c; y -= c)
+        for (int x = left; x < cx + rx; x += c) {
+            long long dx = x + c / 2 - cx, dy = y + c / 2 - base;
+            if (ex * dy - ey * dx > 0) continue;               // not swept yet
+            long long r2 = dx * dx + dy * dy * rx * rx / ((long long)ry * ry);
+            for (int k = 0; k < 6; k++) {
+                long long out = rx - k * band, in = out - band;
+                if (r2 <= out * out && r2 > in * in) { fill(x, y < HEADER_Y1 ? HEADER_Y1 : y, x + c, y + c, RAINBOW[k]); break; }
+            }
         }
-    }
+    static const u16 PUFF_COLS[2] = {rgb(0xF4, 0xF8, 0xFF), rgb(0xC9, 0xD8, 0xF0)};
+    int foot = rx - 3 * band;              // the middle of the bands
+    art(PUFF, 5, "ws", PUFF_COLS, cx - foot - 6 * c, base - 4 * c, c);
+    if (th >= 32) art(PUFF, 5, "ws", PUFF_COLS, cx + foot - 6 * c, base - 4 * c, c, true);
 }
 
 static void trick_props(const Game& g, int dy, u32 t) {
@@ -916,7 +1229,7 @@ static void scene_home(const Game& g) {
         static const short MILE[MILESTONES] = {S_GREW, S_GREW, S_GREW, S_ONE_YEAR};
         const char* says = g.party == PARTY_REUNION ? T(S_MISSED) : g.party == PARTY_BIRTHDAY ? T(S_BIRTHDAY)
                          : T(MILE[g.party_arg]);
-        bubble(side_x(g) + P(g.facing < 0 ? 40 : 200), side_y(g) + P(6), says);
+        bubble(side_x(g) + P(g.facing < 0 ? 40 : 200), 48, says);   // up top, clear of her head
     }
     if (g.hint_pet && !g.petting) hand_hint(g, side_x(g) + P(252), side_y(g) + P(156));   // "pet me", on black
 }
@@ -1110,23 +1423,10 @@ static void scene_sleep(const Game& g) {
 
 // SC_LOUNGE: plugged in, she lies on a striped sun lounger: sunglasses by day, a sleep mask at night.
 static void lounger(const Game& g, int sx, int sy) {
-    bool flip = g.facing < 0;
-    int y = sy + 43 * SC, x0 = sx - P(6), x1 = sx + 40 * SC;   // the bed, just under her
-    if (flip) { x0 = sx; x1 = sx + 40 * SC + P(6); }                 // mirrored: the same span, other end
-    u16 wood = rgb(0xB0, 0x78, 0x50), wood_d = rgb(0x8B, 0x5A, 0x3C);
-    u16 stripe[2] = {PAL[UP_ACCENT[g.s.character]], rgb(0xF4, 0xEE, 0xFF)};
-    for (int x = x0 + P(20); x < x1 - P(10); x += P(70)) fill(x, y + 14, x + 6, 344, wood_d);   // legs
-    for (int x = x0; x < x1; x += 16) fill(x, y, x + 16 < x1 ? x + 16 : x1, y + 14, stripe[((x - x0) / 16) & 1]);
-    fill(x0, y + 14, x1, y + 18, wood);
-    // the backrest at her head end, leaning back, taller than her head
-    int dir = flip ? -1 : 1, bx = flip ? x0 + P(40) : x1 - P(40), h = P(120), w = P(48);
-    for (int k = 0; k < h; k++) {
-        int cx = bx + dir * (k * 4 / 10);
-        u16 c = k >= h - 4 ? wood : stripe[(k / 16) & 1];
-        fill(cx - w / 2, y - k, cx + w / 2, y - k + 1, c);
-        fill(cx - w / 2 - 3, y - k, cx - w / 2, y - k + 1, wood);   // the frame
-        fill(cx + w / 2, y - k, cx + w / 2 + 3, y - k + 1, wood);
-    }
+    // on her own pixel grid: striped canvas, a stepped backrest at her head end, a wooden frame
+    u16 cols[5] = {PAL[UP_ACCENT[g.s.character]], rgb(0xF4, 0xEE, 0xFF), rgb(0xC9, 0xBE, 0xFF),
+                   rgb(0xB0, 0x78, 0x50), rgb(0x8B, 0x5A, 0x3C)};
+    art(LOUNGER, 32, "awsbd", cols, sx - SC - (g.facing < 0 ? 5 * SC : 0), sy + 43 * SC - 28 * SC, SC, g.facing < 0);
 }
 
 static void scene_lounge(const Game& g) {
@@ -1529,20 +1829,26 @@ static void scene_away(const Game& g) {
     int x0 = 108 + shake;
     fill(x0 - 8, 76, x0 + 160, 352, FRAME);
     fill(x0, 84, x0 + 152, 352, WOOD);
-    fill(x0 + 14, 98, x0 + 138, 196, WOOD2);
-    fill(x0 + 14, 212, x0 + 138, 338, WOOD2);
-    fill(x0 + 18, 102, x0 + 134, 192, WOOD);
-    fill(x0 + 18, 216, x0 + 134, 334, WOOD);
-    ellipse(x0 + 130, 206, 7, 7, YELLOW);
+    static const u16 LIT = rgb(0xB0, 0x78, 0x50);
+    for (int k = 0; k < 2; k++) {          // two raised panels: lit top-left, shaded bottom-right
+        int y0 = k ? 212 : 96, y1 = k ? 340 : 196;
+        fill(x0 + 12, y0, x0 + 140, y1, WOOD2);
+        fill(x0 + 16, y0 + 4, x0 + 136, y1 - 4, WOOD);
+        fill(x0 + 16, y0 + 4, x0 + 136, y0 + 8, LIT);
+        fill(x0 + 16, y0 + 4, x0 + 20, y1 - 4, LIT);
+    }
+    static const char* const KNOB[4] = {".yy.", "yhyy", "yyyo", ".oo."};
+    static const u16 KNOB_COLS[3] = {YELLOW, rgb(0xFF, 0xF6, 0xC8), rgb(0xFF, 0x9F, 0x43)};
+    art(KNOB, 4, "yho", KNOB_COLS, x0 + 122, 198, 4);
     // the sign hangs from the knob and swings when someone knocks
     int sw = g.wobbling ? wave(g.clock_ms + g.acc_ms, 260, 10) : 0;
     int kx = x0 + 130, ky = 206, sx = kx - 4 + sw, sy = 228;
-    for (int i = 0; i <= 60; i++) {                       // two strings to the knob
-        fill(kx + (sx - 50 - kx) * i / 60, ky + (sy - ky) * i / 60, kx + (sx - 50 - kx) * i / 60 + 2,
-             ky + (sy - ky) * i / 60 + 2, INK);
-        fill(kx + (sx + 50 - kx) * i / 60, ky + (sy - ky) * i / 60, kx + (sx + 50 - kx) * i / 60 + 2,
-             ky + (sy - ky) * i / 60 + 2, INK);
-    }
+    for (int i = 0; i <= 30; i++)          // two cords to the knob, in 3 px steps
+        for (int e = -1; e <= 1; e += 2) {
+            int cx = kx + (sx + e * 50 - kx) * i / 30, cy = ky + (sy - ky) * i / 30;
+            cx -= cx % 3; cy -= cy % 3;
+            fill(cx, cy, cx + 3, cy + 3, INK);
+        }
     rrect(sx - 60, sy, sx + 60, sy + 64, 12, rgb(0xFF, 0xC2, 0xE0), rgb(0x8A, 0x1F, 0x5C), 3);
     text(T(S_SIGN_1), sx, sy + 14, 1, rgb(0x3A, 0x0F, 0x2B));
     text(T(S_SIGN_2), sx, sy + 30, 1, rgb(0x3A, 0x0F, 0x2B));
@@ -1584,23 +1890,23 @@ static void scene_game(const Game& g) {
     particles(g);
 }
 
-// Each crack stage adds one zigzag line on the shell (egg grid units, scale 8).
-static void cracks(int x0, int y0, int stage) {
-    static const signed char lines[4][8] = {
-        {5, 10, 7, 9, 8, 11, -1, -1},
-        {8, 11, 10, 10, 12, 12, -1, -1},
-        {12, 12, 14, 10, 15, 12, -1, -1},
-        {4, 13, 6, 15, 9, 14, 11, 16},
+// Each crack stage runs the break line further out from the middle, with a small fork or two.
+static void cracks(int x0, int y0, int scale, int stage) {
+    static const signed char REACH[4] = {2, 5, 8, 10};          // columns either side of the middle
+    int r = REACH[(stage > 4 ? 4 : stage) - 1];
+    u16 ink = rgb(0x7A, 0x4E, 0x9E);
+    auto dot = [&](int x, int y) {
+        if (x < 1 || x >= UP_EGG_W - 1 || !UP_EGG[y * UP_EGG_W + x - 1] || !UP_EGG[y * UP_EGG_W + x + 1]) return;
+        fill(x0 + x * scale, y0 + y * scale, x0 + (x + 1) * scale, y0 + (y + 1) * scale, ink);
     };
-    for (int s = 0; s < stage && s < 4; s++)
-        for (int k = 0; k + 3 < 8 && lines[s][k + 2] >= 0; k += 2) {     // join the zigzag points
-            int ax = lines[s][k], ay = lines[s][k + 1], bx = lines[s][k + 2], by = lines[s][k + 3];
-            int n = iabs(bx - ax) > iabs(by - ay) ? iabs(bx - ax) : iabs(by - ay);
-            for (int i = 0; i <= n; i++) {
-                int cx = ax + (bx - ax) * i / (n ? n : 1), cy = ay + (by - ay) * i / (n ? n : 1);
-                fill(x0 + cx * 8, y0 + cy * 8, x0 + cx * 8 + 8, y0 + cy * 8 + 8, rgb(0x7A, 0x4E, 0x9E));
-            }
-        }
+    for (int x = UP_EGG_W / 2 - r; x < UP_EGG_W / 2 + r; x++) {
+        int y = EGG_CUT[x] - 1;                // the last row of the top half
+        dot(x, y);
+        if (x > 0 && EGG_CUT[x - 1] - 1 < y) dot(x, y - 1);   // keep the zigzag joined
+    }
+    if (stage >= 2) { dot(7, 14); dot(6, 15); }               // little forks off the main line
+    if (stage >= 3) { dot(12, 9); dot(13, 8); }
+    if (stage >= 4) { dot(3, 13); dot(16, 10); dot(16, 9); }
 }
 
 static void scene_egg(const Game& g) {
@@ -1629,14 +1935,22 @@ static void scene_egg(const Game& g) {
 static void scene_hatch(const Game& g) {
     text(T(S_NAME_0 + g.s.character), SCREEN_W / 2, 52, 2, PAL[UP_ACCENT[g.s.character]]);
     u32 t = g.scene_ms;
-    if (t < 700) {                         // the shell splits: top flies up, bottom settles
-        int lift = (int)(t * 90 / 700), drop = (int)(t * 20 / 700);
-        const u8* egg = UP_EGG;
-        for (int y = 0; y < UP_EGG_H; y++) {
-            int dy = y < 12 ? -lift : drop;
-            blit(egg + y * UP_EGG_W, UP_EGG_W, 1, 8, (SCREEN_W - 160) / 2 + (y < 12 ? -lift / 3 : 0),
-                 118 + y * 8 + dy, PAL);
+    if (t < 700) {                         // the shell breaks along its crack: the cap pops off, shards fly
+        int x0 = (SCREEN_W - 160) / 2, y0 = 118;
+        int lift = (int)(t * 90 / 700), drop = (int)(t * 12 / 700);
+        int up = t < 300 ? (int)t * 44 / 300 : 44 - (int)(t - 300) * 8 / 400;   // up, never into her name
+        ellipse(SCREEN_W / 2, 318, 90, 9, GROUND1);
+        egg_draw(g.s.character, x0, y0 + drop, 8, 0, EGG_BOTTOM);
+        egg_draw(g.s.character, x0 - lift / 2, y0 - up, 8, 0, EGG_TOP);
+        static const signed char SHARD[3][3] = {{3, -3, -7}, {10, 1, -9}, {17, 4, -5}};
+        static const char* const CHIP[3][2] = {{"ss.", ".sd"}, {"s..", "ssd"}, {".s", "sd"}};   // sliver, wedge, bit
+        u16 bits[2] = {PAL[UP_EGG[12 * UP_EGG_W + 8]], PAL[UP_EGG[3 * UP_EGG_W + 12]]};
+        for (int k = 0; k < 3; k++) {      // chips of shell from the break, falling away
+            int sx = x0 + SHARD[k][0] * 8 + SHARD[k][1] * (int)t / 40;
+            int sy = y0 + EGG_CUT[SHARD[k][0]] * 8 + SHARD[k][2] * (int)t / 40 + (int)(t * t / 6000);
+            art(CHIP[k], 2, "sd", bits, sx - sx % 6, sy - sy % 6, 6, k == 0);
         }
+        text(T(S_NAME_0 + g.s.character), SCREEN_W / 2, 52, 2, PAL[UP_ACCENT[g.s.character]]);   // over the cap
     } else {                               // and out she pops, growing in
         particles(g);                      // confetti behind her, not on her face
         int scale = t < 820 ? 3 : t < 940 ? 4 : 5;
@@ -1662,25 +1976,27 @@ static void book(int x0, int y0, u16 edge) {   // a little open book, 64 x 28
 
 // four imaginary garden kinds, one after another every three books: flowers, hearts, autumn, stars
 static void plant(int cx, int base, int stage, u32 t, bool calm, int style) {
-    u16 green = style == 2 ? rgb(0xC9, 0x8A, 0x3C) : RAINBOW[3];
     int sway = calm ? 0 : wave(t + cx * 7, 2600, 2);
-    if (stage == 1) ellipse(cx, base - 4, 8, 5, green);                    // a seed peeking out
-    if (stage >= 2) {
-        int h = stage == 2 ? 26 : stage == 3 ? 44 : 52;
-        fill(cx - 2 + sway, base - h, cx + 2 + sway, base, green);
-        ellipse(cx - 9 + sway, base - h / 2, 8, 4, green);                  // two leaves
-        ellipse(cx + 9 + sway, base - h / 2 - 6, 8, 4, green);
-        static const u16 BUD[4] = {PINK, rgb(0xFF, 0x5C, 0x9C), rgb(0xFF, 0x9F, 0x43), YELLOW};
-        if (stage == 3) ellipse(cx + sway, base - h - 6, 7, 9, BUD[style]);   // a bud
-        if (stage == 4) {
-            if (style == 2) {              // autumn: a round crown of orange and red leaves
-                ellipse(cx + sway, base - h - 12, 18, 14, rgb(0xFF, 0x9F, 0x43));
-                ellipse(cx + sway - 8, base - h - 16, 8, 7, rgb(0xFF, 0x5C, 0x6E));
-                ellipse(cx + sway + 9, base - h - 8, 7, 6, YELLOW);
-            } else {
-                static const int BLOOM[4] = {IC_FLOWER, IC_HEART, IC_FLOWER, IC_STAR};
-                icon(BLOOM[style], 5, cx + sway - UP_ICON_W * 5 / 2, base - h - UP_ICON_H * 5 + 8);
-            }
+    u16 greens[3] = {RAINBOW[3], rgb(0x3A, 0xA8, 0x5A), rgb(0x2E, 0x6A, 0x3A)};
+    if (style == 2) { greens[0] = rgb(0xC9, 0x8A, 0x3C); greens[1] = rgb(0x9A, 0x62, 0x2A); }   // autumn
+    if (stage == 1) {                      // a seed peeking out of the soil
+        static const char* const SEED[2] = {".ll.", "lmml"};
+        art(SEED, 2, "lm", greens, cx - 6, base - 6, 3);
+    }
+    if (stage < 2) return;
+    int rows = stage == 2 ? 8 : 14, h = rows * 3;   // a sprout first, then the whole stem with its leaves
+    art(STEM + 14 - rows, rows, "lmo", greens, cx - 13 + sway, base - h, 3);
+    static const u16 BUD[4] = {PINK, rgb(0xFF, 0x5C, 0x9C), rgb(0xFF, 0x9F, 0x43), YELLOW};
+    static const u16 BUD_SHADE[4] = {rgb(0xD0, 0x3A, 0x6A), rgb(0xC0, 0x2A, 0x6A), rgb(0xE8, 0x6A, 0x3A), rgb(0xE8, 0xB0, 0x30)};
+    u16 cols[5] = {rgb(0x5B, 0x2A, 0x86), BUD[style], BUD_SHADE[style], YELLOW, rgb(0xFF, 0x9F, 0x43)};
+    if (stage == 3) art(FLOWER_BUD, 17, "opqce", cols, cx - 17 + sway, base - h - 28, 2);   // a bud
+    if (stage == 4) {
+        if (style == 2) {                  // autumn: a round orange bloom with a red heart
+            cols[3] = rgb(0xFF, 0x5C, 0x6E); cols[4] = rgb(0xC0, 0x2A, 0x4A);
+            art(FLOWER_OPEN, 17, "opqce", cols, cx - 17 + sway, base - h - 28, 2);
+        } else {
+            static const int BLOOM[4] = {IC_FLOWER, IC_HEART, IC_FLOWER, IC_STAR};
+            icon(BLOOM[style], 5, cx + sway - UP_ICON_W * 5 / 2, base - h - UP_ICON_H * 5 + 8);
         }
     }
 }
@@ -1708,9 +2024,12 @@ static void scene_album(const Game& g) {
             rrect(x0, y0, x0 + 80, y0 + 68, 12, BLACK, TRACK, 2);   // blank paper, never a locked shape
         }
     }
-    u16 soil = rgb(0x5A, 0x3A, 0x2A), pot = rgb(0x8B, 0x5A, 0x3C);
-    rrect(40, 400, 328, 436, 10, pot, rgb(0xB0, 0x78, 0x50), 2);
-    fill(48, 396, 320, 404, soil);
+    // a wooden planter on a 4 px grid: dark rim, lit top edge, shaded foot, soil on top
+    fill(40, 400, 328, 436, rgb(0x4A, 0x30, 0x22));
+    fill(44, 404, 324, 432, rgb(0x8B, 0x5A, 0x3C));
+    fill(44, 404, 324, 408, rgb(0xB0, 0x78, 0x50));
+    fill(44, 428, 324, 432, rgb(0x74, 0x48, 0x30));
+    fill(48, 396, 320, 404, rgb(0x5A, 0x3A, 0x2A));
     for (int p = 0; p < 3; p++) plant(104 + p * 80, 398, g.garden(p), now(g), g.calm(), g.book / 3 % 4);
     for (int side = -1; side <= 1; side += 2) {   // leaf to the older or newer book
         int b = g.book + side;

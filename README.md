@@ -220,7 +220,8 @@ make -C test               # host: every event, mini-game, petting, idle life, p
                            # save/load, screen-off, tick-size independence, a week of neglect;
                            # dumps a screenshot per event to test/out/*.png
 make -C test wasm          # the same events through emu/unicorn.wasm in Node
-make -C test all           # all of it, plus the time-zone, language, portal and emulator-script checks
+make -C test all           # all of it, plus the time-zone, language, portal, sprite-header and
+                           # emulator-script checks
 make -C test record        # scripted play-through from the real core -> design/gameplay.gif
 ```
 
@@ -323,7 +324,17 @@ If the screen stays black, the panel may be the newer CO5300: build with `-DPANE
 ```sh
 uv run --with pillow python tools/export_c.py      # regenerate core/assets.gen.h
 uv run --with pillow python tools/showcase.py      # regenerate design sheets
+make -C test tour                                  # re-record design/tour.gif from the real core
 ```
+
+The unicorns, eggs, icons and font come from `tools/sprites.py`, `tools/front.py` and
+`tools/showcase.py`. Small props are hand-drawn in `core/render.cpp` as rows of characters drawn
+by `art()` on a coarse pixel grid (3-6 screen pixels per art pixel), so they match the sprites:
+the monarch butterfly, the feathers, sun, moon and clouds, bath foam and bubbles, the messes, the
+birthday cake, the music-garden flowers, the album garden, the sun lounger, the door's knob and the
+shell chips. The egg breaks along `EGG_CUT`, the same jagged line its cracks trace before it
+hatches; the rainbow trick is drawn on her own pixel grid, swept in from the left.
+`make -C test assets` fails when `core/assets.gen.h` no longer matches the Python sources.
 
 ## Third-party
 

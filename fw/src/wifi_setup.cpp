@@ -353,6 +353,7 @@ void wifi_setup_poll(Game& g, uint32_t now, uint32_t flags) {
         if (ntp_done(&utc)) { ntp_stop(); bool set = clock_set_utc(utc); finish(g, set ? WST_OK : WST_OK_NOCLOCK, set ? "ok" : "noclock"); }
         else if (ms - step_at > NTP_MS) { ntp_stop(); finish(g, WST_OK_NOCLOCK, "noclock"); }
     }
+    ms = millis();                         // finish() above stamped step_at later than the first read
     bool joined = g.wifi_stage == WST_OK || g.wifi_stage == WST_OK_NOCLOCK;
     if (phase == DONE && joined && ms - step_at > OK_LINGER_MS) stop_all(g, WST_OFF);   // TAMAM never tapped
     bool fresh = phase == DONE && ms - step_at < RESULT_MS;                             // the phone polls it

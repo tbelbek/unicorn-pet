@@ -191,8 +191,17 @@ def build(p, mood="idle", frame=0, pose="stand"):
         flap = -1 if frame == 1 else 0
         rx_, ry_ = P["wroot"]
         root = (rx_ + shake, ry_ + by)
-        for (tx, ty), col in zip(P["wings"], [w2, w1, w1]):
-            put(strand([root, (tx + shake, ty + by + flap)], 2.8), col, "wing")
+        # three stepped feathers, back to front: each a lavender quill edge under a white vane,
+        # so they read as separate feathers rather than one white blade; a round covert on top
+        for k, (tx, ty) in enumerate(P["wings"]):
+            tip = (tx + shake - (k == 1), ty + by + flap)          # the middle feather reaches furthest
+            put(strand([root, tip], 3.0 - .3 * k), w2, "wing")
+            put(strand([(root[0] - .4, root[1] - .8), (tip[0] + .5, tip[1] - .7)], 1.3), w1, "wing")
+        ax, ay = (root[0] * 2 + P["wings"][0][0]) / 3, (root[1] * 2 + P["wings"][0][1] + 2 * by) / 3
+        cov = list(ellipse(ax + shake + .5, ay - OY + 1.4, 2.4, 1.9))
+        put(cov, w1, "wing")
+        low = max(y for _, y in cov)                                   # a lavender crescent under it
+        put([(x, y) for x, y in cov if y == low or (x, y + 1) not in cov], w2, "wing")
 
     # rim shading on bottom/right edges of coat
     coat = {"body", "leg", "ear"}
@@ -242,8 +251,8 @@ def with_props(cells, pose, frame=0, outline="#2A1F4A"):
         prop[(int(cx) - 1, int(cy) - 1)] = "#FFFFFF"
     if pose == "wash":
         rise = -1 if frame == 1 else 0
-        for cx, cy, r in [(5, 15, 2.2), (10, 10, 1.5), (34, 27, 2.2), (29, 35, 1.6),
-                          (19, 19, 1.3), (3, 31, 1.8), (37, 33, 1.3), (14, 30, 1.6)]:
+        # round bubbles, big enough to read as round: a cyan rim, a pale middle, one glint
+        for cx, cy, r in [(5, 15, 3.0), (10.5, 9.5, 2.3), (34, 27, 3.0), (29.5, 35, 2.3), (3.5, 30.5, 2.3)]:
             cy += OY + rise
             for x, y in _disc(cx, cy, r):
                 edge = (x + .5 - cx) ** 2 + (y + .5 - cy) ** 2 > (r - 1) ** 2

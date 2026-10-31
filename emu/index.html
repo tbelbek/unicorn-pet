@@ -272,10 +272,13 @@ function runTimers(ms) {
   else session.shownAt ??= performance.now();
   // sped up, minutes of toy time pass in a blink: a result stays on the phone for a few real seconds
   const seen = shown && performance.now() - session.shownAt >= 8000;
+  const failed = st === WST.BAD_PASS || st === WST.NOT_FOUND || st === WST.FULL;
+  if (!failed) session.failAt = undefined;
+  else session.failAt ??= performance.now();             // a failure waits for the phone, but not forever
   if (st === WST.OK || st === WST.OK_NOCLOCK) {           // like the board: the radio goes off a minute later
     session.okAt ??= virt;
     if (virt - session.okAt >= 60000 && seen) { wifiStatus(WST.OFF); endWifi(); }
-  } else if ((st === WST.BAD_PASS || st === WST.NOT_FOUND || st === WST.FULL) && !seen) {
+  } else if (failed && !seen && performance.now() - session.failAt < 15000) {
     // not read yet: the session's five minutes wait for it
   } else if (st !== WST.JOIN && st !== WST.ADDR && st !== WST.CLOCK && virt >= session.deadline) {
     wifiStatus(WST.TIMEOUT); endWifi();                   // 5 minutes, never in the middle of a join

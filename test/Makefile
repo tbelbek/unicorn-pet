@@ -26,6 +26,9 @@ i18n:
 portal:
 	cd .. && python3 tools/embed_portal.py --check
 
+assets:
+	cd .. && uv run --quiet --with pillow python tools/export_c.py --check
+
 # The emulator's page script must at least parse (a duplicate name once broke it silently).
 emu: | out
 	python3 -c "import re,sys; s=open('../emu/index.html').read(); open('out/emu.mjs','w').write(re.search(r'<script type=\"module\">(.*?)</script>', s, re.S).group(1))"
@@ -50,6 +53,6 @@ tour: out
 	./out/tour_bin
 	cd .. && uv run --quiet --with pillow python tools/make_tour.py
 
-all: test tz i18n portal emu wasm
+all: test tz i18n portal assets emu wasm
 
-.PHONY: test tz i18n portal emu wasm all record tour
+.PHONY: test tz i18n portal assets emu wasm all record tour

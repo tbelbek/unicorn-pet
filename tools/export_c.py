@@ -1,8 +1,9 @@
 """Export sprites, icons and the pixel font to core/assets.gen.h.
 
-Run:  uv run --with pillow python tools/export_c.py
+Run:  uv run --with pillow python tools/export_c.py   (--check: only verify core/assets.gen.h)
 One shared palette (index 0 = transparent) keeps every sprite one byte per pixel.
 """
+import sys
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageColor
 
@@ -183,6 +184,11 @@ def main():
     parts.append("static const char* const UP_NAMES[%d] = { %s };\n"
                  % (len(names), ", ".join('"%s"' % n.upper() for n in names)))
     assert len(palette) <= 256, len(palette)
+    if "--check" in sys.argv:             # make -C test assets: the header matches its sources
+        if not OUT.exists() or OUT.read_text(encoding="utf-8") != "".join(parts):
+            raise SystemExit(f"{OUT} is stale: run tools/export_c.py")
+        print(f"ok {OUT} is up to date")
+        return
     OUT.parent.mkdir(exist_ok=True)
     OUT.write_text("".join(parts), encoding="utf-8")
     print(f"ok {OUT} palette={len(palette)} side={len(side)}B front={len(front)}B font_h={font_h}")
