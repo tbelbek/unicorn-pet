@@ -115,7 +115,9 @@ WALK_LEGS = [
     [((11, 29), (13, 35.5), 3, True), ((22, 29), (20, 35.5), 3, True),
      ((14, 30), (12, 36.5), 3, False), ((25, 30), (27, 36.5), 3, False)],
 ]
-POSES["walk"] = dict(POSES["stand"], legs=WALK_LEGS[0], legs_f1=WALK_LEGS[1])
+# a 4-phase cycle: stride, pass (legs together, body dips), other stride, pass
+POSES["walk"] = dict(POSES["stand"], legs=WALK_LEGS[0], legs_f1=STAND_LEGS)
+POSES["walk2"] = dict(POSES["stand"], legs=WALK_LEGS[1], legs_f1=STAND_LEGS)
 POSES["hop"] = dict(POSES["play"])           # the jump without the ball: idle joy
 POSE_MOOD = {"sleep": "sleepy", "eat": "eating", "play": "happy", "wash": "happy", "hop": "happy"}
 

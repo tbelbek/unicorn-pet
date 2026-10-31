@@ -18,12 +18,15 @@ static const Note REFUSE[] = {{E4, 160}, {C4, 280}};
 static const Note INFO[] = {{A5, 60}, {D6, 90}};
 static const Note PET[] = {{C6, 60}, {E6, 110}};
 static const Note POP[] = {{G6, 25}, {C7, 45}};
+static const Note BYE[] = {{G5, 120}, {E5, 120}, {REST, 60}, {C5, 120}, {G4, 260}};          // "bye-bye!"
+static const Note KNOCK[] = {{G4, 40}, {REST, 90}, {G4, 40}};                                // knock knock
+static const Note HELLO[] = {{C5, 80}, {G5, 80}, {REST, 40}, {E5, 80}, {C6, 240}};
 static const Note CHEER[] = {{C5, 70}, {E5, 70}, {G5, 70}, {C6, 70}, {E6, 70}, {REST, 40}, {C6, 90}, {E6, 220}};
 
 #define TUNE(t) {t, (int)(sizeof(t) / sizeof(t[0]))}
 static const struct { const Note* notes; int count; } TUNES[SFX_COUNT] = {
     {0, 0}, TUNE(TAP), TUNE(HATCH), TUNE(EAT), TUNE(PLAY), TUNE(WASH), TUNE(SLEEP), TUNE(WAKE),
-    TUNE(REFUSE), TUNE(INFO), TUNE(PET), TUNE(POP), TUNE(CHEER),
+    TUNE(REFUSE), TUNE(INFO), TUNE(PET), TUNE(POP), TUNE(CHEER), TUNE(BYE), TUNE(KNOCK), TUNE(HELLO),
 };
 
 const Note* melody(int sfx, int* count) {

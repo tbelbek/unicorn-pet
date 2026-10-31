@@ -16,6 +16,7 @@
 
 #include "../../core/unicorn.h"
 #include "audio.h"
+#include "rtc.h"
 
 static const int LCD_CS = 12, LCD_SCLK = 11, LCD_D0 = 4, LCD_D1 = 5, LCD_D2 = 6, LCD_D3 = 7;
 static const int I2C_SDA = 15, I2C_SCL = 14, TP_INT = 21, KEY_BOOT = 0;
@@ -35,6 +36,7 @@ static Arduino_CO5300* lcd = new Arduino_CO5300(bus, GFX_NOT_DEFINED, 0, false, 
 static Arduino_SH8601* lcd = new Arduino_SH8601(bus, GFX_NOT_DEFINED, 0, up::SCREEN_W, up::SCREEN_H);
 #endif
 static XPowersPMU pmu;
+static bool pmu_ok;
 static SensorQMI8658 imu;
 static bool imu_ok;
 static Preferences prefs;
@@ -72,7 +74,7 @@ static void expander_init() {
 
 static void panel_power(bool on) {
     if (on == panel_on) return;
-    if (on) { lcd->displayOn(); lcd->setBrightness(BRIGHTNESS); }
+    if (on) { lcd->displayOn(); lcd->setBrightness(game.brightness()); }
     else lcd->displayOff();       // AMOLED: every pixel off, nothing to leak
     panel_on = on;
 }
@@ -92,6 +94,15 @@ static bool edge(bool down, bool* last, uint32_t* t, uint32_t debounce) {
 static bool boot_pressed() {
     static bool last; static uint32_t t;
     return edge(digitalRead(KEY_BOOT) == LOW, &last, &t, 30);
+}
+
+// BOOT held for PARENT_HOLD_MS: a grown-up calls the unicorn back from her friends early.
+static bool boot_held_long() {
+    static uint32_t since; static bool fired;
+    if (digitalRead(KEY_BOOT) != LOW) { since = 0; fired = false; return false; }
+    if (!since) since = millis();
+    if (!fired && millis() - since >= up::PARENT_HOLD_MS) { fired = true; return true; }
+    return false;
 }
 
 static bool pwr_pressed() {
@@ -147,9 +158,10 @@ static void save_game() {
 }
 
 static void load_game() {
-    uint8_t buf[up::SAVE_SIZE];
-    size_t n = prefs.getBytes("save", buf, sizeof buf);
-    if (n == sizeof buf && game.load(buf, n)) Serial.println("save loaded");
+    uint8_t buf[64];                          // older saves are shorter: read whatever is there
+    size_t len = prefs.getBytesLength("save");
+    size_t n = len && len <= sizeof buf ? prefs.getBytes("save", buf, len) : 0;
+    if (n && game.load(buf, n)) Serial.println("save loaded");
     else Serial.println("no valid save: new egg");
 }
 
@@ -173,8 +185,13 @@ void setup() {
     pinMode(TP_INT, INPUT_PULLUP);
     Wire.begin(I2C_SDA, I2C_SCL);
 
-    if (!pmu.begin(Wire, AXP2101_SLAVE_ADDRESS, I2C_SDA, I2C_SCL)) Serial.println("AXP2101 not found");
-    else pmu.setChargeTargetVoltage(3);       // 4.2 V, as Waveshare's example sets it
+    pmu_ok = pmu.begin(Wire, AXP2101_SLAVE_ADDRESS, I2C_SDA, I2C_SCL);
+    if (!pmu_ok) Serial.println("AXP2101 not found");
+    else {
+        pmu.setChargeTargetVoltage(3);        // 4.2 V, as Waveshare's example sets it
+        pmu.enableBattDetection();
+        pmu.enableBattVoltageMeasure();       // needed for getBatteryPercent()
+    }
     expander_init();
 
     if (!lcd->begin()) Serial.println("display init failed");
@@ -189,12 +206,14 @@ void setup() {
         Serial.println("QMI8658 not found: shake disabled");
     }
     if (!audio_begin()) Serial.println("ES8311 init failed: sound disabled");
+    if (!rtc_begin()) Serial.println("PCF85063 not found: breaks count powered time only");
 
     fb = (uint16_t*)ps_malloc(up::SCREEN_W * up::SCREEN_H * sizeof(uint16_t));
     if (!fb) { Serial.println("no PSRAM for framebuffer"); for (;;) delay(1000); }
 
     prefs.begin("unicorn", false);
     game.init(esp_random());
+    game.set_wall(rtc_now());                 // before the save, so time spent off counts
     load_game();
     push_frame();
 }
@@ -207,16 +226,35 @@ void loop() {
 
     int x, y;
     if (boot_pressed()) game.input(up::IN_NEXT, 0, 0);
+    if (boot_held_long()) game.input(up::IN_PARENT, 0, 0);
     if (pwr_pressed()) game.input(up::IN_SELECT, 0, 0);
     if (touch_read(&x, &y)) game.input(up::IN_TOUCH, x, y);
     if (shaken()) game.input(up::IN_SHAKE, 0, 0);
+
+    static uint32_t last_rtc, last_batt;
+    if (now - last_rtc >= 1000) { last_rtc = now; game.set_wall(rtc_now()); }
+    if (now - last_batt >= 30000 || !last_batt) {        // battery % for the parent settings screen
+        last_batt = now ? now : 1;
+        if (pmu_ok && pmu.isBatteryConnect()) game.set_battery(pmu.getBatteryPercent());
+    }
+    static int bright = -1;                              // parent settings: brightness, volume
+    if (panel_on && game.brightness() != bright) { bright = game.brightness(); lcd->setBrightness(bright); }
+    audio_level(game.volume());
 
     uint32_t f = game.tick(dt);
     if (f & up::F_SAVE) save_game();
     if (f & up::F_SOUND) audio_play(game.take_sfx());
     panel_power(f & up::F_SCREEN_ON);
-    if (f & up::F_REDRAW) push_frame();
+    // the core asks for a frame on every call while something moves; cap pushes at ~30 fps
+    static bool pending;
+    static uint32_t last_push;
+    pending |= (f & up::F_REDRAW) != 0;
+    if (pending && panel_on && millis() - last_push >= 33) {
+        push_frame();
+        last_push = millis();
+        pending = false;
+    }
 
-    if (panel_on || audio_busy()) delay(20);
+    if (panel_on || audio_busy()) delay(5);
     else nap();
 }

@@ -33,6 +33,8 @@ static Game hatched(u32 seed = 42) {
 }
 
 static void tap_menu(Game& g, int item) { g.input(IN_TOUCH, 46 + item * MENU_STEP, 400); }
+// feeding is two taps now: the menu, then one of three big snacks
+static void feed(Game& g, int t = TREAT_APPLE) { tap_menu(g, MENU_FEED); g.input(IN_TOUCH, 61 + t * 122, 200); }
 static void tap_pet(Game& g) { g.input(IN_TOUCH, SCREEN_W / 2 + g.pet_x, 230); }
 static void tap_header(Game& g) { g.input(IN_TOUCH, SCREEN_W / 2, 60); }
 
@@ -165,26 +167,33 @@ TEST(never_dies_after_a_week_of_neglect) {
     EQ(g.mood(), M_HUNGRY);                // hungry wins over the other needs
     EQ(g.messes(), 3);
     g.input(IN_SELECT, 0, 0);              // wake screen
-    g.input(IN_SELECT, 0, 0);              // feed (menu 0)
+    g.input(IN_SELECT, 0, 0);              // feed (menu 0): the snack choice opens
+    EQ(g.scene, SC_FEED);
+    g.input(IN_SELECT, 0, 0);              // PWR takes the highlighted snack
     EQ(g.scene, SC_EAT);
     CHECK(g.stat(HUNGER) > 0);
 }
 
 // ---- care events --------------------------------------------------------------------------------
 
-TEST(event_feed_with_rotating_treats) {
+TEST(event_feed_she_picks_the_snack) {
     Game g = hatched();
     g.set_stat(HUNGER, 2000); g.set_stat(HAPPY, 5000);
     g.tick(0);
     shot(g, "03_home_hungry");
+    EQ(g.recommended(), MENU_FEED);        // the Besle button bounces
     tap_menu(g, MENU_FEED);
+    EQ(g.scene, SC_FEED);                  // nothing eaten yet
+    EQ(g.stat(HUNGER), 2000);
+    run(g, 3200);
+    shot(g, "03b_pick_snack");
+    g.input(IN_TOUCH, 61 + TREAT_CARROT * 122, 200);
     EQ(g.scene, SC_EAT);
+    EQ(g.treat, TREAT_CARROT);
     EQ(g.stat(HUNGER), 2000 + FEED_GAIN);
     EQ(g.stat(HAPPY), 5000 + TREAT_HAPPY);
     u32 f = g.tick(100);
     CHECK(f & F_SAVE);
-    CHECK(f & F_REDRAW);
-    int first = g.treat;
     run(g, 300);
     CHECK(g.particles() > 0);              // crumbs fly
     shot(g, "04_eat");
@@ -192,16 +201,19 @@ TEST(event_feed_with_rotating_treats) {
     EQ(g.scene, SC_EAT);
     run(g, ACTION_MS);
     EQ(g.scene, SC_HOME);
-    tap_menu(g, MENU_FEED); run(g, ACTION_MS + 100);
-    EQ(g.treat, (first + 1) % TREAT_COUNT);
-    tap_menu(g, MENU_FEED);
-    EQ(g.treat, (first + 2) % TREAT_COUNT);
-    run(g, 1500);
-    shot(g, "04b_eat_third_treat");
+    tap_menu(g, MENU_FEED);                // buttons: BOOT moves, PWR picks
+    g.input(IN_NEXT, 0, 0);
+    int pick = g.sel;
+    g.input(IN_SELECT, 0, 0);
+    EQ(g.treat, pick);
+    run(g, ACTION_MS + 100);
+    tap_menu(g, MENU_FEED);                // nobody picks: she takes the highlighted one
+    run(g, FEED_PICK_MS + 100);
+    EQ(g.scene, SC_EAT);
     run(g, ACTION_MS);
     g.set_stat(HUNGER, 9000);
-    tap_menu(g, MENU_FEED);
-    EQ(g.stat(HUNGER), MAX_STAT);          // capped; every treat feeds the same
+    feed(g, TREAT_STRAWBERRY);
+    EQ(g.stat(HUNGER), MAX_STAT);          // capped; every snack feeds the same
 }
 
 TEST(event_play_minigame_by_touch) {
@@ -225,7 +237,7 @@ TEST(event_play_minigame_by_touch) {
     int happy = g.stat(HAPPY);
     run(g, GAME_MS);
     EQ(g.scene, SC_PLAY);                  // celebration
-    EQ(g.stat(HAPPY), happy + GAME_BONUS);
+    EQ(g.stat(HAPPY), happy);              // stars are counted, not paid out
     EQ(g.take_sfx(), SFX_CHEER);
     shot(g, "05b_celebrate");
     run(g, CELEBRATE_MS);
@@ -250,20 +262,15 @@ TEST(minigame_with_buttons_and_shake) {
     EQ(g.scene, SC_PLAY);
 }
 
-TEST(minigame_zero_stars_still_rewarded_and_bonus_capped) {
-    Game g = hatched();
-    g.set_stat(ENERGY, 9000); g.set_stat(HAPPY, 0);
-    tap_menu(g, MENU_PLAY);
-    finish_game(g);
-    EQ(g.scene, SC_HOME);
-    CHECK(g.stat(HAPPY) >= PLAY_HAPPY - 20 * DECAY_HAPPY);   // no stars: still a good time
-    Game h = hatched();
-    h.set_stat(ENERGY, 9000); h.set_stat(HAPPY, 0);
-    tap_menu(h, MENU_PLAY);
-    for (int i = 0; i < 40; i++) { h.input(IN_SELECT, 0, 0); run(h, 300); }   // ~12 s of pressing
-    EQ(h.score, 40);
-    run(h, GAME_MS);
-    EQ(h.stat(HAPPY), PLAY_HAPPY + GAME_BONUS_MAX);          // capped
+TEST(minigame_joy_does_not_depend_on_the_score) {
+    Game a = hatched(), b = hatched();
+    for (Game* g : {&a, &b}) { g->set_stat(ENERGY, 9000); g->set_stat(HAPPY, 0); tap_menu(*g, MENU_PLAY); }
+    for (int i = 0; i < 40; i++) { a.input(IN_SELECT, 0, 0); run(a, 300); }   // a star champion...
+    run(b, 12000);                                                          // ...and a watcher
+    run(a, GAME_MS - 12000); run(b, GAME_MS - 12000);
+    CHECK(a.score > 20); EQ(b.score, 0);
+    EQ(a.stat(HAPPY), b.stat(HAPPY));      // both had exactly the same good time
+    CHECK(a.stat(HAPPY) >= PLAY_HAPPY - 20 * DECAY_HAPPY);
 }
 
 TEST(minigame_stars_keep_coming) {
@@ -303,7 +310,7 @@ TEST(event_sleep_until_rested) {
     shot(g, "07_sleep");
     CHECK(lit_pixels(SCREEN_W - 90, 100, SCREEN_W - 40, 150) > 100);   // the moon
     run(g, 60 * 60000);
-    EQ(g.stat(ENERGY), 2000 + 60 * SLEEP_ENERGY_GAIN);
+    EQ(g.stat(ENERGY), 2000 + 60 * SLEEP_ENERGY_GAIN + NAP_BONUS);   // incl. the one-minute nap
     EQ(g.stat(HUNGER), 8000 - 60 * (DECAY_HUNGER / 2));   // slower while asleep
     EQ(g.scene, SC_SLEEP);
     CHECK(!g.screen_on);                   // screen went dark while she sleeps
@@ -528,7 +535,8 @@ TEST(sound_cue_for_every_event) {
     g.input(IN_NEXT, 0, 0);
     EQ(cue_after(g), SFX_TAP);                            // cursor move
     g.set_stat(ENERGY, 6000);
-    tap_menu(g, MENU_FEED);  EQ(cue_after(g), SFX_EAT);   run(g, ACTION_MS);
+    tap_menu(g, MENU_FEED);  EQ(cue_after(g), SFX_TAP);
+    g.input(IN_TOUCH, 61, 200); EQ(cue_after(g), SFX_EAT); run(g, ACTION_MS);
     tap_menu(g, MENU_PLAY);  EQ(cue_after(g), SFX_PLAY);
     run(g, GAME_MS);         EQ(g.take_sfx(), SFX_CHEER); run(g, CELEBRATE_MS);
     tap_menu(g, MENU_WASH);  EQ(cue_after(g), SFX_WASH);  run(g, ACTION_MS);
@@ -641,7 +649,7 @@ static void ragged(Game& b, u32 ms) {
 TEST(any_tick_partition_gives_the_same_world) {
     Game a = hatched(31), b = hatched(31);
     CHECK(same(a, b));
-    for (Game* g : {&a, &b}) { g->set_stat(HUNGER, 2000); tap_menu(*g, MENU_FEED); }
+    for (Game* g : {&a, &b}) { g->set_stat(HUNGER, 2000); feed(*g); }
     run(a, 2500); ragged(b, 2500);                         // mid-meal: crumbs in flight
     CHECK(a.particles() > 0);
     CHECK(same(a, b));
@@ -717,6 +725,399 @@ TEST(clock_wrap_keeps_petting_and_idle_alive) {
     CHECK(acted > 0);
 }
 
+// ---- screen-time limit: she goes out with friends -------------------------------------------
+
+// keep the screen on with a harmless cursor press every 10 s, like a child playing
+static void play_for(Game& g, u32 ms) {
+    for (u32 t = 0; t < ms; t += 10000) { g.input(IN_NEXT, 0, 0); run(g, 10000); }
+}
+
+TEST(ten_minutes_of_play_and_she_goes_out) {
+    Game g = hatched();
+    play_for(g, PLAY_LIMIT_MS - 60000);
+    EQ(g.scene, SC_HOME);
+    play_for(g, 70000);
+    CHECK(g.scene == SC_LEAVE || g.scene == SC_AWAY);
+    run(g, 100); 
+    while (g.scene == SC_LEAVE) g.tick(100);
+    EQ(g.scene, SC_AWAY);
+    EQ(g.away_ms, AWAY_MS - (g.away_ms < AWAY_MS ? AWAY_MS - g.away_ms : 0));
+    shot(g, "16_door");
+}
+
+TEST(leaving_waits_for_the_activity_to_finish) {
+    Game g = hatched();
+    g.set_stat(ENERGY, 9000);
+    play_for(g, PLAY_LIMIT_MS - 10000);
+    tap_menu(g, MENU_PLAY);                              // mini-game straddles the limit
+    run(g, GAME_MS);
+    CHECK(g.scene == SC_PLAY);                           // not cut short
+    run(g, CELEBRATE_MS + 200);
+    EQ(g.scene, SC_LEAVE);
+    EQ(cue_after(g), SFX_BYE);
+    run(g, 1500);
+    shot(g, "17_leaving");
+}
+
+TEST(a_break_resets_the_screen_time) {
+    Game g = hatched();
+    play_for(g, 6 * 60000);
+    run(g, REST_RESET_MS + 60000);                       // screen dark for a while
+    EQ(g.play_ms, 0);
+    play_for(g, 6 * 60000);
+    EQ(g.scene, SC_HOME);                                // 6 + 6 minutes with a break: still home
+}
+
+static Game gone_out() {
+    Game g = hatched();
+    for (int i = 0; i < NSTATS; i++) g.set_stat(i, 6000);
+    g.play_ms = PLAY_LIMIT_MS;
+    g.tick(100);
+    while (g.scene != SC_AWAY) g.tick(100);
+    g.take_sfx();                          // the goodbye tune has played
+    return g;
+}
+
+TEST(away_freezes_needs_and_keeps_the_screen_short) {
+    Game g = gone_out();
+    u32 f = g.tick(100);
+    CHECK(f & F_SAVE || g.want_save == 0);
+    int hunger = g.stat(HUNGER);
+    run(g, AWAY_SCREEN_OFF_MS - 300);
+    CHECK(g.screen_on);
+    g.input(IN_TOUCH, 184, 200);                         // knock knock
+    EQ(cue_after(g), SFX_NONE);                          // nothing to win by knocking
+    CHECK(g.wobbling);
+    run(g, 200);
+    shot(g, "18_door_knock");
+    run(g, 400);
+    CHECK(!g.screen_on);                                 // knocking did not extend the screen
+    g.input(IN_TOUCH, 46, 400);                          // menu taps do nothing out here
+    EQ(g.scene, SC_AWAY);
+    run(g, 20 * 60000);
+    EQ(g.stat(HUNGER), hunger);                          // nobody gets hungry while out with friends
+    CHECK(g.away_ms > 0 && g.away_ms <= 10 * 60000 + 1000);
+}
+
+TEST(she_comes_back_after_the_break) {
+    Game g = gone_out();
+    run(g, AWAY_MS + 1000);
+    EQ(g.away_ms, 0);
+    EQ(g.scene, SC_AWAY);                                // waits, dark, until someone looks
+    CHECK(!g.screen_on);
+    g.input(IN_TOUCH, 184, 200);
+    EQ(g.scene, SC_RETURN);
+    EQ(cue_after(g), SFX_HELLO);
+    CHECK(g.pet_x < 0);                                  // walks in from the left
+    run(g, 1000);
+    shot(g, "19_returning");
+    while (g.scene == SC_RETURN) g.tick(100);
+    EQ(g.scene, SC_HOME);
+    EQ(g.pet_x, 0);                                      // arrived in the middle
+    CHECK(g.play_ms < 2000);              // the clock started over
+}
+
+TEST(parent_can_call_her_back) {
+    Game g = gone_out();
+    run(g, 60000);
+    g.input(IN_PARENT, 0, 0);
+    EQ(g.scene, SC_RETURN);
+    CHECK(g.screen_on);
+    Game h = hatched();
+    h.input(IN_PARENT, 0, 0);                            // at home it opens the parent settings
+    EQ(h.scene, SC_SETTINGS);
+}
+
+TEST(power_cut_does_not_skip_the_break) {
+    Game g = gone_out();
+    run(g, 5 * 60000);
+    u8 buf[SAVE_SIZE];
+    g.save(buf);
+    Game h; h.init(7);
+    CHECK(h.load(buf, sizeof buf));
+    EQ(h.scene, SC_AWAY);
+    CHECK(h.away_ms >= AWAY_MS - 5 * 60000 - 1000 && h.away_ms <= AWAY_MS - 5 * 60000 + 1000);
+    Game l = hatched();                                  // saved mid-goodbye counts as gone
+    l.play_ms = PLAY_LIMIT_MS; l.tick(100);
+    EQ(l.scene, SC_LEAVE);
+    l.save(buf);
+    Game m; m.init(8);
+    CHECK(m.load(buf, sizeof buf));
+    EQ(m.scene, SC_AWAY);
+    EQ(m.away_ms, AWAY_MS);
+}
+
+TEST(version_1_saves_still_load) {
+    Game g = hatched(21);
+    g.set_stat(HUNGER, 3333);
+    u8 v1[SAVE_V1_SIZE];
+    Save tmp = g.s;
+    tmp.version = 1;
+    std::memcpy(v1, &tmp, SAVE_V1_SIZE - 4);
+    u32 h = 2166136261u;                                 // FNV-1a over the v1 payload
+    for (int i = 0; i < SAVE_V1_SIZE - 4; i++) h = (h ^ v1[i]) * 16777619u;
+    std::memcpy(v1 + SAVE_V1_SIZE - 4, &h, 4);
+    Game k; k.init(4);
+    CHECK(k.load(v1, sizeof v1));
+    EQ(k.stat(HUNGER), 3333);
+    EQ(k.s.character, g.s.character);
+    EQ(k.s.version, SAVE_VERSION);
+    EQ(k.scene, SC_HOME);
+    v1[5] ^= 1;
+    Game c; c.init(4);
+    CHECK(!c.load(v1, sizeof v1));                       // checksum still guards v1
+}
+
+// ---- RTC: the break also counts while the board is switched off ------------------------------
+
+static const u32 T0 = 1000000;             // some wall-clock second
+
+static Game out_with_rtc(u32 seed = 51) {
+    Game g = hatched(seed);
+    g.set_wall(T0);
+    g.play_ms = PLAY_LIMIT_MS;
+    g.tick(100);
+    while (g.scene != SC_AWAY) g.tick(100);
+    return g;
+}
+
+TEST(rtc_counts_the_break_while_powered_off) {
+    Game g = out_with_rtc();
+    EQ(g.s.away_until, T0 + AWAY_MS / 1000);
+    u8 buf[SAVE_SIZE];
+    g.save(buf);                                         // ...switched off for 40 minutes...
+    Game h; h.init(3);
+    h.set_wall(T0 + 40 * 60);                            // the platform reads the RTC first
+    CHECK(h.load(buf, sizeof buf));
+    EQ(h.scene, SC_AWAY);
+    EQ(h.away_ms, 0);                                    // the break is already over
+    h.input(IN_TOUCH, 184, 200);
+    EQ(h.scene, SC_RETURN);
+    EQ(h.s.away_until, 0);
+    Game k; k.init(3);                                   // either order works
+    CHECK(k.load(buf, sizeof buf));
+    k.set_wall(T0 + 40 * 60);
+    EQ(k.away_ms, 0);
+}
+
+TEST(rtc_partial_break_and_wall_ticking) {
+    Game g = out_with_rtc();
+    g.set_wall(T0 + 600);                                // 10 minutes later
+    EQ(g.away_ms, (AWAY_MS / 1000 - 600) * 1000);
+    run(g, 5 * 60000);                                   // powered time alone does not count twice
+    EQ(g.away_ms, (AWAY_MS / 1000 - 600) * 1000);
+    g.set_wall(T0 + AWAY_MS / 1000);
+    EQ(g.away_ms, 0);
+}
+
+TEST(rtc_that_lost_power_is_not_trusted) {
+    Game g = out_with_rtc();
+    run(g, 60000);
+    u8 buf[SAVE_SIZE];
+    g.set_wall(T0 + 300);                                // 5 min out so far
+    g.save(buf);
+    Game h; h.init(3);
+    h.set_wall(50);                                      // RTC restarted from scratch
+    CHECK(h.load(buf, sizeof buf));
+    EQ(h.scene, SC_AWAY);
+    EQ(h.s.away_until, 0);                               // dropped: count powered time instead
+    CHECK(h.away_ms > 20 * 60000 && h.away_ms <= 25 * 60000 + 1000);
+    run(h, 60000);
+    CHECK(h.away_ms <= 24 * 60000 + 1000);               // and it keeps counting down
+}
+
+TEST(no_rtc_counts_powered_time_only) {
+    Game g = out_with_rtc();
+    u8 buf[SAVE_SIZE];
+    g.save(buf);
+    Game h; h.init(3);                                   // a board without a working RTC
+    CHECK(h.load(buf, sizeof buf));
+    EQ(h.away_ms, AWAY_MS);
+    run(h, 60000);
+    EQ(h.away_ms, AWAY_MS - 60000);
+}
+
+TEST(version_2_saves_still_load) {
+    Game g = hatched(22);
+    g.set_stat(CLEAN, 4444);
+    Save tmp = g.s;
+    tmp.version = 2;
+    tmp.away_s = 600;
+    tmp.play_s = 0;
+    u8 v2[SAVE_V2_SIZE];
+    std::memcpy(v2, &tmp, SAVE_V2_SIZE - 4);
+    u32 h = 2166136261u;
+    for (int i = 0; i < SAVE_V2_SIZE - 4; i++) h = (h ^ v2[i]) * 16777619u;
+    std::memcpy(v2 + SAVE_V2_SIZE - 4, &h, 4);
+    Game k; k.init(4);
+    CHECK(k.load(v2, sizeof v2));
+    EQ(k.stat(CLEAN), 4444);
+    EQ(k.scene, SC_AWAY);
+    EQ(k.away_ms, 600000);
+    EQ(k.s.away_until, 0);
+}
+
+// ---- smoothness -------------------------------------------------------------------------------
+
+TEST(frames_are_interpolated_between_steps) {
+    Game g = hatched(77);
+    for (int i = 0; i < NSTATS; i++) g.set_stat(i, 9000);
+    g.idle_act = IDLE_WALK; g.walk_to = WALK_RANGE; g.pet_x = 0; g.vel_x = 0;
+    g.tick(STEP_MS);                                     // one step: she starts walking
+    CHECK(g.vel_x != 0);
+    static u16 a[SCREEN_W * SCREEN_H];
+    render(g, fb);
+    std::memcpy(a, fb, sizeof a);
+    u32 f = g.tick(STEP_MS / 2);                         // half a step: no simulation...
+    CHECK(f & F_REDRAW);                                 // ...but a new frame is wanted
+    render(g, fb);
+    CHECK(std::memcmp(a, fb, sizeof a) != 0);            // and it is a different picture
+    f = g.tick(0);
+    CHECK(f & F_REDRAW);
+    tap_header(g);                                       // a still screen does not spin
+    g.tick(0);
+    f = g.tick(10);
+    CHECK(!(f & F_REDRAW));
+}
+
+// ---- QoL round (skills applied with Codex) ------------------------------------------------------
+
+TEST(time_is_up_means_no_new_activities) {
+    Game g = hatched();
+    g.play_ms = PLAY_LIMIT_MS;             // limit reached while she happens to be on the info screen
+    tap_header(g);
+    EQ(g.scene, SC_LEAVE);                 // no more postponing through the info screen
+    Game h = hatched();
+    h.play_ms = PLAY_LIMIT_MS;
+    tap_menu(h, MENU_PLAY);
+    EQ(h.scene, SC_LEAVE);                 // or by starting a new game
+}
+
+TEST(tired_pillow_puts_her_to_sleep) {
+    Game g = hatched();
+    g.set_stat(ENERGY, 500);
+    tap_menu(g, MENU_PLAY);
+    EQ(g.scene, SC_REFUSE);
+    g.tick(100);
+    shot(g, "06_refuse_pillow");
+    g.input(IN_TOUCH, SCREEN_W / 2, 400);   // the big pillow
+    EQ(g.scene, SC_SLEEP);
+    EQ(g.menu, MENU_SLEEP);
+}
+
+TEST(a_one_minute_nap_is_enough_to_play) {
+    Game g = hatched();
+    g.set_stat(ENERGY, 0);
+    tap_menu(g, MENU_SLEEP);
+    run(g, NAP_MS - 1000);
+    CHECK(g.stat(ENERGY) < PLAY_MIN_ENERGY);
+    run(g, 1100);
+    CHECK(g.stat(ENERGY) >= PLAY_MIN_ENERGY); // short nap bonus
+    EQ(g.napped, 1);
+    g.input(IN_TOUCH, 184, 200);           // wake her (screen may be dark: wake twice)
+    g.input(IN_TOUCH, 184, 200);
+    tap_menu(g, MENU_PLAY);
+    EQ(g.scene, SC_GAME);
+    Game a = hatched(5), b = hatched(5);   // the nap lands the same with any tick size
+    for (Game* x : {&a, &b}) { x->set_stat(ENERGY, 9000); tap_menu(*x, MENU_SLEEP); }
+    a.tick(3 * 60000);
+    run(b, 3 * 60000);
+    for (int i = 0; i < NSTATS; i++) EQ(a.stat(i), b.stat(i));
+    EQ(a.scene, b.scene);
+}
+
+TEST(parent_settings) {
+    Game g = hatched();
+    g.input(IN_PARENT, 0, 0);
+    EQ(g.scene, SC_SETTINGS);
+    g.tick(100);
+    shot(g, "20_settings");
+    g.input(IN_TOUCH, 184, 70 + SET_LIMIT * 44 + 20);   // session: 10 -> 15 min
+    EQ(g.play_limit_ms(), 15u * 60000);
+    g.input(IN_TOUCH, 184, 70 + SET_SHAKE * 44 + 20);   // shake off
+    g.input(IN_TOUCH, 184, 70 + SET_CALM * 44 + 20);    // calm motion on
+    g.input(IN_TOUCH, 184, 70 + SET_VOLUME * 44 + 20);  // volume: low
+    EQ(g.volume(), VOL_LOW);
+    u32 f = g.tick(0);
+    CHECK(f & F_SAVE);
+    u32 p0 = g.play_ms;
+    play_for(g, 11 * 60000);                 // in settings: not counted as play
+    EQ(g.play_ms, p0);
+    g.input(IN_TOUCH, 184, 70 + SET_EXIT * 44 + 20);
+    EQ(g.scene, SC_HOME);
+    g.input(IN_SHAKE, 0, 0);
+    EQ(g.scene, SC_HOME);                    // shake ignored
+    tap_pet(g);
+    CHECK(g.particles() <= 2);               // calm: fewer hearts
+    u8 buf[SAVE_SIZE]; g.save(buf);          // settings survive a power cut
+    Game h; h.init(3); CHECK(h.load(buf, sizeof buf));
+    EQ(h.play_limit_ms(), 15u * 60000);
+    CHECK(h.calm());
+    EQ(h.volume(), VOL_LOW);
+    play_for(h, 12 * 60000);
+    EQ(h.scene, SC_HOME);                    // 15-minute sessions now
+    play_for(h, 4 * 60000);
+    CHECK(h.scene == SC_LEAVE || h.scene == SC_AWAY);
+}
+
+TEST(hints_for_pre_readers) {
+    Game g; g.init(4);
+    g.tick(0);
+    shot(g, "00_egg_hint");                   // a little hand taps the egg
+    for (int i = 0; i < EGG_TAPS; i++) g.input(IN_TOUCH, 184, 200);
+    run(g, HATCH_MS + 100);
+    EQ(g.hint_pet, 1);
+    g.tick(0);
+    shot(g, "02c_pet_hint");                  // and then shows how to pet her
+    tap_pet(g);
+    EQ(g.hint_pet, 0);
+    g.set_stat(CLEAN, 1000);
+    EQ(g.recommended(), MENU_WASH);
+}
+
+TEST(stars_hit_where_they_are_drawn) {
+    Game g = hatched();
+    g.set_stat(ENERGY, 9000);
+    tap_menu(g, MENU_PLAY);
+    run(g, 1000);
+    g.tick(90);                              // 90 ms into the next step
+    int drawn = g.tgt[0].y + g.tgt[0].vy * (int)g.acc_ms / STEP_MS;
+    g.input(IN_TOUCH, g.tgt[0].x, drawn - TARGET_HIT + 1);   // edge of the drawn star
+    EQ(g.score, 1);
+    CHECK(g.particles() > 0);
+}
+
+TEST(version_3_saves_still_load) {
+    Game g = hatched(23);
+    g.set_stat(HAPPY, 2222);
+    Save tmp = g.s;
+    tmp.version = 3;
+    u8 v3[SAVE_V3_SIZE];
+    std::memcpy(v3, &tmp, SAVE_V3_SIZE - 4);
+    u32 h = 2166136261u;
+    for (int i = 0; i < SAVE_V3_SIZE - 4; i++) h = (h ^ v3[i]) * 16777619u;
+    std::memcpy(v3 + SAVE_V3_SIZE - 4, &h, 4);
+    Game k; k.init(4);
+    CHECK(k.load(v3, sizeof v3));
+    EQ(k.stat(HAPPY), 2222);
+    EQ(k.play_limit_ms(), PLAY_LIMIT_MS);    // settings default when the save had none
+    EQ(k.break_ms(), AWAY_MS);
+}
+
+TEST(sound_toggle_overrides_parent_off) {
+    Game g = hatched();
+    g.input(IN_PARENT, 0, 0);
+    g.input(IN_TOUCH, 184, 70 + SET_VOLUME * 44 + 20);   // normal -> low
+    g.input(IN_TOUCH, 184, 70 + SET_VOLUME * 44 + 20);   // low -> off
+    EQ(g.volume(), VOL_OFF);
+    g.input(IN_TOUCH, 184, 70 + SET_EXIT * 44 + 20);
+    tap_header(g);
+    g.input(IN_TOUCH, 320, 26);                         // the info screen's "SES KAPALI" button
+    EQ(g.volume(), VOL_NORMAL);                         // really on again
+    g.input(IN_TOUCH, 320, 26);
+    EQ(g.volume(), VOL_OFF);
+}
+
 // ---- rendering --------------------------------------------------------------------------------
 
 TEST(every_scene_renders_for_every_character) {
@@ -728,8 +1129,8 @@ TEST(every_scene_renders_for_every_character) {
             tap_menu(g, item);
             for (int f = 0; f < 6; f++) {
                 g.tick(300);
-                if (g.scene == SC_GAME) g.input(IN_SELECT, 0, 0);
                 render(g, fb);
+                if (g.scene == SC_GAME || g.scene == SC_FEED) g.input(IN_SELECT, 0, 0);
             }
             CHECK(lit_pixels(0, 0, SCREEN_W, SCREEN_H) > 5000);
             if (g.scene == SC_SLEEP) g.input(IN_SELECT, 0, 0);
@@ -752,8 +1153,8 @@ int main() {
         T(needs_decay_per_minute), T(one_big_tick_equals_many_small_ones),
         T(big_tick_across_waking_up_matches_small_ticks), T(egg_time_after_hatching_counts_as_life),
         T(never_dies_after_a_week_of_neglect),
-        T(event_feed_with_rotating_treats), T(event_play_minigame_by_touch), T(minigame_with_buttons_and_shake),
-        T(minigame_zero_stars_still_rewarded_and_bonus_capped), T(minigame_stars_keep_coming),
+        T(event_feed_she_picks_the_snack), T(event_play_minigame_by_touch), T(minigame_with_buttons_and_shake),
+        T(minigame_joy_does_not_depend_on_the_score), T(minigame_stars_keep_coming),
         T(event_play_refused_when_tired), T(event_sleep_until_rested), T(event_sleep_woken_early),
         T(event_wash_dissolves_messes), T(messes_follow_cleanliness),
         T(event_pet_hearts_and_rationed_happiness), T(event_info_from_the_header),
@@ -765,6 +1166,15 @@ int main() {
         T(melodies_are_short_and_audible), T(any_tick_partition_gives_the_same_world),
         T(big_tick_does_not_strand_a_hatching_egg), T(only_visible_stars_can_be_popped),
         T(hatching_in_the_dark_turns_the_screen_on), T(clock_wrap_keeps_petting_and_idle_alive),
+        T(ten_minutes_of_play_and_she_goes_out), T(leaving_waits_for_the_activity_to_finish),
+        T(a_break_resets_the_screen_time), T(away_freezes_needs_and_keeps_the_screen_short),
+        T(she_comes_back_after_the_break), T(parent_can_call_her_back), T(power_cut_does_not_skip_the_break),
+        T(version_1_saves_still_load), T(frames_are_interpolated_between_steps),
+        T(rtc_counts_the_break_while_powered_off), T(rtc_partial_break_and_wall_ticking),
+        T(rtc_that_lost_power_is_not_trusted), T(no_rtc_counts_powered_time_only),
+        T(version_2_saves_still_load), T(time_is_up_means_no_new_activities), T(tired_pillow_puts_her_to_sleep),
+        T(a_one_minute_nap_is_enough_to_play), T(parent_settings), T(hints_for_pre_readers),
+        T(stars_hit_where_they_are_drawn), T(version_3_saves_still_load), T(sound_toggle_overrides_parent_off),
         T(every_scene_renders_for_every_character),
     };
     for (auto& t : tests) {

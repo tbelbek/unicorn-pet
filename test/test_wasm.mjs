@@ -9,7 +9,8 @@ assert.equal(WebAssembly.Module.imports(mod).length, 0, "core must not import an
 const w = new WebAssembly.Instance(mod, {}).exports;
 
 const W = 368, H = 448;
-const SC = { EGG: 0, HATCH: 1, HOME: 2, EAT: 3, PLAY: 4, WASH: 5, SLEEP: 6, INFO: 7, REFUSE: 8, GAME: 9 };
+const SC = { EGG: 0, HATCH: 1, HOME: 2, EAT: 3, PLAY: 4, WASH: 5, SLEEP: 6, INFO: 7, REFUSE: 8, GAME: 9,
+             FEED: 13, SETTINGS: 14 };
 const IN = { NEXT: 1, SELECT: 2, TOUCH: 3 };
 const ST = { HUNGER: 0, HAPPY: 1, ENERGY: 2, CLEAN: 3 };
 const fb = () => new Uint16Array(w.memory.buffer, w.up_fb(), W * H);
@@ -41,6 +42,8 @@ test("feed", () => {
   hatch();
   w.up_set_stat(ST.HUNGER, 2000);
   tapMenu(0);
+  assert.equal(w.up_scene(), SC.FEED, "she picks the snack first");
+  w.up_input(IN.TOUCH, 61 + 2 * 122, 200);            // the carrot
   assert.equal(w.up_scene(), SC.EAT);
   assert.equal(w.up_stat(ST.HUNGER), 5500);
   const f = w.up_tick(100);
@@ -132,6 +135,7 @@ test("sound cues and melodies cross the wasm boundary", () => {
   hatch();
   w.up_take_sfx();
   tapMenu(0);
+  w.up_input(IN.TOUCH, 61, 200);
   const f = w.up_tick(0);
   assert.ok(f & 8, "F_SOUND after feeding");
   const id = w.up_take_sfx();
@@ -160,7 +164,36 @@ test("mute toggle on the info screen", () => {
   assert.equal(w.up_muted(), 1);
   w.up_input(IN.TOUCH, 184, 300);
   tapMenu(0);
+  w.up_input(IN.TOUCH, 61, 200);
   assert.equal(w.up_tick(0) & 8, 0, "no sound while muted");
+});
+
+test("RTC: the break also passes while powered off", () => {
+  hatch();
+  w.up_set_wall(1000000);
+  w.up_set_play_ms(600000);
+  run(100);
+  for (let i = 0; i < 60 && w.up_scene() !== 11; i++) run(100);
+  assert.equal(w.up_scene(), 11, "out with friends, door shown");
+  const n = w.up_save();
+  const blob = new Uint8Array(w.memory.buffer, w.up_save_buf(), n).slice();
+  w.up_init(5);                                      // ...power off for 40 minutes...
+  w.up_set_wall(1000000 + 2400);
+  new Uint8Array(w.memory.buffer, w.up_save_buf(), n).set(blob);
+  assert.equal(w.up_load(n), 1);
+  assert.equal(w.up_away_ms(), 0, "break already over");
+  w.up_input(IN.TOUCH, 184, 200);
+  assert.equal(w.up_scene(), 12, "walks back in");
+});
+
+test("parent settings from the BOOT long-press", () => {
+  hatch();
+  w.up_input(IN.PARENT ?? 5, 0, 0);
+  assert.equal(w.up_scene(), SC.SETTINGS);
+  w.up_input(IN.TOUCH, 184, 70 + 0 * 44 + 20);        // volume: normal -> low
+  assert.equal(w.up_volume(), 1);
+  w.up_input(IN.TOUCH, 184, 70 + 3 * 44 + 20);        // brightness steps
+  assert.notEqual(w.up_brightness(), 180);
 });
 
 console.log(`\n${passed} wasm tests passed`);

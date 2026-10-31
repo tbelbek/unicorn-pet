@@ -18,8 +18,9 @@ MOODS = ["idle", "happy", "hungry", "sleepy", "sad"]
 # side states: the five moods standing, then the four event poses (props baked in)
 SIDE_STATES = [("stand", m) for m in MOODS] + [("sleep", "idle"), ("eat", "idle"),
                                                ("play", "idle"), ("wash", "idle"),
-                                               ("walk", "idle"), ("stand", "blink"), ("hop", "idle")]
-ICONS = ["apple", "heart", "star", "bubble", "moon", "ball", "strawberry", "carrot"]
+                                               ("walk", "idle"), ("stand", "blink"), ("hop", "idle"),
+                                               ("walk2", "idle")]
+ICONS = ["apple", "heart", "star", "bubble", "moon", "ball", "strawberry", "carrot", "hand"]
 GLYPHS = [chr(c) for c in range(32, 127)] + list("ÇçĞğİıÖöŞşÜü·×")
 
 palette = ["#000000"]          # slot 0 = transparent
@@ -72,7 +73,7 @@ def font_bitmaps():
         d.text((0, pad), ch, font=font, fill=1)
         imgs.append(img)
     rows = [y for img in imgs for y in range(img.height) if any(img.getpixel((x, y)) for x in range(8))]
-    top, bottom = min(rows), max(rows) + 1
+    top, bottom = min(rows) - 1, max(rows) + 1   # one spare row on top for the dot on İ
     data = bytearray()
     for ch, img in zip(GLYPHS, imgs):
         rows = OVERRIDES.get(ch)
@@ -85,9 +86,10 @@ def font_bitmaps():
     return bottom - top, data
 
 
-# Press Start 2P squeezes İ into a short I that reads as "i" at 1x; give it a full-width top bar.
-OVERRIDES = {"İ": ["...##...", ".######.", "...##...", "...##...", "...##...", "...##...", ".######.",
-                   "........"]}
+# Press Start 2P squeezes İ into a short I that reads as "i"; with the spare top row it gets a
+# full-height I (same as plain I) and its dot above, like every other capital.
+OVERRIDES = {"İ": ["...##...", ".######.", "...##...", "...##...", "...##...", "...##...", "...##...",
+                   ".######.", "........"]}
 
 
 def main():

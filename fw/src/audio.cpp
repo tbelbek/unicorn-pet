@@ -14,6 +14,8 @@ static const int16_t AMP = 2500;           // square-wave amplitude out of 32767
 static I2SClass i2s;
 static QueueHandle_t cues;
 static volatile bool playing;
+static es8311_handle_t codec;
+static int level = -1;
 
 static void play_note(int hz, int ms) {
     static int16_t buf[2 * 128];           // 128 stereo frames
@@ -47,7 +49,10 @@ static void audio_task(void*) {
         if (!count) continue;
         playing = true;
         digitalWrite(PA_EN, HIGH);         // speaker amp on only while a tune plays
-        for (int i = 0; i < count; i++) play_note(notes[i].hz, notes[i].ms);
+        for (int i = 0; i < count; i++) {
+            if (uxQueueMessagesWaiting(cues)) break;   // a newer cue cuts this one short
+            play_note(notes[i].hz, notes[i].ms);
+        }
         play_note(0, 30);                  // flush silence before muting the amp
         digitalWrite(PA_EN, LOW);
         playing = false;
@@ -62,6 +67,7 @@ bool audio_begin() {
         return false;
     es8311_handle_t es = es8311_create(0, ES8311_ADDRRES_0);
     if (!es) return false;
+    codec = es;
     const es8311_clock_config_t clk = {
         .mclk_inverted = false,
         .sclk_inverted = false,
@@ -77,7 +83,19 @@ bool audio_begin() {
     return true;
 }
 
+void audio_level(int l) {                  // parent setting: 0 normal, 1 low, 2 off
+    if (l == level || !codec) return;
+    level = l;
+    if (l == 2) {                          // off now: drop what is queued and silence what plays
+        if (cues) xQueueReset(cues);
+        es8311_voice_volume_set(codec, 0, NULL);
+        return;
+    }
+    es8311_voice_volume_set(codec, l == 0 ? VOLUME : VOLUME * 2 / 3, NULL);
+}
+
 void audio_play(int sfx) {
+    if (level == 2) return;
     if (cues && sfx) xQueueOverwrite(cues, &sfx);
 }
 

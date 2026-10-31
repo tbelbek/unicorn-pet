@@ -46,6 +46,29 @@ Needs Homebrew `llvm` and `lld` (`brew install llvm lld`); no emscripten.
 | Tap the unicorn | petting: hearts float up and she beams; happiness +2% at most every 2 s |
 | Tap the name/status bar | front-face info screen with all needs, and the sound on/off switch |
 
+### Screen time: she has things to do
+
+After **10 minutes** of screen-on play she finishes what she is doing, says "İŞİM VAR!" and walks
+off to play with her friends. A door with a **RAHATSIZ ETMEYİN** sign stays behind for
+**30 minutes**: the screen goes dark after 5 s, knocking only rattles the sign (it does not keep
+the screen on), six stars fill up so the child can see when she is coming back, and her needs are
+frozen while she is out. The next touch after the break brings her back ("GELDİM!"). A 15-minute
+break with the screen dark resets the counter. The state is saved the moment she leaves, so
+pulling the power is no shortcut. The break is timed by the board's **PCF85063 RTC** when it keeps
+running while the board is off, so a break that passed overnight is over in the morning; if there
+is no trustworthy clock (it lost power and restarted, or went backwards) the game falls back to
+counting powered time from what was left. Only the break uses the wall clock: needs still freeze
+while the board is off. The emulator has an RTC checkbox and a "10 DK DOLDU" test button. Grown-ups can call her back early by holding BOOT for 5 s on
+the door (the emulator has a button for it). Limits are `PLAY_LIMIT_MS` / `AWAY_MS` in
+`core/unicorn.h`.
+
+### Smooth animation
+
+The simulation runs in fixed 100 ms steps (so every test is deterministic), and the renderer
+interpolates between steps: positions, a sine-wave breathing bob, parabolic hops and jumps, a
+damped egg wobble, rising Zz, a 4-frame walk cycle. While anything moves the core asks for a fresh
+frame on every call; the firmware caps pushes at ~30 fps, the emulator draws at the browser's rate.
+
 When nobody is playing she lives on her own: blinks, wanders left and right (mirrored), hops when
 she is happy. A hungry, tired or sad unicorn stays put. Low cleanliness leaves little rainbow messes
 on the floor. Needs drain over ~8–17 h of powered time. She never dies: low needs only change her face.
@@ -53,13 +76,37 @@ on the floor. Needs drain over ~8–17 h of powered time. She never dies: low ne
 The screen goes dark after 20 s; the first touch only wakes it. Tunables are the enum at the top
 of `core/unicorn.h`.
 
-The game design was worked out together with Codex (an independent design scan and a review of
-the implementation).
+### Made for pre-readers, and for their parents
+
+- **Wordless hints:** a little hand taps the egg, then shows how to pet her; the button for what she
+  needs gently bounces (Besle when hungry, Uyut when tired, ...); a hand points at the snacks if
+  nobody chooses.
+- **She chooses with you:** Besle opens three big snacks (apple, strawberry, carrot) to tap.
+- **Kind when tired:** "too tired to play" shows a big pillow button that puts her to sleep, and a
+  one-minute nap is already enough to play again.
+- **No pressure:** the star game's score no longer changes her happiness (it is just counted);
+  the door shows friends playing instead of a countdown, and knocking does nothing.
+- **A warm goodbye:** a friend arrives ("HADİ!"), they hug, and walk off together.
+- **Game feel:** buttons dip and pop, she stretches on take-off and squashes on landing, popped
+  stars leave an expanding ring; a new sound cuts the previous one short on both platforms.
+- **Parent settings** (hold BOOT 5 s, or the EBEVEYN button in the emulator): volume
+  (normal / low / off), session length (5/10/15/20 min), break length (15/30/45/60 min),
+  brightness, calm mode (no bobbing or hops, fewer particles), shake on/off, plus battery % and
+  whether the RTC is running. Stored in the save (v4; older saves load with defaults).
+
+The game design was worked out together with Codex: an independent design scan, then audits
+using game-design skills from the most-starred skill repos — game-feel and game-ui-ux
+(gamedev-skills/awesome-gamedev-agent-skills), design-review / ux-review / team-polish and the
+accessibility and sound agents (Donchitos/Claude-Code-Game-Studios), and the core-loop, FTUE,
+peak-end, fairness, need-satisfaction, Zeigarnik and one-thing-to-remove audits
+(Stanestane/game-design-skills-bundle) — followed by a review of each implementation round.
 
 ## Tests
 
 ```sh
 make -C test               # host: every event, mini-game, petting, idle life, particles, sound,
+                           # screen-time limit and the door, RTC breaks, saves v1/v2->v3,
+                           # interpolation,
                            # save/load, screen-off, tick-size independence, a week of neglect;
                            # dumps a screenshot per event to test/out/*.png
 make -C test wasm          # the same events through emu/unicorn.wasm in Node
@@ -81,7 +128,9 @@ pio run -d fw -t upload    # flash over USB-C
 - **Sound:** ES8311 codec over I2S; the speaker amp is only enabled while a tune plays.
 
 Pins, addresses and the IO-expander reset sequence come from Waveshare's own Arduino examples.
-Still to check on a real board (marked `VERIFY` in `fw/src/main.cpp`): touch axis orientation.
+Still to check on a real board (marked `VERIFY`): touch axis orientation (`fw/src/main.cpp`), and
+whether the AXP2101 keeps the RTC supplied after a long-press power-off (`fw/src/rtc.cpp`), plus
+tearing at ~30 fps.
 If the screen stays black, the panel may be the newer CO5300: build with `-DPANEL_CO5300`.
 
 ## Changing the art

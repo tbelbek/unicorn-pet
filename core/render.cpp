@@ -18,7 +18,7 @@ static const u16 BLACK = 0, INK = rgb(0xF4, 0xEE, 0xFF), DIM = rgb(0xA9, 0x9B, 0
                  MOON = rgb(0xFF, 0xE9, 0xA8), BUBBLE = rgb(0xF4, 0xEE, 0xFF);
 static const u16 METER[NSTATS] = {rgb(0xFF, 0x5C, 0x6E), rgb(0xFF, 0x5C, 0x9C), rgb(0xFF, 0xD8, 0x4D),
                                   rgb(0x6F, 0xD6, 0xFF)};
-enum { IC_APPLE, IC_HEART, IC_STAR, IC_BUBBLE, IC_MOON, IC_BALL, IC_STRAWBERRY, IC_CARROT };   // export_c.ICONS
+enum { IC_APPLE, IC_HEART, IC_STAR, IC_BUBBLE, IC_MOON, IC_BALL, IC_STRAWBERRY, IC_CARROT, IC_HAND };   // export_c.ICONS
 
 static void palettes() {
     if (pal_ready) return;
@@ -69,13 +69,17 @@ static void rrect(int x0, int y0, int x1, int y1, int r, u16 fillc, u16 line, in
         }
 }
 
-// flip: mirror horizontally (the unicorn walking left)
-static void blit(const u8* data, int w, int h, int scale, int x0, int y0, const u16* pal, bool flip = false) {
+// flip: mirror horizontally (the unicorn walking left); sx/sy: separate scales for squash & stretch
+static void blit2(const u8* data, int w, int h, int sx, int sy, int x0, int y0, const u16* pal, bool flip) {
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w; x++) {
             u8 i = data[y * w + (flip ? w - 1 - x : x)];
-            if (i) fill(x0 + x * scale, y0 + y * scale, x0 + (x + 1) * scale, y0 + (y + 1) * scale, pal[i]);
+            if (i) fill(x0 + x * sx, y0 + y * sy, x0 + (x + 1) * sx, y0 + (y + 1) * sy, pal[i]);
         }
+}
+
+static void blit(const u8* data, int w, int h, int scale, int x0, int y0, const u16* pal, bool flip = false) {
+    blit2(data, w, h, scale, scale, x0, y0, pal, flip);
 }
 
 static void icon(int i, int scale, int x, int y) {
@@ -127,6 +131,33 @@ static void utoa(u32 v, char* out) {
     while (n) *out++ = tmp[--n];
     *out = 0;
 }
+
+// ---- smooth motion: render interpolates between 100 ms simulation steps ---------------------
+
+static const short SIN_Q[17] = {0, 25, 50, 74, 98, 121, 142, 162, 181, 198, 213, 226, 237, 245, 251, 255, 256};
+
+static int sin64(u32 ph) {                 // one cycle = 64 phases, result -256..256
+    ph &= 63;
+    int q = (int)(ph & 15), v;
+    switch (ph >> 4) {
+    case 0: v = SIN_Q[q]; break;
+    case 1: v = SIN_Q[16 - q]; break;
+    case 2: v = -SIN_Q[q]; break;
+    default: v = -SIN_Q[16 - q]; break;
+    }
+    return v;
+}
+
+static int wave(u32 t, u32 period, int amp) { return amp * sin64((t % period) * 64 / period) / 256; }
+
+// a hop: 0 at both ends, -height in the middle (parabola), p in [0, len]
+static int arc(u32 p, u32 len, int height) {
+    if (p >= len) return 0;
+    return -(int)(4 * (u32)height * p * (len - p) / (len * len));
+}
+
+static u32 now(const Game& g) { return g.anim_ms + g.acc_ms; }          // ms into the scene, smooth
+static int ahead(int per_step, const Game& g) { return per_step * (int)g.acc_ms / STEP_MS; }
 
 // ---- decorations --------------------------------------------------------------------------
 
@@ -182,20 +213,38 @@ static void header(const Game& g, const char* sub) {
     text(sub, SCREEN_W / 2, 74, 1, DIM);
 }
 
+static int arc(u32 p, u32 len, int height);
+static int wave(u32 t, u32 period, int amp);
+
 static void menu(const Game& g) {
     static const int icons[MENU_COUNT] = {IC_APPLE, IC_BALL, IC_MOON, IC_BUBBLE};
     static const char* labels[MENU_COUNT] = {"BESLE", "OYNA", "UYUT", "YIKA"};
+    u32 t = g.clock_ms + g.acc_ms;
+    int rec = g.recommended();
     for (int i = 0; i < MENU_COUNT; i++) {
-        int cx = 46 + i * MENU_STEP;
+        int cx = 46 + i * MENU_STEP, scale = 3, dy = 0;
         if (i == g.menu)
             rrect(cx - 36, MENU_Y0, cx + 36, MENU_Y1, 12, SEL, PAL[UP_ACCENT[g.s.character]], 2);
-        icon(icons[i], 3, cx - UP_ICON_W * 3 / 2, 378);
+        if (i == g.press_item && (int)(g.press_end - t) > 0) {      // dip, then pop past and settle
+            int left = (int)(g.press_end - t);
+            scale = left > PRESS_MS * 2 / 3 ? 2 : left > PRESS_MS / 3 ? 4 : 3;
+        } else if (i == rec && !g.calm()) {                          // her need gently bounces
+            dy = arc(t % 1100, 500, 6);
+        }
+        icon(icons[i], scale, cx - UP_ICON_W * scale / 2, 378 + 12 - UP_ICON_H * scale / 2 + dy);
         text(labels[i], cx, 414, 1, i == g.menu ? INK : DIM);
     }
 }
 
+static void hand_hint(const Game& g, int x, int y) {   // a little hand taps: "touch here"
+    if (x > SCREEN_W - 26) x = SCREEN_W - 26;           // always fully on screen
+    if (x < 26) x = 26;
+    int tap = arc((g.clock_ms + g.acc_ms) % 900, 450, 14);
+    icon(IC_HAND, 4, x - UP_ICON_W * 2, y - tap);
+}
+
 // Side-view states, in export_c.SIDE_STATES order.
-enum { ST_SLEEP = 5, ST_EAT = 6, ST_PLAY = 7, ST_WASH = 8, ST_WALK = 9, ST_BLINK = 10, ST_HOP = 11 };
+enum { ST_SLEEP = 5, ST_EAT = 6, ST_PLAY = 7, ST_WASH = 8, ST_WALK = 9, ST_BLINK = 10, ST_HOP = 11, ST_WALK2 = 12 };
 
 static const u16 RAINBOW[7] = {rgb(0xFF, 0x5C, 0x8A), rgb(0xFF, 0x9F, 0x43), rgb(0xFF, 0xE0, 0x66),
                                rgb(0x5E, 0xE0, 0x7A), rgb(0x4C, 0xC9, 0xF0), rgb(0x9B, 0x6B, 0xFF),
@@ -211,13 +260,27 @@ static void ground(const Game& g, bool night) {
 }
 
 // x of the sprite's left edge, following the unicorn as she wanders
-static int side_x(const Game& g) { return (SCREEN_W - UP_SIDE_W * 6) / 2 + 6 + burn_x(g) + g.pet_x; }
+static int side_x(const Game& g) {
+    return (SCREEN_W - UP_SIDE_W * 6) / 2 + 6 + burn_x(g) + g.pet_x + ahead(g.vel_x, g);
+}
 static int side_y(const Game& g) { return 346 - UP_SIDE_FEET * 6 + burn_y(g); }
 
-static void unicorn_side(const Game& g, int state, bool night) {
+// squash > 0: wider and lower (landing), < 0: taller and thinner (take-off); feet stay planted
+static int squash_now;
+
+static void unicorn_side(const Game& g, int state, bool night, int frame, int dy) {
     const int sz = UP_SIDE_W * UP_SIDE_H;
-    const u8* spr = UP_SIDE + ((g.s.character * UP_SIDE_STATES + state) * 2 + g.frame) * sz;
-    blit(spr, UP_SIDE_W, UP_SIDE_H, 6, side_x(g), side_y(g), night ? NIGHT : PAL, g.facing < 0);
+    const u8* spr = UP_SIDE + ((g.s.character * UP_SIDE_STATES + state) * 2 + frame) * sz;
+    int sx = 6 + squash_now, sy = 6 - squash_now;
+    int x0 = side_x(g) - (sx - 6) * UP_SIDE_W / 2, feet = side_y(g) + UP_SIDE_FEET * 6 + dy;
+    blit2(spr, UP_SIDE_W, UP_SIDE_H, sx, sy, x0, feet - UP_SIDE_FEET * sy, night ? NIGHT : PAL, g.facing < 0);
+}
+
+// squash & stretch around a hop of length len: stretch on take-off, squash on landing
+static int squash_for(u32 p, u32 len) {
+    if (p < 80) return -1;
+    if (p >= len && p < len + SQUASH_MS) return 1;
+    return 0;
 }
 
 static void unicorn_front(const Game& g, int mood, int y, int scale = 5) {
@@ -240,25 +303,49 @@ static void mess(int cx, int base, int size) {
 static void particles(const Game& g) {
     for (int i = 0; i < NPART; i++) {
         const Part& p = g.part[i];
+        if (p.kind == P_NONE) continue;
+        int x = p.x + ahead(p.vx * 2, g), y = p.y + ahead(p.vy * 2, g);
         switch (p.kind) {
-        case P_HEART:    icon(IC_HEART, 3, p.x - 13, p.y - 12); break;
-        case P_STAR:     icon(IC_STAR, 2, p.x - 9, p.y - 8); break;
-        case P_SPARKLE:  sparkle(p.x, p.y, 3, p.col & 1 ? YELLOW : PINK); break;
-        case P_CRUMB:    fill(p.x, p.y, p.x + 5, p.y + 5, RAINBOW[p.col % 3]); break;
-        case P_CONFETTI: fill(p.x, p.y, p.x + 6, p.y + 6, RAINBOW[p.col % 7]); break;
-        case P_BUBBLE:                     // a ring, so she shows through it
-            for (int y = -7; y <= 7; y++)
-                for (int x = -7; x <= 7; x++) {
-                    int d2 = x * x + y * y;
-                    if (d2 <= 49 && d2 > 25) px(p.x + x, p.y + y, rgb(0x6F, 0xD6, 0xFF));
+        case P_HEART:    x += wave(now(g) + i * 97, 900, 4); icon(IC_HEART, 3, x - 13, y - 12); break;
+        case P_STAR:     icon(IC_STAR, 2, x - 9, y - 8); break;
+        case P_SPARKLE:  sparkle(x, y, 3, p.col & 1 ? YELLOW : PINK); break;
+        case P_CRUMB:    fill(x, y, x + 5, y + 5, RAINBOW[p.col % 3]); break;
+        case P_CONFETTI: fill(x, y, x + 6, y + 6, RAINBOW[p.col % 7]); break;
+        case P_RING: {                     // an expanding outline where a star popped
+            int rr = 10 + (6 - p.life) * 6 + ahead(6, g), in = rr - 3;
+            for (int yy = -rr; yy <= rr; yy++)
+                for (int xx = -rr; xx <= rr; xx++) {
+                    int d2 = xx * xx + yy * yy;
+                    if (d2 <= rr * rr && d2 > in * in) px(x + xx, y + yy, YELLOW);
                 }
-            fill(p.x - 3, p.y - 3, p.x - 1, p.y - 1, INK);
+            break;
+        }
+        case P_BUBBLE:                     // a ring, so she shows through it
+            for (int yy = -7; yy <= 7; yy++)
+                for (int xx = -7; xx <= 7; xx++) {
+                    int d2 = xx * xx + yy * yy;
+                    if (d2 <= 49 && d2 > 25) px(x + xx, y + yy, rgb(0x6F, 0xD6, 0xFF));
+                }
+            fill(x - 3, y - 3, x - 1, y - 1, INK);
             break;
         }
     }
 }
 
-static void home_like(const Game& g, int state, const char* sub, bool night) {
+static void bubble(int tail_x, int y, const char* msg) {   // speech bubble, tail at her mouth
+    int w = text_w(msg, 2) + 28;
+    int cx = tail_x;                      // keep the whole bubble on screen
+    if (cx - w / 2 < 12) cx = 12 + w / 2;
+    if (cx + w / 2 > SCREEN_W - 12) cx = SCREEN_W - 12 - w / 2;
+    rrect(cx - w / 2, y, cx + w / 2, y + 36, 12, INK, INK, 1);
+    int tx = tail_x < cx - w / 2 + 14 ? cx - w / 2 + 14 : tail_x > cx + w / 2 - 14 ? cx + w / 2 - 14 : tail_x;
+    for (int r = 0; r < 10; r++) fill(tx - 10 + r, y + 36 + r, tx - 2, y + 37 + r, INK);
+    text(msg, cx, y + 10, 2, rgb(0x2B, 0x18, 0x40));
+}
+
+static void home_like(const Game& g, int state, const char* sub, bool night, int frame = -1, int dy = 0,
+                      bool show_menu = true) {
+    if (frame < 0) frame = g.frame;
     if (night) sky();
     status(g);
     header(g, sub);
@@ -269,12 +356,12 @@ static void home_like(const Game& g, int state, const char* sub, bool night) {
     if (g.scene == SC_WASH) size = g.scene_ms >= 1600 ? 0 : 4 - (int)(g.scene_ms / 400);
     static const int mx[3] = {58, 312, 98};
     for (int i = 0; i < n; i++) mess(mx[i] + burn_x(g), 344 + burn_y(g), size);
-    unicorn_side(g, state, night);
-    int sx = side_x(g), sy = side_y(g);
+    unicorn_side(g, state, night, frame, dy);
+    int sx = side_x(g), sy = side_y(g) + dy;
     if (state == M_HAPPY) { sparkle(sx + 34, sy + 52, 4, YELLOW); sparkle(sx + 230, sy + 42, 3, PINK); }
     if (state == M_HUNGRY) thought(sx + (g.facing < 0 ? 10 : 196), sy + 6);
-    if (state == M_SLEEPY) zz(sx + 220, sy + 32);
-    if (state == ST_SLEEP) zz(sx + 220, sy + 110 - 12 * g.frame);
+    if (state == M_SLEEPY) zz(sx + 220 + wave(now(g), 2000, 4), sy + 32 - (int)(now(g) / 40 % 24));
+    if (state == ST_SLEEP) zz(sx + 220 + wave(now(g), 2600, 6), sy + 118 - (int)(now(g) / 45 % 40));
     if (state == ST_EAT) {                 // today's treat in the bowl, eaten bite by bite
         static const int treats[TREAT_COUNT] = {IC_APPLE, IC_STRAWBERRY, IC_CARROT};
         int left = 3 - (int)(g.scene_ms * 3 / ACTION_MS);
@@ -282,7 +369,7 @@ static void home_like(const Game& g, int state, const char* sub, bool night) {
                            sy + (36 + 4) * 6 - UP_ICON_H * left);
     }
     particles(g);
-    menu(g);
+    if (show_menu) menu(g);
 }
 
 static void scene_home(const Game& g) {
@@ -293,12 +380,168 @@ static void scene_home(const Game& g) {
     const char* tail = ". GÜN";
     for (int i = 0; tail[i]; i++) day[n++] = tail[i];
     day[n] = 0;
-    int state = g.mood();
-    if (g.petting) state = M_HAPPY;                        // being petted
-    else if (g.idle_act == IDLE_WALK) state = ST_WALK;
-    else if (g.idle_act == IDLE_BLINK) state = ST_BLINK;
-    else if (g.idle_act == IDLE_HOP) state = ST_HOP;
-    home_like(g, state, day, false);
+    u32 t = g.clock_ms + g.acc_ms;
+    int state = g.mood(), frame = 0, dy = wave(now(g), 2400, 3) + 2;   // slow breathing bob
+    squash_now = 0;
+    if (g.petting) {                                       // being petted: a happy little hop
+        state = M_HAPPY;
+        u32 p = t - (g.pet_react_end - PET_REACT_MS);
+        dy = arc(p, PET_REACT_MS - SQUASH_MS, 10);
+        squash_now = squash_for(p, PET_REACT_MS - SQUASH_MS);
+    } else if (g.idle_act == IDLE_WALK) {                  // 4-phase walk cycle
+        u32 ph = now(g) / 140 % 4;
+        state = ph < 2 ? ST_WALK : ST_WALK2;
+        frame = (int)(ph & 1);
+        dy = 0;
+    } else if (g.idle_act == IDLE_BLINK) {
+        state = ST_BLINK;
+    } else if (g.idle_act == IDLE_HOP) {
+        state = ST_HOP;
+        u32 p = t - (g.idle_end - 600);
+        dy = arc(p, 600 - SQUASH_MS, 26);
+        squash_now = squash_for(p, 600 - SQUASH_MS);
+    }
+    if (g.calm()) { dy = 0; squash_now = 0; }               // parent setting: calm motion
+    home_like(g, state, day, false, frame, dy);
+    squash_now = 0;
+    if (g.hint_pet && !g.petting) hand_hint(g, side_x(g) + 252, side_y(g) + 156);   // "pet me", on black
+}
+
+// SC_FEED: three big snacks to choose from
+static void scene_feed(const Game& g) {
+    static const int treats[TREAT_COUNT] = {IC_APPLE, IC_STRAWBERRY, IC_CARROT};
+    header(g, "NE YEMEK İSTER?");
+    // a small, patient timer: if nobody chooses, she takes the highlighted one
+    int left = (int)(FEED_PICK_MS - (g.scene_ms < FEED_PICK_MS ? g.scene_ms : FEED_PICK_MS));
+    fill(SCREEN_W / 2 - 100, 96, SCREEN_W / 2 - 100 + 200 * left / FEED_PICK_MS, 100, TRACK);
+    for (int i = 0; i < TREAT_COUNT; i++) {
+        int cx = SCREEN_W / 6 + i * SCREEN_W / 3, bob = g.calm() ? 0 : wave(now(g) + i * 400, 1600, 4);
+        if (i == g.sel) rrect(cx - 54, 116, cx + 54, 290, 18, SEL, PAL[UP_ACCENT[g.s.character]], 3);
+        int scale = 8;
+        if (i == g.press_item && (int)(g.press_end - (g.clock_ms + g.acc_ms)) > 0) scale = 9;
+        icon(treats[i], scale, cx - UP_ICON_W * scale / 2, 203 - UP_ICON_H * scale / 2 + bob);
+    }
+    // she looks at the food (front face, small)
+    const int sz = UP_FRONT_W * UP_FRONT_H;
+    blit(UP_FRONT + ((g.s.character * UP_MOODS + M_HAPPY) * 2 + g.frame) * sz, UP_FRONT_W, UP_FRONT_H, 3,
+         (SCREEN_W - UP_FRONT_W * 3) / 2, 296, PAL);
+    if (g.scene_ms > 3000) hand_hint(g, SCREEN_W / 6 + g.sel * SCREEN_W / 3 + 30, 250);   // "pick one"
+}
+
+// SC_REFUSE: too tired to play, and a big pillow to tap
+static void scene_refuse(const Game& g) {
+    home_like(g, M_SLEEPY, "ÇOK YORGUN: UYUSUN MU?", false, 0, g.calm() ? 0 : wave(now(g), 2400, 3) + 2, false);
+    int pulse = g.calm() ? 0 : wave(now(g), 1200, 3);
+    rrect(40 - pulse, 360 - pulse, 328 + pulse, 436 + pulse, 18, rgb(0x2A, 0x24, 0x5E), LILAC, 3);
+    icon(IC_MOON, 5, SCREEN_W / 2 - UP_ICON_W * 5 / 2 - 40, 378);
+    text("UYU", SCREEN_W / 2 + 40, 390, 2, INK);
+}
+
+// SC_SETTINGS: for grown-ups (BOOT held 5 s). Every value cycles on tap / PWR.
+static void scene_settings(const Game& g) {
+    static const char* names[SET_ROWS] = {"SES", "OTURUM", "MOLA", "PARLAKLIK", "SAKİN MOD", "SALLAMA", "ÇIKIŞ"};
+    static const char* vols[3] = {"NORMAL", "KISIK", "KAPALI"};
+    char v[16];
+    text("EBEVEYN AYARLARI", SCREEN_W / 2, 30, 2, YELLOW);
+    for (int i = 0; i < SET_ROWS; i++) {
+        int y = 70 + i * 44;
+        if (i == g.set_row) rrect(16, y, SCREEN_W - 16, y + 38, 10, SEL, LILAC, 2);
+        text(names[i], 32, y + 12, 2, i == SET_EXIT ? YELLOW : INK, 0);
+        const char* val = "";
+        switch (i) {
+        case SET_VOLUME: val = vols[g.volume()]; break;
+        case SET_LIMIT:  utoa(g.play_limit_ms() / 60000, v); val = v; break;
+        case SET_BREAK:  utoa(g.break_ms() / 60000, v); val = v; break;
+        case SET_BRIGHT: utoa(g.brightness() * 100 / 255, v); val = v; break;
+        case SET_CALM:   val = g.calm() ? "AÇIK" : "KAPALI"; break;
+        case SET_SHAKE:  val = (g.s.opts & OPT_NO_SHAKE) ? "KAPALI" : "AÇIK"; break;
+        }
+        if (*val) {
+            int n = 0;
+            while (val[n]) n++;
+            const char* unit = i == SET_LIMIT || i == SET_BREAK ? " DK" : i == SET_BRIGHT ? "%" : "";
+            char buf[24];
+            int k = 0;
+            for (int j = 0; val[j]; j++) buf[k++] = val[j];
+            for (int j = 0; unit[j]; j++) buf[k++] = unit[j];
+            buf[k] = 0;
+            text(buf, SCREEN_W - 32 - text_w(buf, 1), y + 16, 1, DIM, 0);
+        }
+    }
+    utoa(g.battery, v);
+    char line[40];
+    int k = 0;
+    const char* a = "PİL ";
+    for (int j = 0; a[j]; j++) line[k++] = a[j];
+    if (g.battery) { for (int j = 0; v[j]; j++) line[k++] = v[j]; line[k++] = '%'; } else line[k++] = '?';
+    const char* b = g.wall_s ? "  ·  SAAT: VAR" : "  ·  SAAT: YOK";
+    for (int j = 0; b[j]; j++) line[k++] = b[j];
+    line[k] = 0;
+    text(line, SCREEN_W / 2, 392, 1, DIM);
+    text("BOOT: SEÇ · PWR: DEĞİŞTİR", SCREEN_W / 2, 412, 1, DIM);
+}
+
+// LEAVE / AWAY / RETURN: she goes out to play with friends and hangs a sign on the door.
+static void walker(const Game& g, const char* sub, const char* says) {
+    bool walking = g.vel_x != 0;
+    u32 ph = now(g) / 120 % 4;
+    int state = walking ? (ph < 2 ? ST_WALK : ST_WALK2) : M_HAPPY;
+    home_like(g, state, sub, false, walking ? (int)(ph & 1) : 0, 0, false);
+    if (g.scene == SC_LEAVE) {             // a friend comes to pick her up (drawn smaller: further back)
+        int fc = (g.s.character + 1) % UP_CHARS, t = (int)now(g), arrive = 1200 + FRIEND_MS;
+        int fx;
+        if (t < 1200) fx = SCREEN_W + 10;
+        else if (t < arrive) {             // ease-out walk in from the right
+            int p = (t - 1200) * 256 / FRIEND_MS, e = 256 - (256 - p) * (256 - p) / 256;
+            fx = SCREEN_W + 10 - (SCREEN_W + 10 - 238) * e / 256;
+        } else fx = 238 + (t - arrive) * 120 / 1000;
+        bool leaving = t >= arrive, fwalk = t >= 1200 && (t < arrive - 300 || leaving);
+        const int sz = UP_SIDE_W * UP_SIDE_H;
+        u32 fph = now(g) / 120 % 4;
+        int fstate = fwalk ? (fph < 2 ? ST_WALK : ST_WALK2) : M_HAPPY;
+        const u8* spr = UP_SIDE + ((fc * UP_SIDE_STATES + fstate) * 2 + (fwalk ? (int)(fph & 1) : 0)) * sz;
+        blit(spr, UP_SIDE_W, UP_SIDE_H, 4, fx - UP_SIDE_W * 2, 346 - UP_SIDE_FEET * 4 + burn_y(g), PAL, !leaving);
+        if (t >= arrive - 400 && t < arrive + 600) bubble(fx, 150, "HADİ!");
+    }
+    if (says && side_x(g) < SCREEN_W - 120 && now(g) < 1200) bubble(side_x(g) + 200, side_y(g) - 6, says);
+}
+
+static void scene_away(const Game& g) {
+    static const u16 WOOD = rgb(0x8B, 0x5A, 0x3C), WOOD2 = rgb(0x74, 0x48, 0x30), FRAME = rgb(0x4A, 0x30, 0x22);
+    int shake = g.wobbling ? wave(g.clock_ms + g.acc_ms, 120, 3) : 0;
+    text(UP_NAMES[g.s.character], SCREEN_W / 2, 26, 2, PAL[UP_ACCENT[g.s.character]]);
+    text("ARKADAŞLARIYLA OYNUYOR", SCREEN_W / 2, 48, 1, DIM);
+    ellipse(SCREEN_W / 2, 352, 130, 10, GROUND1);
+    int x0 = 108 + shake;
+    fill(x0 - 8, 76, x0 + 160, 352, FRAME);
+    fill(x0, 84, x0 + 152, 352, WOOD);
+    fill(x0 + 14, 98, x0 + 138, 196, WOOD2);
+    fill(x0 + 14, 212, x0 + 138, 338, WOOD2);
+    fill(x0 + 18, 102, x0 + 134, 192, WOOD);
+    fill(x0 + 18, 216, x0 + 134, 334, WOOD);
+    ellipse(x0 + 130, 206, 7, 7, YELLOW);
+    // the sign hangs from the knob and swings when someone knocks
+    int sw = g.wobbling ? wave(g.clock_ms + g.acc_ms, 260, 10) : 0;
+    int kx = x0 + 130, ky = 206, sx = kx - 4 + sw, sy = 228;
+    for (int i = 0; i <= 60; i++) {                       // two strings to the knob
+        fill(kx + (sx - 50 - kx) * i / 60, ky + (sy - ky) * i / 60, kx + (sx - 50 - kx) * i / 60 + 2,
+             ky + (sy - ky) * i / 60 + 2, INK);
+        fill(kx + (sx + 50 - kx) * i / 60, ky + (sy - ky) * i / 60, kx + (sx + 50 - kx) * i / 60 + 2,
+             ky + (sy - ky) * i / 60 + 2, INK);
+    }
+    rrect(sx - 60, sy, sx + 60, sy + 64, 12, rgb(0xFF, 0xC2, 0xE0), rgb(0x8A, 0x1F, 0x5C), 3);
+    text("RAHATSIZ", sx, sy + 14, 1, rgb(0x3A, 0x0F, 0x2B));
+    text("ETMEYİN", sx, sy + 30, 1, rgb(0x3A, 0x0F, 0x2B));
+    icon(IC_MOON, 1, sx - 4, sy + 46);
+    // a calm picture of the friends playing: no countdown to keep checking (time is for grown-ups)
+    for (int i = 0; i < 3; i++) {
+        int fc = (g.s.character + 1 + i) % UP_CHARS;
+        const int sz = UP_FRONT_W * UP_FRONT_H;
+        int hop = g.calm() ? 0 : arc((now(g) + i * 500) % 1500, 600, 6);
+        blit(UP_FRONT + ((fc * UP_MOODS + M_HAPPY) * 2) * sz, UP_FRONT_W, UP_FRONT_H, 1,
+             SCREEN_W / 2 - 100 + i * 76, 362 + hop, PAL);
+    }
+    text("SEN DE DİNLEN!", SCREEN_W / 2, 422, 1, DIM);
 }
 
 static void scene_game(const Game& g) {
@@ -315,12 +558,14 @@ static void scene_game(const Game& g) {
     // a small unicorn cheering at the bottom, behind the stars so they always stay tappable
     const int sz = UP_SIDE_W * UP_SIDE_H;
     const u8* spr = UP_SIDE + ((g.s.character * UP_SIDE_STATES + ST_HOP) * 2 + g.frame) * sz;
-    blit(spr, UP_SIDE_W, UP_SIDE_H, 3, SCREEN_W / 2 - UP_SIDE_W * 3 / 2, SCREEN_H - UP_SIDE_H * 3 - 4, PAL);
+    blit(spr, UP_SIDE_W, UP_SIDE_H, 3, SCREEN_W / 2 - UP_SIDE_W * 3 / 2,
+         SCREEN_H - UP_SIDE_H * 3 - 4 + arc(now(g) % 600, 600, 18), PAL);
     for (int i = 0; i < GAME_TARGETS; i++) {
         const Target& t = g.tgt[i];
-        if (!t.alive || t.y > SCREEN_H + 30) continue;
-        if (i == g.sel) rrect(t.x - 34, t.y - 32, t.x + 34, t.y + 32, 14, BLACK, LILAC, 2);   // buttons
-        icon(IC_STAR, 6, t.x - UP_ICON_W * 3, t.y - UP_ICON_H * 3);
+        int ty = t.y + ahead(t.vy, g), tx = t.x + wave(now(g) + i * 300, 1600, 3);   // drifting up
+        if (!t.alive || ty > SCREEN_H + 30) continue;
+        if (i == g.sel) rrect(tx - 34, ty - 32, tx + 34, ty + 32, 14, BLACK, LILAC, 2);   // buttons
+        icon(IC_STAR, 6, tx - UP_ICON_W * 3, ty - UP_ICON_H * 3);
     }
     particles(g);
 }
@@ -348,8 +593,13 @@ static void scene_egg(const Game& g) {
     text("YUMURTA", SCREEN_W / 2, 52, 2, YELLOW);
     text("BİR ŞEY KIPIRDIYOR...", SCREEN_W / 2, 74, 1, DIM);
     int wob = 0;
-    if (g.wobbling) wob = ((g.clock_ms / 60) & 1) ? 6 : -6;
-    else if (g.s.egg_ms > EGG_HATCH_MS * 2 / 3) wob = g.frame ? 2 : -2;   // restless near the end
+    u32 t = g.clock_ms + g.acc_ms;
+    if (g.wobbling) {                      // a damped wobble after each tap
+        u32 p = t - (g.wobble_end - WOBBLE_MS);
+        if (p < WOBBLE_MS) wob = wave(p, 130, 9) * (int)(WOBBLE_MS - p) / WOBBLE_MS;
+    } else if (g.s.egg_ms > EGG_HATCH_MS * 2 / 3) {
+        wob = wave(t, 900, 3);             // restless near the end
+    }
     int x0 = (SCREEN_W - 160) / 2 + wob, y0 = 118;
     blit(UP_EGG, UP_EGG_W, UP_EGG_H, 8, x0, y0, PAL);
     int stage = g.taps;
@@ -358,6 +608,7 @@ static void scene_egg(const Game& g) {
     cracks(x0, y0, stage);
     ellipse(SCREEN_W / 2, 318, 90, 9, GROUND1);
     text("DOKUN, ÇATLASIN!", SCREEN_W / 2, 360, 2, INK);
+    if (g.taps == 0) hand_hint(g, SCREEN_W / 2 + 70, 250);     // wordless: tap here
     for (int i = 0; i < EGG_TAPS; i++)
         ellipse(SCREEN_W / 2 - 48 + i * 24, 404, 6, 6, i < g.taps ? YELLOW : TRACK);
 }
@@ -375,25 +626,26 @@ static void scene_hatch(const Game& g) {
         }
     } else {                               // and out she pops, growing in
         particles(g);                      // confetti behind her, not on her face
-        int scale = t < 900 ? 3 : t < 1100 ? 4 : 5;
-        unicorn_front(g, M_HAPPY, 90, scale);
+        int scale = t < 820 ? 3 : t < 940 ? 4 : 5;
+        int bounce = t < 940 ? 0 : arc(t - 940, 360, 14);
+        unicorn_front(g, M_HAPPY, 90 + bounce, scale);
         sparkle(70, 140 + 8 * g.frame, 5, YELLOW);
         sparkle(300, 120 - 8 * g.frame, 4, PINK);
         sparkle(84, 300, 3, LILAC);
-        if (t >= 1100) text("MERHABA!", SCREEN_W / 2, 372, 3, YELLOW);
+        if (t >= 940) text("MERHABA!", SCREEN_W / 2, 372 + arc(t - 940, 360, 8), 3, YELLOW);
         return;
     }
     particles(g);
 }
 
 static void scene_info(const Game& g) {
-    static const char* says[] = {"İYİYİM!", "ÇOK MUTLUYUM!", "KARNIM AÇ!", "UYKUM VAR...", "BENİMLE İLGİLEN!"};
+    static const char* says[] = {"İYİYİM!", "ÇOK MUTLUYUM!", "KARNIM AÇ!", "UYKUM VAR...", "SARILALIM MI?"};
     static const int icons[NSTATS] = {IC_APPLE, IC_HEART, IC_STAR, IC_BUBBLE};
     Mood m = g.mood();
     // sound on/off toggle (hit box SOUND_X0 / SOUND_Y1 in unicorn.h), clear of the rounded corner
-    rrect(SOUND_X0 + 8, 14, SCREEN_W - 30, 40, 10, SEL, g.s.muted ? TRACK : PAL[UP_ACCENT[g.s.character]], 2);
-    text(g.s.muted ? "SES KAPALI" : "SES AÇIK", (SOUND_X0 + 8 + SCREEN_W - 30) / 2, 23, 1,
-         g.s.muted ? DIM : INK);
+    bool off = g.volume() == VOL_OFF;
+    rrect(SOUND_X0 + 8, 14, SCREEN_W - 30, 40, 10, SEL, off ? TRACK : PAL[UP_ACCENT[g.s.character]], 2);
+    text(off ? "SES KAPALI" : "SES AÇIK", (SOUND_X0 + 8 + SCREEN_W - 30) / 2, 23, 1, off ? DIM : INK);
     text(UP_NAMES[g.s.character], SCREEN_W / 2, 52, 2, PAL[UP_ACCENT[g.s.character]]);
     unicorn_front(g, m, 72);
     text(says[m], SCREEN_W / 2, 326, 2, INK);
@@ -415,7 +667,9 @@ void render(const Game& g, u16* fb) {
     case SC_HATCH: scene_hatch(g); break;
     case SC_INFO:  scene_info(g); break;
     case SC_GAME:  scene_game(g); break;
-    case SC_EAT:   home_like(g, ST_EAT, "YEMEK YİYOR", false); break;
+    case SC_EAT:   home_like(g, ST_EAT, "YEMEK YİYOR", false, -1, 0, false); break;
+    case SC_FEED:  scene_feed(g); break;
+    case SC_SETTINGS: scene_settings(g); break;
     case SC_PLAY: {                        // celebration after the mini-game
         utoa(g.score, line);
         int n = 0;
@@ -423,12 +677,17 @@ void render(const Game& g, u16* fb) {
         const char* tail = " YILDIZ! ALKIŞ!";
         for (int i = 0; tail[i]; i++) line[n++] = tail[i];
         line[n] = 0;
-        home_like(g, ST_PLAY, line, false);
+        squash_now = g.calm() ? 0 : squash_for(now(g) % 700, 700 - SQUASH_MS);
+        home_like(g, ST_PLAY, line, false, 0, g.calm() ? 0 : arc(now(g) % 700, 700 - SQUASH_MS, 30), false);
+        squash_now = 0;
         break;
     }
-    case SC_WASH:  home_like(g, ST_WASH, "BANYO ZAMANI", false); break;
-    case SC_SLEEP: home_like(g, ST_SLEEP, "UYUYOR · İYİ GECELER", true); break;
-    case SC_REFUSE: home_like(g, M_SLEEPY, "ÇOK YORGUN, OYNAYAMAZ", false); break;
+    case SC_WASH:  home_like(g, ST_WASH, "BANYO ZAMANI", false, -1, 0, false); break;
+    case SC_SLEEP: home_like(g, ST_SLEEP, "UYUYOR · İYİ GECELER", true, 0, wave(now(g), 3200, 2) + 2); break;
+    case SC_LEAVE: walker(g, "ARKADAŞLARI ÇAĞIRIYOR", "İŞİM VAR!"); break;
+    case SC_RETURN: walker(g, "EVE DÖNDÜ", g.vel_x ? (const char*)0 : "GELDİM!"); break;
+    case SC_AWAY:  scene_away(g); break;
+    case SC_REFUSE: scene_refuse(g); break;
     default:       scene_home(g); break;
     }
 }

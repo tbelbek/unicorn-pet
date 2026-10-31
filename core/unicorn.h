@@ -15,26 +15,34 @@ enum { SCREEN_W = 368, SCREEN_H = 448 };
 inline int iabs(int v) { return v < 0 ? -v : v; }
 
 // Platform -> core
-enum Input { IN_NEXT = 1, IN_SELECT = 2, IN_TOUCH = 3, IN_SHAKE = 4 };
+enum Input { IN_NEXT = 1, IN_SELECT = 2, IN_TOUCH = 3, IN_SHAKE = 4,
+             IN_PARENT = 5 };   // platform: BOOT held PARENT_HOLD_MS (door: recall; else: settings)
 // Core -> platform, returned by Game::tick
 enum Flags { F_REDRAW = 1, F_SCREEN_ON = 2, F_SAVE = 4, F_SOUND = 8 };   // F_SOUND: call take_sfx()
 
 // Sound cues. The melodies live in sound.cpp so the board and the emulator play the same notes.
 enum Sfx { SFX_NONE, SFX_TAP, SFX_HATCH, SFX_EAT, SFX_PLAY, SFX_WASH, SFX_SLEEP, SFX_WAKE, SFX_REFUSE,
-           SFX_INFO, SFX_PET, SFX_POP, SFX_CHEER, SFX_COUNT };
+           SFX_INFO, SFX_PET, SFX_POP, SFX_CHEER, SFX_BYE, SFX_KNOCK, SFX_HELLO, SFX_COUNT };
 struct Note { u16 hz, ms; };             // hz = 0 is a rest
 const Note* melody(int sfx, int* count);
 
 enum Stat { HUNGER, HAPPY, ENERGY, CLEAN, NSTATS };
 enum { MAX_STAT = 10000 };
 
-// SC_GAME is appended so existing scene numbers (emulator, saves) stay put.
-enum Scene { SC_EGG, SC_HATCH, SC_HOME, SC_EAT, SC_PLAY, SC_WASH, SC_SLEEP, SC_INFO, SC_REFUSE, SC_GAME };
+// New scenes are appended so existing scene numbers (emulator) stay put.
+// LEAVE/AWAY/RETURN: after PLAY_LIMIT_MS of screen time she has "things to do" and goes out,
+// leaving a do-not-disturb sign on the door, so the screen stays dark for a while.
+enum Scene { SC_EGG, SC_HATCH, SC_HOME, SC_EAT, SC_PLAY, SC_WASH, SC_SLEEP, SC_INFO, SC_REFUSE, SC_GAME,
+             SC_LEAVE, SC_AWAY, SC_RETURN, SC_FEED, SC_SETTINGS };   // FEED: pick a snack
 enum Mood { M_IDLE, M_HAPPY, M_HUNGRY, M_SLEEPY, M_SAD };
 enum Menu { MENU_FEED, MENU_PLAY, MENU_SLEEP, MENU_WASH, MENU_COUNT };
 enum Treat { TREAT_APPLE, TREAT_STRAWBERRY, TREAT_CARROT, TREAT_COUNT };
 enum Idle { IDLE_NONE, IDLE_BLINK, IDLE_WALK, IDLE_HOP };
-enum Particle { P_NONE, P_HEART, P_SPARKLE, P_BUBBLE, P_CRUMB, P_STAR, P_CONFETTI };
+enum Particle { P_NONE, P_HEART, P_SPARKLE, P_BUBBLE, P_CRUMB, P_STAR, P_CONFETTI, P_RING };
+// Parent settings (stored in the save; 0 always means "default")
+enum Volume { VOL_NORMAL, VOL_LOW, VOL_OFF };
+enum Opt { OPT_CALM = 1, OPT_NO_SHAKE = 2 };      // calm: no bobbing/hops, fewer particles
+enum SettingRow { SET_VOLUME, SET_LIMIT, SET_BREAK, SET_BRIGHT, SET_CALM, SET_SHAKE, SET_EXIT, SET_ROWS };
 
 // Tunables (per game minute unless noted). Time only passes while the device is on:
 // powered off = the unicorn sleeps and nothing decays.
@@ -47,10 +55,20 @@ enum {
     GAME_MS = 15000, GAME_TARGETS = 3, GAME_BONUS = 100, GAME_BONUS_MAX = 1500, CELEBRATE_MS = 3000,
     NEED_LOW = 2500,                     // below this a need shows on the face
     ACTION_MS = 4000, REFUSE_MS = 2500, HATCH_MS = 3000, INFO_MS = 6000,
-    EGG_HATCH_MS = 60000, EGG_TAPS = 5, WOBBLE_MS = 300,
+    EGG_HATCH_MS = 60000, EGG_TAPS = 5, WOBBLE_MS = 400,
     SCREEN_OFF_MS = 20000, AUTOSAVE_MS = 5 * 60000,
-    STEP_MS = 100,                       // cosmetic simulation step (particles, walking, mini-game)
-    WALK_RANGE = 40, WALK_SPEED = 2,     // px from centre / px per step
+    PLAY_LIMIT_MS = 10 * 60000,          // screen-on play time before she goes out
+    AWAY_MS = 30 * 60000,                // how long she stays out (powered time)
+    REST_RESET_MS = 15 * 60000,          // this long with the screen dark counts as a break
+    AWAY_SCREEN_OFF_MS = 5000,           // the door screen goes dark quickly
+    LEAVE_MS = 4600, RETURN_MS = 3000,
+    STEP_MS = 100,                       // simulation step; render interpolates between steps
+    WALK_RANGE = 40, WALK_SPEED = 2,     // px from centre / px per step (20 px/s)
+    PARENT_HOLD_MS = 5000,               // BOOT held this long: door -> call her back, else settings
+    NAP_MS = 60000, NAP_BONUS = 2500,    // a one-minute nap is enough to play again
+    FEED_PICK_MS = 8000,                 // snack choice waits this long, then takes the highlighted one
+    PRESS_MS = 260, SQUASH_MS = 140,     // button press pop / landing squash
+    FRIEND_MS = 1400,                    // a friend comes to pick her up
     NPART = 16,
 };
 
@@ -62,9 +80,12 @@ struct Save {
     u32 age_s;                // powered lifetime since hatching
     u16 stat[NSTATS];
     u32 egg_ms;
+    u16 away_s, play_s;       // v2: time left out of the house, screen-time used
+    u32 away_until;           // v3: wall-clock second she comes back (0 = no clock, count down)
+    u8 volume, limit_min, break_min, bright, opts, pad[3];   // v4: parent settings, 0 = default
     u32 check;                // FNV-1a over everything above
 };
-enum { SAVE_VERSION = 1, SAVE_SIZE = sizeof(Save) };
+enum { SAVE_VERSION = 4, SAVE_SIZE = sizeof(Save), SAVE_V1_SIZE = 24, SAVE_V2_SIZE = 28, SAVE_V3_SIZE = 32 };
 
 struct Part { i16 x, y; i8 vx, vy; u8 kind, life, col, pad; };
 struct Target { i16 x, y; i8 vy; u8 alive; };
@@ -77,10 +98,15 @@ struct Game {
     // cosmetic, transient
     u32 clock_ms, acc_ms, crng;           // acc_ms: time not yet simulated (< STEP_MS)
     i16 pet_x, walk_to;
+    i8 vel_x;                             // px per step right now, for render interpolation
     i8 facing;                        // 1 = looking right, -1 = mirrored
     u8 idle_act, treat, score, sel, wash_messes, celebrated;
     u32 idle_next, idle_end, pet_react_end, pet_gain_at, wobble_end;   // deadlines, see due()
     u8 petting, pet_cooling, wobbling;
+    u8 hint_pet, napped, press_item, set_row, battery;   // battery: % from the PMU, 0 = unknown
+    u32 press_end, sleep_ms;
+    u32 play_ms, dark_ms, away_ms;        // screen time used, dark streak, time left out
+    u32 wall_s;                           // wall clock from the board's RTC, 0 = unknown
     Part part[NPART];
     Target tgt[GAME_TARGETS];
 
@@ -90,6 +116,18 @@ struct Game {
     u32 tick(u32 dt_ms);                         // advance time, returns Flags
     void input(int type, int x, int y);
     int take_sfx();                              // pending cue (once), SFX_NONE if muted
+    // Wall-clock seconds from an RTC that keeps running while the board is off (0 = none).
+    // Only the time she spends out with friends uses it; needs still freeze while powered off.
+    void set_wall(u32 epoch_s);
+    void set_battery(int percent) { battery = (u8)(percent < 0 ? 0 : percent > 100 ? 100 : percent); }
+
+    // effective parent settings
+    u32 play_limit_ms() const { return (s.limit_min ? s.limit_min : PLAY_LIMIT_MS / 60000) * 60000u; }
+    u32 break_ms() const { return (s.break_min ? s.break_min : AWAY_MS / 60000) * 60000u; }
+    int volume() const { return s.muted ? (int)VOL_OFF : s.volume; }
+    int brightness() const { return s.bright ? s.bright : 180; }   // AMOLED level 1..255
+    bool calm() const { return s.opts & OPT_CALM; }
+    int recommended() const;                     // menu item her needs point at, -1 = none
 
     Mood mood() const;
     int messes() const;                          // rainbow messes on the floor, 0..3
@@ -104,6 +142,7 @@ private:
     void minute();
     void hatch();
     void wake();
+    void come_back();
     void step();
     void advance(u32 ms);
     void scene_timers();
@@ -112,6 +151,12 @@ private:
     void pet();
     void pop(int i);
     void spawn_target(int i, int y);
+    bool counts_as_play() const;
+    void start_leave();
+    void eat(int t);
+    void press(int item);
+    void settings_input(int type, int x, int y);
+    void sync_away();
     void burst(int kind, int x, int y, int n);
     void cue(int id) { sfx = (u8)id; }
     u32 random();

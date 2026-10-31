@@ -95,6 +95,7 @@
         <dt>Yaş</dt><dd id="age">–</dd>
         <dt>Ekran</dt><dd id="scr">–</dd>
         <dt>Ses</dt><dd id="snd">–</dd>
+        <dt>Ekran süresi</dt><dd id="play">–</dd>
       </dl>
     </section>
     <section>
@@ -106,26 +107,32 @@
       <h2>GÜÇ VE KAYIT</h2>
       <div class="seg">
         <button class="b" id="shake">SALLA</button>
+        <button class="b" id="timesup" title="Ekran süresini 10 dakikaya getirir (test)">10 DK DOLDU</button>
+        <button class="b" id="parent" title="Cihazda: BOOT tuşunu 5 sn basılı tut">EBEVEYN (BOOT 5 SN)</button>
         <button class="b" id="power">GÜCÜ KES</button>
         <button class="b" id="size">BÜYÜT</button>
         <button class="b" id="shot">EKRAN GÖRÜNTÜSÜ</button>
         <button class="b warn" id="reset">YENİ YUMURTA</button>
       </div>
+      <label class="stat" style="grid-template-columns:auto 1fr"><input type="checkbox" id="rtc" checked>
+        <span>Saat yongası (RTC): güç kapalıyken de dışarıdaki mola süresi işler</span></label>
       <p class="hint">Güç kesilince zaman durur (cihazdaki gibi); açınca son kayıttan devam eder.
-        Unicorn'a dokununca sevilir (kalpler); üstteki isme dokununca bilgi ekranı açılır, sesi
-        oradan kapatabilirsin. Telefonda gerçekten sallayabilirsin.</p>
+        Unicorn'a dokununca sevilir (kalpler); üstteki isme dokununca bilgi ekranı açılır.
+        EBEVEYN düğmesi (cihazda BOOT 5 sn): kapıda unicorn'u geri çağırır, başka ekranlarda ebeveyn
+        ayarlarını açar (ses, oturum, mola, parlaklık, sakin mod, sallama). Telefonda gerçekten sallayabilirsin.</p>
     </section>
   </div>
 </main>
 
 <script type="module">
-const W = 368, H = 448, KEY = "unicorn-pet-save";
+const W = 368, H = 448, KEY = "unicorn-pet-save", WALL_KEY = "unicorn-pet-wall-offset";
 const SCENES = ["Yumurta", "Çıkıyor", "Ev", "Yemek", "Kutlama", "Banyo", "Uyku", "Bilgi (yüz)", "Çok yorgun",
-                "Yıldız yakala"];
+                "Yıldız yakala", "Dışarı çıkıyor", "Dışarıda (kapı)", "Eve dönüyor", "Yiyecek seçiyor",
+                "Ebeveyn ayarları"];
 const MOODS = ["Normal", "Mutlu", "Aç", "Uykulu", "Üzgün"];
 const CHARS = ["Pamuk", "Gece Yıldızı", "Şeker", "Deniz"];
 const STATS = ["Tokluk", "Mutluluk", "Enerji", "Temizlik"];
-const IN = { NEXT: 1, SELECT: 2, TOUCH: 3, SHAKE: 4 }, F = { REDRAW: 1, SCREEN_ON: 2, SAVE: 4, SOUND: 8 };
+const IN = { NEXT: 1, SELECT: 2, TOUCH: 3, SHAKE: 4, PARENT: 5 }, F = { REDRAW: 1, SCREEN_ON: 2, SAVE: 4, SOUND: 8 };
 
 const { instance } = await WebAssembly.instantiateStreaming(fetch("unicorn.wasm"), {});
 const w = instance.exports;
@@ -133,6 +140,10 @@ const $ = (id) => document.getElementById(id);
 const canvas = $("screen"), ctx = canvas.getContext("2d"), img = ctx.createImageData(W, H);
 const device = $("device");
 let speed = 1, powered = true, screenOn = true;
+// A virtual wall clock playing the board's RTC: it follows the speed buttons and keeps running
+// while the power is cut; its lead over real time survives page reloads.
+let wallMs = Date.now() + Number(localStorage.getItem(WALL_KEY) || 0);
+const wallNow = () => ($("rtc").checked ? Math.floor(wallMs / 1000) : 0);
 
 function blit() {
   const fb = new Uint16Array(w.memory.buffer, w.up_fb(), W * H), d = img.data;
@@ -149,9 +160,12 @@ function save() {
   const n = w.up_save();
   const bytes = new Uint8Array(w.memory.buffer, w.up_save_buf(), n);
   localStorage.setItem(KEY, btoa(String.fromCharCode(...bytes)));
+  localStorage.setItem(WALL_KEY, String(Math.round(wallMs - Date.now())));
 }
 function boot() {                                   // like the firmware: fresh state, then NVS
   w.up_init((Math.random() * 2 ** 32) >>> 0);
+  w.up_set_wall(wallNow());                         // like the firmware: read the RTC before NVS
+  navigator.getBattery?.().then((b) => w.up_set_battery(Math.round(b.level * 100)));
   const saved = localStorage.getItem(KEY);
   if (saved) {
     const bytes = Uint8Array.from(atob(saved), (c) => c.charCodeAt(0));
@@ -168,9 +182,13 @@ function input(type, x = 0, y = 0) {
   step(0);
 }
 // ---- sound: the core's melody table, played as a square wave like the board does ------
-let audio;
+let audio, voices = [];
 function play(id) {
+  const vol = [0.05, 0.02, 0][w.up_volume()];          // parent setting: normal / low / off
   if (!id) return;
+  for (const o of voices) try { o.stop(); } catch {}     // a new cue (or "off") cuts the old one
+  voices = [];
+  if (!vol) return;
   audio ??= new AudioContext();
   if (audio.state === "suspended") audio.resume();
   const n = w.up_melody_len(id), notes = new Uint16Array(w.memory.buffer, w.up_melody(id), n * 2);
@@ -180,19 +198,26 @@ function play(id) {
     if (hz) {
       const o = audio.createOscillator(), g = audio.createGain();
       o.type = "square"; o.frequency.value = hz;
-      g.gain.setValueAtTime(0.05, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
       o.connect(g).connect(audio.destination); o.start(t); o.stop(t + dur);
+      voices.push(o);
     }
     t += dur;
   }
 }
 
+function silenceIfOff() {
+  if (w.up_volume() === 2 && voices.length) { for (const o of voices) try { o.stop(); } catch {} voices = []; }
+}
 function step(dt) {
+  w.up_set_wall(wallNow());
   const f = w.up_tick(Math.max(0, dt) >>> 0);
   if (f & F.SAVE) save();
   if (f & F.SOUND) play(w.up_take_sfx());
+  silenceIfOff();
   const on = !!(f & F.SCREEN_ON);
   if (on && (f & F.REDRAW || !screenOn)) blit();
+  canvas.style.filter = `brightness(${(0.35 + 0.65 * w.up_brightness() / 255).toFixed(2)})`;
   if (!on && screenOn) black();
   screenOn = on;
   device.classList.toggle("screen-off", !on);
@@ -203,8 +228,10 @@ let last = performance.now();
 function frame(now) {
   // clamp both ways: the first rAF timestamp can be *earlier* than performance.now() taken at
   // load, and a negative dt would wrap to ~49.7 days once it crosses into the wasm u32
-  const real = Math.max(0, Math.min(now - last, 250));
+  const raw = Math.max(0, now - last);            // uncapped: a hidden tab still lets time pass
+  const real = Math.min(raw, 250);                // ...but the simulation takes it in small bites
   last = now;
+  wallMs += raw * speed;                          // the RTC runs on, powered or not
   if (powered) step(Math.round(real * speed));
   if (powered) panel();
   requestAnimationFrame(frame);
@@ -228,6 +255,8 @@ function shake() {
   input(IN.SHAKE);
 }
 $("shake").onclick = shake;
+$("parent").onclick = () => input(IN.PARENT);
+$("timesup").onclick = () => { w.up_set_play_ms(10 * 60000); input(IN.NEXT); };
 // phones: a real shake (same idea as the IMU threshold on the board)
 let lastShake = 0;
 addEventListener("devicemotion", (e) => {
@@ -262,6 +291,9 @@ function panel() {
   $("age").textContent = `${Math.floor(a / 86400)} g ${Math.floor(a / 3600) % 24} sa ${Math.floor(a / 60) % 60} dk`;
   $("scr").textContent = !powered ? "güç yok" : screenOn ? "açık" : "kapalı (20 sn boşta)";
   $("snd").textContent = w.up_muted() ? "kapalı" : "açık";
+  const away = w.up_away_ms();
+  $("play").textContent = away ? `dışarıda, ${Math.ceil(away / 60000)} dk sonra döner`
+                               : `${Math.floor(w.up_play_ms() / 60000)} / 10 dk`;
   sliders.forEach((s, i) => {
     const v = w.up_stat(i);
     if (document.activeElement !== s.range) s.range.value = v;
@@ -284,7 +316,7 @@ $("shot").onclick = () => {
   const a = document.createElement("a");
   a.download = `unicorn-${Date.now()}.png`; a.href = canvas.toDataURL(); a.click();
 };
-$("reset").onclick = () => { localStorage.removeItem(KEY); boot(); };
+$("reset").onclick = () => { localStorage.removeItem(KEY); localStorage.removeItem(WALL_KEY); wallMs = Date.now(); boot(); };
 
 boot();
 requestAnimationFrame(frame);
