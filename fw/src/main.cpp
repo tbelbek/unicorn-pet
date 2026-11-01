@@ -29,12 +29,16 @@ static const bool TILT_FLIP = false;                      // VERIFY: tilting rig
 static const uint8_t BRIGHTNESS = 180;                    // indoor toy: no need for full AMOLED
 static const uint32_t SLEEP_POLL_US = 200000;             // light-sleep wake to poll PWR (no GPIO wake)
 static const float SHAKE_G = 1.2f;                        // |a| - 1 g beyond this counts as a jolt
+// Every chip on the shared I2C bus (AXP2101, TCA9554, FT3168, QMI8658, PCF85063, ES8311) does
+// 400 kHz fast mode: touch, PWR and the accelerometer are read 4x faster than at the 100 kHz default.
+static const uint32_t I2C_HZ = 400000;
+static const uint32_t LCD_HZ = 40000000;                  // QSPI clock; VERIFY whether 80 MHz is clean
 
 static Arduino_DataBus* bus = new Arduino_ESP32QSPI(LCD_CS, LCD_SCLK, LCD_D0, LCD_D1, LCD_D2, LCD_D3);
 // Waveshare's examples drive this board as SH8601; the product page also lists CO5300 for
 // newer batches. Build with -DPANEL_CO5300 if the screen stays black.
 #ifdef PANEL_CO5300
-static Arduino_CO5300* lcd = new Arduino_CO5300(bus, GFX_NOT_DEFINED, 0, false, up::SCREEN_W, up::SCREEN_H);
+static Arduino_CO5300* lcd = new Arduino_CO5300(bus, GFX_NOT_DEFINED, 0, up::SCREEN_W, up::SCREEN_H);   // VERIFY offsets
 #else
 static Arduino_SH8601* lcd = new Arduino_SH8601(bus, GFX_NOT_DEFINED, 0, up::SCREEN_W, up::SCREEN_H);
 #endif
@@ -75,16 +79,40 @@ static void expander_init() {
 
 // ---- panel ---------------------------------------------------------------------------------
 
+static bool panel_stale = true;           // the panel's content is unknown: send the whole frame
+
 static void panel_power(bool on) {
     if (on == panel_on) return;
-    if (on) { lcd->displayOn(); lcd->setBrightness(game.brightness()); }
+    if (on) { lcd->displayOn(); lcd->setBrightness(game.brightness()); panel_stale = true; }
     else lcd->displayOff();       // AMOLED: every pixel off, nothing to leak
     panel_on = on;
 }
 
+// Only the rows that changed go over the QSPI bus (a full frame is 330 KB, ~17 ms at 40 MHz).
+// The core redraws on every step while anything moves, but most of the screen stays the same
+// and many frames are identical (breathing moves a pixel every ~200 ms): those send nothing.
+// A checksum per row decides; a full frame every 64 sends heals any (2^-32) collision.
+static uint32_t row_sum[up::SCREEN_H];
+
 static void push_frame() {
+    static uint8_t sends;
     up::render(game, fb);
-    lcd->draw16bitRGBBitmap(0, 0, fb, up::SCREEN_W, up::SCREEN_H);
+    bool full = panel_stale || ++sends % 64 == 0;
+    int y0 = up::SCREEN_H, y1 = -1;
+    const uint32_t* w = (const uint32_t*)fb;
+    for (int y = 0; y < up::SCREEN_H; y++) {
+        uint32_t s = 2166136261u;
+        for (int i = 0; i < up::SCREEN_W / 2; i++) s = (s ^ *w++) * 16777619u;
+        if (s == row_sum[y] && !full) continue;
+        row_sum[y] = s;
+        if (y < y0) y0 = y;
+        y1 = y;
+    }
+    panel_stale = false;
+    if (y1 < 0) return;                    // nothing changed
+    y0 &= ~1;                              // SH8601/CO5300 windows start on an even row...
+    y1 |= 1;                               // ...and span an even number of rows
+    lcd->draw16bitRGBBitmap(0, y0, fb + y0 * up::SCREEN_W, up::SCREEN_W, y1 - y0 + 1);
 }
 
 // ---- inputs --------------------------------------------------------------------------------
@@ -95,7 +123,9 @@ static bool edge(bool down, bool* last, uint32_t* t, uint32_t debounce) {
 }
 
 static bool pwr_pressed() {
-    static bool last; static uint32_t t;
+    static bool last; static uint32_t t, polled;
+    if (panel_on && millis() - polled < 20) return false;   // a button, not a sensor: 50 Hz is plenty
+    polled = millis();
     int v = tca_read(0x00);
     return edge(v >= 0 && ((v >> EXIO_PWR) & 1), &last, &t, 60);
 }
@@ -124,8 +154,12 @@ static bool touch_read(int* x, int* y) {
 static float acc_x, acc_y, acc_z;
 static bool acc_fresh;
 
-static void read_accel() {                // once per loop; shake and tilt both use it
-    acc_fresh = imu_ok && imu.getDataReady() && imu.getAccelerometer(acc_x, acc_y, acc_z);
+static void read_accel() {                // shake and tilt both use it; at most once per sample
+    static uint32_t polled;
+    acc_fresh = false;
+    if (!imu_ok || (panel_on && millis() - polled < 8)) return;   // the IMU samples at ~128 Hz
+    polled = millis();
+    acc_fresh = imu.getDataReady() && imu.getAccelerometer(acc_x, acc_y, acc_z);
 }
 
 static bool shaken() {
@@ -208,12 +242,14 @@ void setup() {
     }
     expander_init();
 
-    if (!lcd->begin()) Serial.println("display init failed");
+    if (!lcd->begin(LCD_HZ)) Serial.println("display init failed");
     lcd->setBrightness(BRIGHTNESS);
 
     imu_ok = imu.begin(Wire, QMI8658_L_SLAVE_ADDRESS, I2C_SDA, I2C_SCL);
     if (imu_ok) {
-        imu.configAccelerometer(SensorQMI8658::ACC_RANGE_4G, SensorQMI8658::ACC_ODR_1000Hz,
+        // accelerometer only, in its low-power 128 Hz mode (allowed with the gyro off): a shake
+        // and a slow tilt need no more, and the loop never reads faster than that anyway
+        imu.configAccelerometer(SensorQMI8658::ACC_RANGE_4G, SensorQMI8658::ACC_ODR_LOWPOWER_128Hz,
                                 SensorQMI8658::LPF_MODE_0);
         imu.enableAccelerometer();
     } else {
@@ -222,6 +258,7 @@ void setup() {
     if (!audio_begin()) Serial.println("ES8311 init failed: sound disabled");
     if (!rtc_begin()) Serial.println("PCF85063 not found: breaks count powered time only");
 
+    Wire.setClock(I2C_HZ);                    // after every driver's begin(), which may reset it
     fb = (uint16_t*)ps_malloc(up::SCREEN_W * up::SCREEN_H * sizeof(uint16_t));
     if (!fb) { Serial.println("no PSRAM for framebuffer"); for (;;) delay(1000); }
 

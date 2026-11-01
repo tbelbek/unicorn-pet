@@ -306,6 +306,13 @@ pio run -d fw -t upload    # flash over USB-C
 - **Screen off:** the panel is switched off and the ESP32 light-sleeps, woken by touch or BOOT
   at once and every 200 ms to poll PWR (the key sits on the IO expander, which has no wake line).
 - **Sound:** ES8311 codec over I2S; the speaker amp is only enabled while a tune plays.
+- **Frames:** the 368x448 frame (330 KB) lives in the 8 MB PSRAM. After each render a checksum
+  per row picks the rows that changed, and only that band goes over the QSPI bus (an identical
+  frame sends nothing); a full frame every 64 sends and after the panel wakes. The core asks for
+  a frame on every step while anything moves, but breathing moves a pixel only every ~200 ms.
+- **Buses and sensors:** the shared I2C bus runs at 400 kHz (every chip on it supports fast
+  mode); PWR is polled at 50 Hz, the accelerometer runs alone in its low-power 128 Hz mode and is
+  read once per sample. `LCD_HZ` (QSPI, 40 MHz) and `I2C_HZ` sit at the top of `fw/src/main.cpp`.
 - **Clock:** the PCF85063 holds UTC (`fw/src/clock.cpp` converts). A new build sets it from
   `__DATE__`/`__TIME__` on its first boot only if the clock is behind that or had stopped (then it
   is off by however long it was between building and flashing, until WiFi corrects it). A stopped
