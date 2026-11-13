@@ -1174,7 +1174,9 @@ void Game::input(int type, int x, int y) {
         screen_on = 1;
         idle_ms = 0;
         if (scene == SC_AWAY || scene == SC_LEAVE) { away_ms = 0; come_back(); }
-        else if (scene == SC_HOME || scene == SC_EGG || scene == SC_INFO || scene == SC_LOUNGE || scene == SC_SLEEP) {
+        // (the egg picker too: it is a new toy's first screen, where a grown-up sets language, WiFi and clock)
+        else if (scene == SC_HOME || scene == SC_EGG || scene == SC_EGG_PICK || scene == SC_INFO || scene == SC_LOUNGE ||
+                 scene == SC_SLEEP) {
             back_scene = scene;
             back_ms = scene_ms;
             back_standing = standing;

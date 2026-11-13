@@ -611,6 +611,16 @@ TEST(the_child_cannot_mute_and_old_mutes_become_volume_off) {
     EQ(k.volume(), VOL_NORMAL);
 }
 
+TEST(parent_settings_before_an_egg_is_chosen) {   // a new toy: set it up before she picks her egg
+    Game g; g.init(1);
+    EQ(g.scene, SC_EGG_PICK);
+    g.input(IN_PARENT, 0, 0);
+    EQ(g.scene, SC_SETTINGS);
+    tap_set(g, 184, SET_EXIT);
+    EQ(g.scene, SC_EGG_PICK);                             // back to choosing, nothing chosen for her
+    CHECK(!(g.s.birth_flags & BIRTH_CHOSEN));
+}
+
 TEST(event_shake) {
     Game g = hatched();
     g.set_stat(ENERGY, 6000);
@@ -3479,6 +3489,7 @@ int main() {
     struct { const char* name; void (*fn)(); } tests[] = {
 #define T(n) {#n, n}
         T(egg_hatches_after_a_minute), T(egg_taps_wobble_crack_and_hatch), T(hatching_cannot_be_skipped),
+        T(parent_settings_before_an_egg_is_chosen),
         T(needs_decay_per_minute), T(one_big_tick_equals_many_small_ones),
         T(big_tick_across_waking_up_matches_small_ticks), T(egg_time_after_hatching_counts_as_life),
         T(never_dies_after_a_week_of_neglect),
