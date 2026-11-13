@@ -113,6 +113,21 @@ def egg(scale, crack=True, wobble=0, key="pamuk"):
     i = ["pamuk", "gece", "seker", "deniz"].index(key)   # column order in assets/eggs.png
     cells = {(x, y): "#%02X%02X%02X" % src.getpixel((i * w + x, y))[:3]
              for y in range(h) for x in range(w) if src.getpixel((i * w + x, y))[3]}
+    # A shell pixel sticking out past both neighbouring rows (every egg's widest row did: 2..17 between
+    # rows of 3..16) gets its own outline wrapped round it: a square nub on each side, big at 8x (seen on
+    # the board). Trim those spurs so the side is a smooth curve.
+    def span(y):
+        xs = [x for (x, yy) in cells if yy == y]
+        return (min(xs), max(xs)) if xs else None
+    for y in range(1, h - 1):
+        s, a, b = span(y), span(y - 1), span(y + 1)
+        if not (s and a and b):
+            continue
+        lo, hi = min(a[0], b[0]), max(a[1], b[1])
+        for x in range(s[0], lo):
+            cells.pop((x, y), None)
+        for x in range(hi + 1, s[1] + 1):
+            cells.pop((x, y), None)
     for (x, y) in list(cells):                      # shade the lower-right rim of the plain shell
         if ((x + 1, y) not in cells or (x, y + 1) not in cells) and cells[(x, y)] == p["body"]:
             cells[(x, y)] = p["shade"]

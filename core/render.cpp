@@ -514,7 +514,7 @@ static void thought(int x, int y, int what = THINK_APPLE) {
     for (int k = 0; k < 3; k++) fill(x + 11 + k * 9, y + 26 + (k & 1) * 4, x + 14 + k * 9, y + 32 + (k & 1) * 4, DROP);
 }
 
-static void sky() {
+static void stars() {
     u32 r = 7;
     for (int i = 0; i < 26; i++) {
         r = r * 1103515245u + 12345u;
@@ -525,6 +525,10 @@ static void sky() {
         static const u16 star[3] = {rgb(0x5A, 0x5F, 0x9E), rgb(0x8C, 0x90, 0xD6), rgb(0xC9, 0xCC, 0xFF)};
         fill(x, y, x + s, y + s, star[(r >> 24) % 3]);
     }
+}
+
+static void sky() {
+    stars();
     static const u16 MOON_COLS[2] = {MOON, rgb(0xE0, 0xC0, 0x70)};
     art(MOON_ART, 13, "md", MOON_COLS, 40, 100, 4);   // top left: her Zz and dreams rise on the right
 }
@@ -842,8 +846,9 @@ static void scene_egg_pick(const Game& g) {
         icon(IC_HEART, 5, SCREEN_W / 2 - UP_ICON_W * 5 / 2, 390);
         if (g.idle_ms > EGG_HINT_MS) hand_hint(g, SCREEN_W / 2 + 40, 420);
     } else if (g.idle_ms > EGG_HINT_MS) {
-        // the fingertip (4 px left of x) right under the first egg's middle; it was under its edge, between eggs
-        hand_hint(g, EX[0] + 4, EY[0] + UP_EGG_H * 2 + 6);
+        // the fingertip (4 px left of x) on the first egg's lower right, tapping it as on the single-egg
+        // screen. Under the egg it read as pointing at the egg below (44 px gap, 32 px hand, 14 px tap)
+        hand_hint(g, EX[0] + 24, EY[0] + 26);
     }
 }
 
@@ -1918,7 +1923,9 @@ static void q_picture(int q, int cx, int cy, int s) {
 // SC_ASK: the card says what she asks, an ear while she listens, the big tick and cross when nobody can
 // understand her, and a star for a yes.
 static void scene_ask(const Game& g) {
-    sky();
+    // an evening question under the stars, a day one on black; never the moon: it peeked out from behind
+    // the card's left edge as a sliver (seen on the board), and the card's corner already says day or evening
+    if (g.phase() != PH_DAY) stars();
     u32 t = now(g);
     int q = g.r_q;
     rrect(56, 24, SCREEN_W - 56, 264, 24, SEL, PAL[UP_ACCENT[g.s.character]], 4);

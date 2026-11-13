@@ -64,7 +64,11 @@ static bool sig_ok(const Manifest& m) {
 
 // GET a release asset: github.com redirects (twice) to its download host. Certificates: see the top.
 static int get(HTTPClient& http, NetworkClientSecure& tls, const char* url) {
-    if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) < 60000) {   // a TLS session needs ~45 KB
+    // mbedTLS takes internal RAM only here (CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC): ~45 KB in all, the biggest
+    // piece a 16 KB record buffer. Asking for one 60 KB block failed on the board with WiFi up (the largest
+    // block was 59 KB, free 125 KB): the total and one buffer-sized block is what a session needs.
+    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < 56000 ||
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) < 24000) {
         Serial.println("update: not enough internal RAM for TLS");
         return -1;
     }
@@ -76,14 +80,16 @@ static int get(HTTPClient& http, NetworkClientSecure& tls, const char* url) {
     return http.GET();
 }
 
-// The manifest, fetched and checked: 0, UST_FAILED (no answer) or UST_BAD_SIG (not ours).
+// The manifest, fetched and checked: 0, UST_LATEST (none published), UST_FAILED (no answer) or UST_BAD_SIG.
 static int fetch_manifest(Manifest* m) {
     NetworkClientSecure* tls = new NetworkClientSecure;   // on the heap: the TLS context is a few KB
     char body[1024];
-    int len = -1, n = 0;
+    int len = -1, n = 0, code;
     {
         HTTPClient http;
-        if (get(http, *tls, URL_MANIFEST) == 200) len = http.getSize();   // GitHub always sends a length
+        code = get(http, *tls, URL_MANIFEST);
+        Serial.printf("update: manifest HTTP %d\n", code);
+        if (code == 200) len = http.getSize();   // GitHub always sends a length
         if (len > 0 && len < (int)sizeof body) {
             NetworkClient* s = http.getStreamPtr();
             for (uint32_t t = millis(); n < len && millis() - t < 10000;) {
@@ -94,6 +100,7 @@ static int fetch_manifest(Manifest* m) {
         http.end();
     }
     delete tls;
+    if (code == 404) return UST_LATEST;    // no release published yet: nothing newer, not a failure
     if (len <= 0 || n != len) return UST_FAILED;
     body[n] = 0;
     if (!parse_manifest(body, m) || !sig_ok(*m)) return UST_BAD_SIG;

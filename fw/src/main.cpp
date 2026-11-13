@@ -271,6 +271,10 @@ static void nap() {
 
 void setup() {
     Serial.begin(115200);
+    // Never wait on the USB port. Plugged into a computer that is not reading it, every print waited up
+    // to 20 x 100 ms for room (HWCDC::write): a log line per touch froze the toy for seconds. Logs are
+    // dropped instead; the bench's dumps wait on purpose (dump_begin/dump_end).
+    Serial.setTxTimeoutMs(0);
     Serial.printf("reset reason %d\n", (int)esp_reset_reason());   // 1 power-on, 3 software, 4 panic, 5-7 watchdogs, 9 brownout
     pinMode(KEY_BOOT, INPUT_PULLUP);
     pinMode(TP_INT, INPUT_PULLUP);
@@ -350,12 +354,16 @@ void setup() {
 //   info | i2c | tap X Y | sel | shake | shot (the framebuffer, base64 RGB565) | mic KIND (0 yes/no, 1 open,
 //   2 level, 3 five raw seconds: the recording back as base64 WAV) | play SFX [LINE [CLIP]] | utc SECONDS_SINCE_2000 |
 //   boot MS (BOOT held that long; "boot 80" is a tap) | awake 0/1 (no screen timeout while testing) |
-//   ask Q (her routine question Q now, as if due) | gain 0-7 | slot 0/1
+//   ask Q (her routine question Q now, as if due) | gain 0-7 | slot 0/1 | wipe (a new egg, restarts)
 // Physical access only: nothing secret is printed (no token, no WiFi password).
 static int diag_mic = -1;                     // a bench recording is under way: its result comes here
 static uint32_t diag_boot_until;              // "boot MS": BOOT held down from the bench
 static bool diag_awake;
 static uint32_t diag_loop_max, diag_loop_slow;   // the longest loop since the last "info", and loops over 50 ms
+
+// A dump is asked for by someone reading the port: wait for room then, or its bytes are lost.
+static void dump_begin() { Serial.setTxTimeoutMs(200); }
+static void dump_end() { Serial.flush(); Serial.setTxTimeoutMs(0); }
 
 static void b64_dump(const uint8_t* p, uint32_t n) {
     static const char T[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -386,7 +394,7 @@ static void diag_poll() {
             if (imu_ok) imu.getAccelerometer(x, y, z);
             Serial.printf("INFO fw=%d up=%lus heap=%u psram=%u scene=%d stage=%d screen=%d bright=%d vol=%d lang=%d "
                           "wall=%lu utc=%lu plugged=%d vbus=%d chg=%d batt=%d%% vbat=%dmV "
-                          "acc=%.2f,%.2f,%.2f store=%s routines=%d names=%d listening=%d rst=%d loopmax=%lums slow=%lu render=%luus push=%luus lat=%lu/%lums n=%lu\n",
+                          "acc=%.2f,%.2f,%.2f store=%s routines=%d names=%d listening=%d rst=%d loopmax=%lums slow=%lu render=%luus push=%luus lat=%lu/%lums n=%lu ifree=%u ilarge=%u\n",
                           FW_VERSION, (unsigned long)(millis() / 1000), (unsigned)ESP.getFreeHeap(),
                           (unsigned)ESP.getFreePsram(), game.scene, game.stage(), game.screen_on,
                           game.screen_brightness(), game.volume(), game.s.lang, (unsigned long)game.wall_s,
@@ -396,7 +404,8 @@ static void diag_poll() {
                           x, y, z, store_where(), game.has_routines, game.has_names, audio_listening(), (int)esp_reset_reason(),
                           (unsigned long)diag_loop_max, (unsigned long)diag_loop_slow,
                           (unsigned long)diag_render_max, (unsigned long)diag_push_max,
-                          (unsigned long)(diag_lat_n ? diag_lat_sum / diag_lat_n : 0), (unsigned long)diag_lat_max, (unsigned long)diag_lat_n);
+                          (unsigned long)(diag_lat_n ? diag_lat_sum / diag_lat_n : 0), (unsigned long)diag_lat_max, (unsigned long)diag_lat_n,
+                          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
             diag_loop_max = diag_loop_slow = diag_render_max = diag_push_max = diag_lat_max = diag_lat_n = diag_lat_sum = 0;
         } else if (!strcmp(cmd, "i2c")) {
             Serial.print("I2C");
@@ -416,9 +425,11 @@ static void diag_poll() {
         } else if (!strcmp(cmd, "shot")) {
             up::render(game, fb);
             panel_stale = true;                   // the next push sends it all again
+            dump_begin();
             Serial.printf("SHOT %d %d\n", up::SCREEN_W, up::SCREEN_H);
             b64_dump((const uint8_t*)fb, up::SCREEN_W * up::SCREEN_H * 2);
             Serial.println("END");
+            dump_end();
         } else if (sscanf(cmd, "mic %d", &a) == 1 && a >= up::LK_YESNO && a <= up::LK_TV) {
             diag_mic = a;
             audio_mic(true);
@@ -427,6 +438,13 @@ static void diag_poll() {
         } else if (sscanf(cmd, "play %d %d %d", &a, &b, &d) >= 1) {
             audio_play(a, b, game.s.lang, d);
             Serial.printf("OK play %d %d %d\n", a, b, d);
+        } else if (!strcmp(cmd, "wipe")) {     // a new egg: the save goes (bench only), then a restart
+            prefs.remove("save");
+            keep_old_save = true;                 // nothing writes it back before the restart
+            Serial.println("OK wipe");
+            Serial.flush();
+            delay(100);
+            ESP.restart();
         } else if (sscanf(cmd, "ask %d", &a) == 1) {
             game.bench_ask(a);
             Serial.printf("OK ask %d scene=%d\n", a, game.scene);
@@ -476,7 +494,7 @@ static void listening(uint32_t f) {
             diag_mic = -1;
             Serial.printf("HEARD kind=%d speech=%d db=%d loud=%d%% len=%lu\n", h.kind, h.speech, h.db,
                           h.loud_pct, (unsigned long)h.len);
-            if (h.wav && h.len) { Serial.println("WAV"); b64_dump(h.wav, h.len); Serial.println("END"); }
+            if (h.wav && h.len) { dump_begin(); Serial.println("WAV"); b64_dump(h.wav, h.len); Serial.println("END"); dump_end(); }
             return;
         }
         if (h.kind == up::LK_LEVEL) game.level_result(h.db, h.loud_pct);
@@ -498,11 +516,6 @@ void loop() {
     game.set_boot(digitalRead(KEY_BOOT) == LOW || (int32_t)(millis() - diag_boot_until) < 0);   // taps, and the grown-up gesture (3 presses, hold the last)
     if (pwr_pressed()) { touch_at = millis(); Serial.println("KEY PWR"); game.input(up::IN_SELECT, 0, 0); }
     { static bool was; bool b = digitalRead(KEY_BOOT) == LOW; if (b && !was) Serial.println("KEY BOOT"); was = b; }
-    { static int was = -2; static uint32_t at; if (millis() - at >= 50) { at = millis();   // bench: the PWR line raw
-        int v = tca_read(0x00); if (v != was) { Serial.printf("EXIO 0x%02X\n", v); was = v; }
-        if (pmu_ok) { pmu.getIrqStatus(); if (pmu.isPekeyShortPressIrq()) Serial.println("PMU PEKEY SHORT");
-                      if (pmu.isPekeyLongPressIrq()) Serial.println("PMU PEKEY LONG");
-                      if (panel_on) pmu.clearIrqStatus(); } } }   // (dark: pwr_pressed() reads and clears it)
     if (touch_read(&x, &y)) { touch_at = millis(); Serial.printf("TOUCH %d %d\n", x, y); game.input(up::IN_TOUCH, x, y); }
     diag_poll();
     read_accel();

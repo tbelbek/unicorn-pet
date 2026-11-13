@@ -11,6 +11,7 @@ import base64, pathlib, struct, sys, time, zlib
 import serial
 
 PORT = "/dev/cu.usbmodem101"
+B64 = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
 
 
 def open_port():
@@ -39,8 +40,10 @@ def reply(s, prefixes, timeout=10.0):
                 b = s.readline().decode("ascii", "replace").strip()
                 if b == "END":
                     return head, base64.b64decode("".join(body))
-                if b:
+                if b and len(b) <= 76 and all(c in B64 for c in b):
                     body.append(b)
+                elif b:                           # another task's log line landed inside the dump
+                    print("  |", b)
         if line.startswith(prefixes) or line[1:].startswith(prefixes):   # (the first byte after open can be lost)
             return line, None
         print("  |", line)                       # the firmware's own log, passed through
@@ -65,10 +68,14 @@ def command(s, cmd, out=None):
         return cmd
     s.write((cmd + "\n").encode())
     if cmd == "shot":
-        head, data = reply(s, ("SHOT", "ERR"), 20)
-        _, w, h = head.split()
-        png(out, int(w), int(h), data)
-        return f"shot -> {out}"
+        for attempt in range(3):              # a log line cut into a base64 line breaks it: take it again
+            head, data = reply(s, ("SHOT", "ERR"), 20)
+            _, w, h = head.split()
+            if len(data) == int(w) * int(h) * 2:
+                png(out, int(w), int(h), data)
+                return f"shot -> {out}"
+            s.write(b"shot\n")
+        raise RuntimeError("shot: the frame never arrived whole")
     if cmd.startswith("mic"):
         line, _ = reply(s, ("OK", "ERR"))
         if line.startswith("ERR"):
