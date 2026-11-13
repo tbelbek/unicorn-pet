@@ -25,6 +25,7 @@ struct Snap {                              // the core's state for /v1/status, r
     u32 rev, local_s;
     int32_t utc_offset;
     u16 r_day, r_ans[Q_COUNT];
+    int rday_now;                          // her routine day now (Game::rday_now), -1 = no trusted clock
     int battery, fw, update, stars;
     bool plugged, valid;
 };
@@ -249,7 +250,7 @@ static String status_json(const Snap& sn, const Settings& st, u32 rev) {
     doc["battery"] = sn.battery; doc["plugged"] = sn.plugged; doc["fw"] = sn.fw; doc["update"] = sn.update;
     JsonObject day = doc["day"].to<JsonObject>();
     JsonArray ans = day["answers"].to<JsonArray>();
-    bool today = sn.local_s && sn.r_day == sn.local_s / 86400;
+    bool today = sn.rday_now >= 0 && sn.r_day == sn.rday_now;
     for (int k = 0; today && k < Q_COUNT; k++) {
         int a = sn.r_ans[k] >> 11, m = sn.r_ans[k] & 2047;
         if (!a || a > ANS_TAP_NO) continue;
@@ -453,6 +454,7 @@ void net_poll(Game& g, uint32_t now) {
         snap.rev = g.s.cfg_rev;
         snap.mark = g.sync_mark();
         snap.r_day = g.s.r_day;
+        snap.rday_now = g.rday_now();
         memcpy(snap.r_ans, g.s.r_ans, sizeof snap.r_ans);
         snap.stars = g.stars_today();
         snap.local_s = g.cal_ok ? g.wall_s : 0;

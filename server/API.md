@@ -85,8 +85,10 @@ page change reaches it within hours; the page says "will reach the toy next time
 Server details (as built, server/parent.py): unknown keys and invalid values in a toy's `settings` are dropped
 (the page refuses them; a date must be a real calendar day); `questions` may be partial (missing keys stay on).
 A status of the wrong shape (not an object, a bad `rev`, `day.answers` not a list) gets 400. The conflict rule is a three-way
-merge against the settings the toy reported last time: a key whose value differs from that report is the
-toy's change and wins; every other key keeps the page's value. `questions` is merged the same way per question,
+merge against what the toy started from: the settings GET /v1/config handed out at the `rev` it reports (kept from
+the GET until the toy acknowledges that rev), or, when it has not fetched since, the settings it reported last
+time. A key whose value differs from that is the toy's change and wins (so a status that arrives after a newer page
+change only acknowledges the older one); `rev` is a uint32 (400 otherwise, and the server's own count wraps); every other key keeps the page's value. `questions` is merged the same way per question,
 so the toy switching one off does not undo the page switching another. After the merge `rev` becomes the toy's rev
 when the toy already has exactly the merged settings (so its next GET is a 304), otherwise one more than
 both. A missing or non-numeric `X-Config-Rev` always gets the full config. `day` is stored under the Mac's

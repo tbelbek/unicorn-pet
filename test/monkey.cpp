@@ -131,7 +131,7 @@ static void check(u32 dt) {
             bool ended = S.now - S.scene_at + SLACK >= natural;   // it may follow an activity that just ended
             RULE(ended && S.scene != SC_AWAY && S.scene != SC_LEAVE && S.scene != SC_EGG && S.scene != SC_EGG_PICK,
                  "a question in the middle of something");
-            u32 day = g.wall_s / 86400, min = g.wall_s / 60;
+            u32 day = g.s.r_day, min = g.wall_s / 60;   // her routine day: wake-up to wake-up
             if (day != S.q_day) { S.q_day = day; std::memset(S.q_count, 0, sizeof S.q_count); S.q_last_min = 0; }
             RULE(++S.q_count[g.r_q] <= 2, "a question asked more than twice a day");
             RULE(!S.q_last_min || min < S.q_last_min || S.clock_back || min - S.q_last_min >= Q_GAP_MIN,

@@ -189,6 +189,26 @@ class Sync(unittest.TestCase):
         P.toy_report(s, {"rev": 1, "settings": {**fetched["settings"], "calm": True}}, today="2026-11-13")
         self.assertEqual((s["settings"]["volume"], s["settings"]["calm"]), (2, True), "a real toy edit still wins")
 
+    def test_served_snapshots_kept_until_acknowledged(self):
+        s = P.new_state()
+        s.pop("served")                   # a state file from before snapshots were kept
+        P.page_change(s, {"volume": 1})
+        fetched = P.config_for(s, 0)       # the GET itself keeps what it handed out
+        for v in (2, 1, 2, 1, 2, 1, 2, 1, 2):  # nine more page changes while the toy's status is out
+            P.page_change(s, {"volume": v})
+        P.page_change(s, {"brightness": 77})
+        P.toy_report(s, {"rev": fetched["rev"], "settings": fetched["settings"]}, today="2026-11-13")
+        self.assertEqual((s["settings"]["volume"], s["settings"]["brightness"]), (2, 77))
+        self.assertNotIn(str(fetched["rev"]), s["served"], "acknowledged: let go")
+        self.assertIsNone(P.config_for(s, s["rev"]))
+
+    def test_launchd_plist_takes_any_path(self):
+        import plistlib
+        run, log = "/Users/x/toys & <games>/server/run.sh", "/Users/x/Library/Logs/a&b.log"
+        d = plistlib.loads(L.launchd_plist(run, log))
+        self.assertEqual((d["ProgramArguments"], d["StandardOutPath"]), (["/bin/sh", run], log))
+        self.assertEqual(d["Label"], "com.unicorn-pet.listener")
+
     def test_rev_stays_a_uint32(self):
         s = P.new_state()
         for bad in (2**32, -1, 2**64):

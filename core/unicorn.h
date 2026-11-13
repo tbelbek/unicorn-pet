@@ -233,6 +233,7 @@ enum {
     Q_AT_WINDOW_MIN = 30,                  // a question at a set time (dinner, water) may come this much later
     R_LISTEN_MS = 30000, R_BUTTONS_MS = 20000, R_REPLY_MS = 5000,   // so a question never wedges
     R_DARK_LINGER_MS = 5000,               // woke the screen for it: dark again this soon after
+    R_CLIP_MAX_MS = 15000,                 // a routine clip is shorter than this (still playing, maybe)
     // TV test mode: once a minute ~1 s of ambient level; two loud checks in a row (sustained, not a slam)
     // make a 5 s sample. At most TV_PER_HOUR an hour, none for TV_SAME_MIN while the same sound goes on.
     TV_CHECK_MS = 60000, TV_LEVEL_DB = -42, TV_SUSTAIN_PCT = 60, TV_PER_HOUR = 6, TV_SAME_MIN = 10,
@@ -326,6 +327,7 @@ struct Game {
     u8 r_q, r_stage, r_back, r_was_dark;  // the question on screen, its stage, where she came from
     u8 listen_req, listen_kind, listen_q, r_sel;   // F_LISTEN: what the platform should do; button cursor
     u16 rclip;                            // a routine clip to say (index + 1), 0 = none
+    u32 r_said;                           // when the last routine clip was handed out (it may still play)
     u32 r_at;                             // when the stage started (stamp)
     u32 r_first[Q_COUNT];                 // minute (day * 1440 + minute) of the first ask, for the re-ask
     u32 r_last;                           // minute of the last question, for the spacing
@@ -422,6 +424,11 @@ struct Game {
     void level_result(int db, int loud_pct);     // dBFS (-90..0) and the share of loud frames, 0..100
     bool routines_on() const { return has_routines && !(s.opts & OPT_NO_ROUTINES); }
     bool holiday() const;                        // holiday mode, or today is in a page's holiday range
+    bool holiday_on(int day) const;              // the same for a local day (-1: unknown)
+    bool free_on(int day) const;                 // a weekend day or a holiday
+    int wake_on(int day) const;                  // that day's wake-up, minute of the day
+    int rday_now(int* min = 0) const;            // her routine day (wake-up to wake-up), -1 = no trusted clock
+    bool question_may_continue() const;
     bool free_day() const;                       // a weekend day or a holiday: no school, later wake-up
     int wake_min() const;                        // today's wake-up time (school days / free days), minute of the day
     int clock_min(int t) const;                  // a ClockSet (bedtime, wake-ups) as a minute of the day
@@ -483,8 +490,9 @@ private:
     void cue(int id, int line = -1);            // a sound, and what she says with it (-1: the usual line)
     void say_clip(int first, int list);          // a routine clip: one of the 10 from `first`, bag `list`
     void check_routine();
-    void routine_day();
-    int question_due(u32 abs_min);
+    void routine_day(int day);
+    void routine_check();
+    int question_due(u32 abs_min, int day, int min);
     void ask(int q);
     void routine_done();
     void routine_input(int type, int x, int y);

@@ -232,9 +232,13 @@ day "what made you happy today?". The schedule is `SCHEDULE` in `tools/routines.
 - **Day:** water at 15:30 on weekends and holidays, dinner at 18:00 every day.
 - **Evening:** from 90 to 30 minutes before bedtime: teeth, toys and, always last, the toilet. Then, between
   19:00 and 5 minutes before bedtime, the open question.
+- **Her day** runs from one wake-up to the next, not from midnight: with a wake-up or bedtime near midnight
+  the whole morning or evening stays one day (the questions, their order, the second tries, the stars), even
+  across 00:00. If the clock is set back across a wake-up, nothing is asked until it is past it again.
 - Each question once a day, at a random moment in its window (a new order every day), at least 8 minutes
   apart; asked once more 10 minutes later if the answer was unclear or silent. Never at bedtime, never with
-  an untrusted clock, never with the volume off; she waits for a meal, a bath, the hatching or a game to end,
+  an untrusted clock, never with the volume off (any of these, or the page switching routines or that question
+  off, ends a question under way at once: she stops listening and stops speaking); she waits for a meal, a bath, the hatching or a game to end,
   and lights a dark screen just for the question (dark again 5 s after). A question asked is saved at once,
   so a power cut does not ask it again. Ten ways to ask and ten answers for every yes and no; the same clip
   never comes again until all ten were said.

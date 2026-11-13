@@ -6,7 +6,6 @@ dst="$HOME/Library/LaunchAgents/com.unicorn-pet.listener.plist"
 launchctl bootout "gui/$(id -u)" "$dst" 2>/dev/null || true
 if [ "${1:-}" = "--remove" ]; then rm -f "$dst"; echo "removed"; exit 0; fi
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-sed -e "s|@RUN@|$here/run.sh|" -e "s|@LOG@|$HOME/Library/Logs/unicorn-listener.log|" \
-  "$here/com.unicorn-pet.listener.plist" > "$dst"
+/usr/bin/python3 "$here/listener.py" --plist "$here/run.sh" "$HOME/Library/Logs/unicorn-listener.log" > "$dst"
 launchctl bootstrap "gui/$(id -u)" "$dst"
 echo "installed; log: ~/Library/Logs/unicorn-listener.log"

@@ -15,6 +15,7 @@ import io
 import json
 import math
 import os
+import plistlib
 import re
 import secrets
 import shutil
@@ -451,7 +452,10 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     rev = -1
                 with self.store.lock:
-                    res = parent.config_for(self.store.load(), rev)
+                    state = self.store.load()
+                    res = parent.config_for(state, rev)
+                    if res is not None:
+                        self.store.save(state)  # what was handed out, for telling its acknowledgement later
                 if res is None:
                     self.send_response(304)
                     self.end_headers()
@@ -628,9 +632,20 @@ def serve(cfg, whisper, port, max_connections=MAX_CONNECTIONS):
     return Server(("0.0.0.0", port), Handler, max_connections)
 
 
+def launchd_plist(run, log):
+    """The login agent (server/install-launchd.sh): paths go in as plist strings, never through a text template."""
+    return plistlib.dumps({
+        "Label": "com.unicorn-pet.listener", "ProgramArguments": ["/bin/sh", str(run)],
+        "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin"},
+        "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 10, "ProcessType": "Interactive",
+        "StandardOutPath": str(log), "StandardErrorPath": str(log)})
+
+
 def main():
     if "--setup" in sys.argv:
         return setup()
+    if len(sys.argv) == 4 and sys.argv[1] == "--plist":  # --plist RUN LOG: the agent's plist on stdout
+        return sys.stdout.buffer.write(launchd_plist(sys.argv[2], sys.argv[3]))
     cfg = load_config()
     if not cfg.get("parent_pin"):
         print("warning: no parent_pin: the parent page only opens on this Mac (run --setup)", file=sys.stderr)

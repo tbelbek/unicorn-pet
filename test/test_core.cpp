@@ -3135,12 +3135,12 @@ TEST(save_v7_loads_as_v8) {
     CHECK(!k.load(buf, SAVE_SIZE));
     Game wk = routine_game();                  // the week moves along: an old star is gone after 7 days
     wk.s.week[0] = 0x7FF; wk.s.week[3] = 3; wk.s.r_day = (u16)(at(2026, 11, 3, 0, 0) / 86400);
-    wk.set_wall(at(2026, 11, 5, 6, 0)); wk.tick(100);   // two days on: the two slots between are cleared
+    wk.set_wall(at(2026, 11, 5, 8, 0)); wk.tick(100);   // two days on: the two slots between are cleared
     EQ(wk.s.r_day, at(2026, 11, 5, 0, 0) / 86400);
     int kept = 0;
     for (int i = 0; i < 7; i++) kept += wk.s.week[i] != 0;
     EQ(kept, 1 + (wk.s.week[3] != 0));
-    wk.set_wall(at(2026, 11, 30, 6, 0)); wk.tick(100);   // weeks later: nothing old survives
+    wk.set_wall(at(2026, 11, 30, 8, 0)); wk.tick(100);   // weeks later: nothing old survives
     for (int i = 0; i < 7; i++) EQ(wk.s.week[i], 0);
 }
 
@@ -3337,7 +3337,7 @@ TEST(review_fixes_routine_pass) {
 
 // The second Codex pass (hunt 14): a question across midnight, routines switched off mid-question, the hello.
 TEST(review_fixes_routine_pass2) {
-    {   // asked at 23:5x, answered after midnight: the answer is the old day's, the new day starts clean after it
+    {   // asked at 23:5x, answered after midnight: her routine day (from the 23:00 wake-up) goes on past midnight
         Game g = routine_game();
         g.s.q_off = (u16)~(1 << Q_BREAKFAST) & ((1 << Q_COUNT) - 1);
         g.set_clock_min(T_WAKE, 23 * 60); g.set_clock_min(T_WAKE_WE, 23 * 60); g.set_clock_min(T_BED, 23 * 60);
@@ -3352,9 +3352,12 @@ TEST(review_fixes_routine_pass2) {
         EQ(g.scene, SC_ASK);                   // still her question
         g.listen_result(ANS_YES);
         run(g, R_REPLY_MS + 500);
-        EQ(g.s.r_day, at(2026, 11, 4, 0, 0) / 86400);
-        EQ(g.s.r_done & 1 << Q_BREAKFAST, 0); EQ(g.stars_today(), 0);   // the new day's breakfast is still to come
-        EQ(g.s.week[(g.s.r_day + 6) % 7], 1 << Q_BREAKFAST);            // the star went to the day she asked
+        EQ(g.s.r_day, at(2026, 11, 3, 0, 0) / 86400);
+        CHECK(g.s.r_done & 1 << Q_BREAKFAST); EQ(g.stars_today(), 1);   // the star is the day she asked
+        Asked a[4];                            // the next routine day starts at the next 23:00: asked again
+        EQ(live(g, at(2026, 11, 4, 0, 1), at(2026, 11, 4, 22, 59), ANS_YES, a, 4), 0);
+        EQ(live(g, at(2026, 11, 4, 22, 59), at(2026, 11, 5, 1, 0), ANS_YES, a, 4), 1);
+        EQ(g.s.r_day, at(2026, 11, 4, 0, 0) / 86400); EQ(g.stars_today(), 1);
     }
     {   // the page switches routines off while she listens: the question ends, a late answer says nothing
         Game g = routine_game();
@@ -3384,13 +3387,45 @@ TEST(review_fixes_routine_pass2) {
 
 // The third Codex pass (hunt 15): windows near midnight, a remote mute mid-question.
 TEST(review_fixes_routine_pass3) {
+    {   // bedtime arrives while she listens: the question ends right then, not at its time-out
+        Game g = routine_game();
+        g.s.q_off = (u16)~(1 << Q_DINNER) & ((1 << Q_COUNT) - 1);
+        g.set_clock_min(T_BED, 18 * 60 + 1);
+        g.set_wall(at(2026, 11, 3, 18, 0) + 59); g.tick(100);
+        EQ(g.scene, SC_ASK);
+        g.listen_req = LREQ_NONE; g.listen_started();
+        g.set_wall(at(2026, 11, 3, 18, 1)); g.tick(100);
+        CHECK(g.scene != SC_ASK); EQ(g.listen_req, LREQ_CANCEL);
+    }
+    {   // the page switches off the very question she is asking: it ends, its answer counts for nothing
+        Game g = routine_game();
+        g.s.q_off = (u16)~(1 << Q_DINNER) & ((1 << Q_COUNT) - 1);
+        g.set_wall(at(2026, 11, 3, 18, 0)); g.tick(100);
+        EQ(g.scene, SC_ASK);
+        g.listen_req = LREQ_NONE; g.listen_started();
+        Settings page = g.settings();
+        page.v[K_QUESTIONS] &= (u16)~(1 << Q_DINNER);
+        g.apply_settings(14, page, 1 << K_QUESTIONS);
+        CHECK(g.scene != SC_ASK); EQ(g.listen_req, LREQ_CANCEL);
+        g.listen_result(ANS_YES);
+        EQ(g.stars_today(), 0); EQ(g.s.r_ans[Q_DINNER], 0);
+        int line, clip;
+        g.take_sfx(&line, &clip); EQ(clip, -1);
+    }
     {   // wake-up and bedtime at 23:30: breakfast in the half hour before midnight, not never
         Game g = routine_game();
         g.s.q_off = (u16)~(1 << Q_BREAKFAST) & ((1 << Q_COUNT) - 1);
         g.set_clock_min(T_WAKE, 23 * 60 + 30); g.set_clock_min(T_WAKE_WE, 23 * 60 + 30); g.set_clock_min(T_BED, 23 * 60 + 30);
-        Asked a[4];
-        EQ(live(g, at(2026, 11, 3, 23, 0), at(2026, 11, 4, 0, 40), ANS_YES, a, 4), 1);
-        EQ(a[0].q, Q_BREAKFAST); CHECK(a[0].minute >= 23 * 60 + 30);
+        Asked a[8];
+        EQ(live(g, at(2026, 11, 3, 23, 0), at(2026, 11, 4, 0, 40), ANS_YES, a, 8), 1);
+        EQ(a[0].q, Q_BREAKFAST);
+        Game m = routine_game();               // all six school-morning questions fit, on both sides of midnight
+        m.set_clock_min(T_WAKE, 23 * 60 + 30); m.set_clock_min(T_WAKE_WE, 23 * 60 + 30); m.set_clock_min(T_BED, 23 * 60 + 30);
+        EQ(live(m, at(2026, 11, 3, 23, 29), at(2026, 11, 4, 0, 40), ANS_YES, a, 8), 6);   // (from 23:30: Tuesday's day)
+        bool after_midnight = false;
+        for (int i = 0; i < 6; i++) after_midnight |= a[i].minute < 60;
+        CHECK(after_midnight);
+        EQ(m.stars_today(), 6); EQ(m.s.r_day, at(2026, 11, 3, 0, 0) / 86400);   // Tuesday's, the school day
     }
     {   // bedtime at 00:30: teeth in the evening before midnight, the happy question just after
         Game g = routine_game();

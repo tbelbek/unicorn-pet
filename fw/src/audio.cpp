@@ -28,7 +28,9 @@ static const int REC_SAMPLES = RATE * REC_MAX_MS / 1000 + PREROLL;
 extern const uint8_t voice_bin[] asm("_binary_data_voice_bin_start");
 extern const uint8_t voice_bin_end[] asm("_binary_data_voice_bin_end");
 
-struct Cue { int16_t sfx, line, clip; uint8_t lang; };
+struct Cue { int16_t sfx, line, clip; uint8_t lang; uint32_t hush; };
+// audio_routine_stop() counts up: a routine clip queued (or playing) under an older count is not said (any more)
+static std::atomic<uint32_t> hush{0};
 static I2SClass i2s;
 static QueueHandle_t cues;
 static volatile bool playing;
@@ -61,7 +63,8 @@ static void play_note(int hz, int ms) {
 
 // One clip of a pack: its Opus packets decoded straight at 16 kHz (libopus, fixed point); a newer cue cuts
 // her short. pack_clip() has checked the whole clip, so a damaged pack (an SD card) plays nothing.
-static bool say(const uint8_t* bin, uint32_t len, int lang, int index) {
+// gen: a routine clip's hush count (it stops when audio_routine_stop() moves on), -1 for her other lines
+static bool say(const uint8_t* bin, uint32_t len, int lang, int index, int64_t gen = -1) {
     up::Clip c;
     if (!dec || !up::pack_clip(bin, len, lang, index, &c)) return false;
     opus_decoder_ctl(dec, OPUS_RESET_STATE);
@@ -71,7 +74,7 @@ static bool say(const uint8_t* bin, uint32_t len, int lang, int index) {
     uint32_t skip = c.pre_skip / 3, left = c.samples, spent = 0;   // pre-skip counts at 48 kHz
     const uint8_t* p;
     int n;
-    while (left && !uxQueueMessagesWaiting(cues) && (n = up::ogg_packet(&c, &p)) > 0) {
+    while (left && !uxQueueMessagesWaiting(cues) && (gen < 0 || gen == hush) && (n = up::ogg_packet(&c, &p)) > 0) {
         uint32_t t0 = micros();
         int got = opus_decode(dec, p, n, pcm, 960, 0);
         spent += micros() - t0;
@@ -94,7 +97,7 @@ static bool say(const uint8_t* bin, uint32_t len, int lang, int index) {
 
 static bool speak(const Cue& c) {
     Pack pk;
-    if (c.clip >= 0) return store_pack(PACK_ROUTINES, &pk) && say(pk.data, pk.len, 0, c.clip);
+    if (c.clip >= 0) return c.hush != hush || (store_pack(PACK_ROUTINES, &pk) && say(pk.data, pk.len, 0, c.clip, c.hush));
     if (!c.line) return false;
     int named = c.lang == up::LANG_TR ? up::name_line(c.sfx, c.line) : -1;   // her name: Turkish only
     if (named >= 0 && store_pack(PACK_NAMES, &pk) && say(pk.data, pk.len, 0, named)) return true;
@@ -138,7 +141,7 @@ static void record(int kind) {
     i2s_channel_enable(i2s.rxChan());      // the microphone's half of I2S only while listening
     int room[VAD_ROOM_FRAMES];             // 100 ms: the ADC settles, the speaker's tail fades, and the room's
     for (int k = 0; k < VAD_ROOM_FRAMES; k++) room[k] = mic_frame(frame);   // level, before she may answer
-    started = true;
+    if (kind <= up::LK_OPEN) started = true;   // the ear shows for her question's own recording only
     Heard h = {kind, false, -90, 0, rec, 44};
     uint32_t n = 0;
     if (kind == up::LK_LEVEL) {            // about a second: the level, and how much of it was loud
@@ -261,7 +264,7 @@ void audio_level(int l) {                  // parent setting: 0 normal, 1 low, 2
 
 void audio_play(int sfx, int line, int lang, int clip) {
     if (level == 2 || !cues || (!sfx && !line && clip < 0)) return;
-    Cue c = {(int16_t)sfx, (int16_t)line, (int16_t)clip, (uint8_t)lang};
+    Cue c = {(int16_t)sfx, (int16_t)line, (int16_t)clip, (uint8_t)lang, hush.load()};
     xQueueOverwrite(cues, &c);
 }
 
@@ -271,6 +274,7 @@ void audio_listen(int kind) {
 }
 
 void audio_listen_cancel() { pending = -1; cancelled = true; }
+void audio_routine_stop() { hush++; }
 bool audio_listening() { return pending >= 0 || active >= 0; }
 
 bool audio_listen_started() {

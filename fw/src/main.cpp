@@ -332,7 +332,7 @@ static void listening(uint32_t f) {
     if (f & up::F_LISTEN) {
         int req = game.listen_req, kind = game.listen_kind;
         game.listen_req = up::LREQ_NONE;
-        if (req == up::LREQ_CANCEL) { audio_listen_cancel(); audio_mic(false); }
+        if (req == up::LREQ_CANCEL) { audio_listen_cancel(); audio_routine_stop(); audio_mic(false); }
         else if (req == up::LREQ_LISTEN) { audio_mic(true); audio_listen(kind); }   // after her question
     }
     if (audio_listen_started()) game.listen_started();

@@ -114,7 +114,7 @@ void Game::set_wall(u32 local_s, bool calendar, u32 utc) {
     if (now && utc_s && now < utc_s) s.away_until = 0;   // the clock went back: count the break's own time
     utc_s = now;
     cal_ok = calendar;
-    if (!calendar) routine_cancel();       // her questions need a trusted clock
+    if (!calendar) routine_check();        // her questions need a trusted clock
     sync_away();
 }
 
@@ -1797,15 +1797,30 @@ enum { BAG_YES = Q_COUNT, BAG_NO = 2 * Q_COUNT, BAG_UNCLEAR = 3 * Q_COUNT, BAG_R
 static_assert(BAGS <= (int)(sizeof(((Game*)0)->bag) / sizeof(u16)), "a shuffle bag per list");
 enum { GREET_BIT = 1 << Q_COUNT };         // r_done: the morning hello is done
 
-bool Game::holiday() const {
+// day: a local day, -1 = unknown (then only holiday mode counts)
+bool Game::holiday_on(int day) const {
     if (s.opts & OPT_HOLIDAY) return true;
-    Cal c = today();
-    for (int i = 0; c.known && i < HOL_MAX; i++)
-        if (s.hol[i][0] && c.day >= s.hol[i][0] && c.day <= s.hol[i][1]) return true;
+    for (int i = 0; day >= 0 && i < HOL_MAX; i++)
+        if (s.hol[i][0] && day >= s.hol[i][0] && day <= s.hol[i][1]) return true;
     return false;
 }
-bool Game::free_day() const { Cal c = today(); return (c.known && c.wday >= 5) || holiday(); }
-int Game::wake_min() const { return clock_min(free_day() ? T_WAKE_WE : T_WAKE); }
+bool Game::free_on(int day) const { return (day >= 0 && calendar((u32)day * 86400u + 1).wday >= 5) || holiday_on(day); }
+int Game::wake_on(int day) const { return clock_min(free_on(day) ? T_WAKE_WE : T_WAKE); }
+static int day_or_unknown(const Cal& c) { return c.known ? c.day : -1; }
+bool Game::holiday() const { return holiday_on(day_or_unknown(today())); }
+bool Game::free_day() const { return free_on(day_or_unknown(today())); }
+int Game::wake_min() const { return wake_on(day_or_unknown(today())); }
+
+// Her routine day runs from one wake-up to the next, so a wake-up or a bedtime near midnight keeps its whole
+// morning (or evening) on one day. -1: no trusted clock. *min: minutes since that day's midnight, so after
+// midnight 1440 and more.
+int Game::rday_now(int* min) const {
+    Cal c = today();
+    if (!c.known) return -1;
+    bool before = c.minute < wake_on(c.day);
+    if (min) *min = c.minute + (before ? 1440 : 0);
+    return c.day - (before ? 1 : 0);
+}
 int Game::clock_min(int t) const {
     int tens = t == T_BED ? s.bed10 : t == T_WAKE ? s.wake10 : s.wake_we10;
     return tens * 10 + (s.min_ones >> 4 * t & 15);
@@ -1815,11 +1830,11 @@ void Game::set_clock_min(int t, int m) {
     if (t == T_BED) s.bed10 = tens; else if (t == T_WAKE) s.wake10 = tens; else s.wake_we10 = tens;
     s.min_ones = (u16)((s.min_ones & ~(15 << 4 * t)) | (m % 10) << 4 * t);
 }
-int Game::stars_today() const { return today().known && today().day == s.r_day ? bits(s.week[s.r_day % 7]) : 0; }
+int Game::stars_today() const { return rday_now() >= 0 && rday_now() == s.r_day ? bits(s.week[s.r_day % 7]) : 0; }
 
 // When question q may be asked today, [from, to) in minutes of the day; false if not today.
-static bool q_window(const Game& g, int q, int* from, int* to) {
-    int wake = g.wake_min(), bed = g.clock_min(T_BED);
+static bool q_window(const Game& g, int q, int day, int* from, int* to) {
+    int wake = g.wake_on(day), bed = g.clock_min(T_BED);
     if (bed < wake) bed += 1440;           // a bedtime after midnight: her evening runs on past 24:00
     switch (Q_WHEN[q]) {
     case QW_AM: *from = wake; *to = wake + 60; break;
@@ -1827,15 +1842,12 @@ static bool q_window(const Game& g, int q, int* from, int* to) {
     case QW_AT: *from = Q_AT[q]; *to = Q_AT[q] + Q_AT_WINDOW_MIN; break;
     default: *from = bed - 30 > 19 * 60 ? bed - 30 : 19 * 60; *to = bed - 5; break;   // what made you happy
     }
-    bool school = !g.free_day();
+    bool school = !g.free_on(day);
     if ((Q_DAYS[q] == QD_SCHOOL && !school) || (Q_DAYS[q] == QD_FREE && school) || (g.s.q_off & (1 << q))) return false;
-    // A window off this day moves onto it; one across midnight keeps its bigger part. shortcut: the smaller
-    // part is not asked (a wake-up or bedtime near midnight only); asking it too needs a routine day that spans
-    // midnight.
-    if (*to <= 0) { *from += 1440; *to += 1440; }
-    else if (*from >= 1440) { *from -= 1440; *to -= 1440; }
-    if (*from < 0) { if (-*from > *to) { *from += 1440; *to = 1440; } else *from = 0; }
-    else if (*to > 1440) { if (*to - 1440 > 1440 - *from) { *from = 0; *to -= 1440; } else *to = 1440; }
+    // on the routine day's axis, [wake, wake + 1440): a window before the wake-up is after the next midnight
+    if (*to <= wake) { *from += 1440; *to += 1440; }
+    if (*from < wake) *from = wake;
+    if (*to > wake + 1440) *to = wake + 1440;
     return *from < *to;
 }
 static int q_group(int q) { return Q_WHEN[q] == QW_PM_LAST ? QW_PM : Q_WHEN[q]; }
@@ -1845,14 +1857,14 @@ static int q_group(int q) { return Q_WHEN[q] == QW_PM_LAST ? QW_PM : Q_WHEN[q]; 
 // others at their time. Worked out from the day alone, so a reboot gets the same plan.
 static int q_plan(const Game& g, int q, u32 day) {
     int from, to;
-    if (!q_window(g, q, &from, &to)) return -1;
+    if (!q_window(g, q, (int)day, &from, &to)) return -1;
     int grp = q_group(q);
     if (grp == QW_AT) return from;
     if (grp == QW_OPEN) return from + (int)(mix(day * 131u + 7) % (u32)((to - from) / 2 + 1));
     int mem[Q_COUNT], n = 0, a, b;
     u32 key[Q_COUNT];
     for (int k = 0; k < Q_COUNT; k++)
-        if (q_group(k) == grp && q_window(g, k, &a, &b)) {
+        if (q_group(k) == grp && q_window(g, k, (int)day, &a, &b)) {
             u32 kk = Q_WHEN[k] == QW_PM_LAST ? 0xFFFFFFFFu : mix(day * 977u + (u32)k) >> 1;
             int j = n++;
             for (; j > 0 && key[j - 1] > kk; j--) { key[j] = key[j - 1]; mem[j] = mem[j - 1]; }
@@ -1871,37 +1883,36 @@ static int q_plan(const Game& g, int q, u32 day) {
     return -1;
 }
 
-void Game::routine_day() {                 // a new day: fresh questions; the week's stars move along
-    Cal c = today();
-    u32 gap = s.r_day && c.day > s.r_day ? c.day - s.r_day : 7;   // the clock went back, or a first day: all
+void Game::routine_day(int day) {          // a new day: fresh questions; the week's stars move along
+    u32 gap = s.r_day && day > s.r_day ? (u32)(day - s.r_day) : 7;   // the clock went back, or a first day: all
     for (u32 k = 1; k <= gap && k <= 7; k++) s.week[(s.r_day + k) % 7] = 0;
-    s.r_day = c.day;
+    s.r_day = (u16)day;
     s.r_asked = s.r_done = 0;
     for (int i = 0; i < Q_COUNT; i++) { s.r_ans[i] = 0; r_first[i] = 0; }
     r_last = 0;
     want_save = 1;
 }
 
-int Game::question_due(u32 now) {
+// now: the absolute minute (spacing, retries); day and m: the routine day and its minute (the windows)
+int Game::question_due(u32 now, int day, int m) {
     if (r_last && now < r_last + Q_GAP_MIN) return -1;   // (a clock set back waits too: never two at once)
-    int m = (int)(now % 1440);
     for (int q = 0; q < Q_COUNT; q++) {
         u16 bit = (u16)(1 << q);
         int from, to;
-        if ((s.r_done & bit) || !q_window(*this, q, &from, &to)) continue;
+        if ((s.r_done & bit) || !q_window(*this, q, day, &from, &to)) continue;
         if (s.r_asked & bit) {             // one more try, ten minutes after the first
             if (!r_first[q]) r_first[q] = now;   // asked before a reboot: ten minutes from now
             if (now >= r_first[q] + Q_REASK_MIN && m < to + Q_REASK_MIN) return q;
             continue;
         }
-        int at = q_plan(*this, q, now / 1440);
+        int at = q_plan(*this, q, (u32)day);
         bool last = Q_WHEN[q] == QW_PM_LAST;
         if (m < at || m >= to + (last ? Q_REASK_MIN + Q_GAP_MIN : 0)) continue;   // (late: after the others' retries)
         if (last) {                        // the last of the evening waits while another may still come, retries too
             bool others = false;
             for (int k = 0; k < Q_COUNT; k++) {
                 int a, b;
-                others |= k != q && q_group(k) == QW_PM && !(s.r_done & (1 << k)) && q_window(*this, k, &a, &b) &&
+                others |= k != q && q_group(k) == QW_PM && !(s.r_done & (1 << k)) && q_window(*this, k, day, &a, &b) &&
                           m < b + ((s.r_asked >> k & 1) ? Q_REASK_MIN : 0);
             }
             if (others) continue;
@@ -1912,16 +1923,18 @@ int Game::question_due(u32 now) {
 }
 
 void Game::check_routine() {
+    routine_check();
     Cal c = today();
-    if (!routines_on() || !c.known) return;
-    if (c.day != s.r_day) {
-        if (scene == SC_ASK) return;       // a question from before midnight: its answer belongs to its own day
-        routine_day();
+    int m, day = rday_now(&m);
+    if (!routines_on() || day < 0) return;
+    if (day != s.r_day) {
+        if (day + 1 == s.r_day) return;    // the clock went back across a wake-up: wait, nothing is asked twice
+        routine_day(day);
     }
     if ((scene != SC_HOME && scene != SC_LOUNGE) || quiet() || party || greeting || memory_new || petting) return;
     u32 now = c.day * 1440u + c.minute;
-    int wake = wake_min();
-    if (!(s.r_done & GREET_BIT) && c.minute >= wake && c.minute < wake + 60) {   // good morning, with her name
+    int wake = wake_on(day);
+    if (!(s.r_done & GREET_BIT) && m >= wake && m < wake + 60) {   // good morning, with her name
         s.r_done |= GREET_BIT;
         want_save = 1;
         if (!screen_on) { screen_on = 1; idle_ms = SCREEN_OFF_MS - R_DARK_LINGER_MS - GREET_MS; }   // briefly
@@ -1929,8 +1942,19 @@ void Game::check_routine() {
         if (scene == SC_HOME) greet();
         return;
     }
-    int q = question_due(now);
+    int q = question_due(now, day, m);
     if (q >= 0) ask(q);
+}
+
+// The one rule for a question under way: it goes on only while she may still ask it (routines on, that
+// question on, not muted or at bedtime, a trusted clock, the same routine day). Checked every step, on an
+// answer and after a page config; otherwise it ends, with its listening and her routine speech.
+bool Game::question_may_continue() const {
+    return routines_on() && !quiet() && !(s.q_off >> r_q & 1) && rday_now() >= 0 && rday_now() == s.r_day;
+}
+void Game::routine_check() {
+    if (scene == SC_ASK ? !question_may_continue() : (rclip || r_said) && (!routines_on() || quiet() || rday_now() < 0))
+        routine_cancel();
 }
 
 // One of the 10 variants of a list, never the same twice until all ten were said (a shuffle bag).
@@ -1947,6 +1971,7 @@ void Game::say_clip(int first, int list) {
     sfx = SFX_NONE;
     voice = V_NONE;
     voice_at = stamp();                    // her other lines keep their distance
+    r_said = stamp();
 }
 
 static int bag_of(const u16* firsts, int q, int base) {   // a list two questions share has one bag
@@ -1986,7 +2011,7 @@ void Game::listen_started() {
 
 void Game::listen_result(int a) {
     if (scene != SC_ASK || r_stage == RS_REPLY) return;
-    if (!today().known || !routines_on() || quiet()) { routine_cancel(); return; }
+    if (!question_may_continue()) { routine_cancel(); return; }
     if (a == ANS_NO_LISTENER) {            // nobody to understand her: the child answers with the buttons
         if (r_stage != RS_BUTTONS) { r_stage = RS_BUTTONS; r_at = stamp(); r_sel = 0; dirty = 1; }
         return;
@@ -2020,12 +2045,14 @@ void Game::listen_result(int a) {
     dirty = 1;
 }
 
-// The clock stopped being trusted, or the routine was switched off: no routine clip is said (the morning hello
-// too), and a question under way ends without a word (with a trusted clock its second try may still come).
+// She may not go on (routine_check): the question ends without a word (its second try may still come), no
+// routine clip is said, and LREQ_CANCEL tells the platform to stop listening and any routine clip it plays.
 void Game::routine_cancel() {
+    bool speaking = rclip || (r_said && since(r_said) < R_CLIP_MAX_MS);
     rclip = 0;
+    r_said = 0;
+    if (scene == SC_ASK || speaking) listen_req = LREQ_CANCEL;
     if (scene != SC_ASK) return;
-    if (r_stage <= RS_LISTEN) listen_req = LREQ_CANCEL;
     routine_done();
 }
 
@@ -2231,7 +2258,7 @@ void Game::apply_settings(u32 rev, const Settings& page, u16 present) {
     s.break_min = (u8)m.v[K_BREAK_MIN];
     opt(OPT_CALM, m.v[K_CALM]);
     opt(OPT_NO_SHAKE, !m.v[K_SHAKE]);
-    if (!routines_on() || quiet()) routine_cancel();   // switched off, muted or bedtime from the page: no question
+    routine_check();                       // switched off, muted, that question off or bedtime from the page
     s.cfg_rev = rev;
     want_save = 1;
     dirty = 1;

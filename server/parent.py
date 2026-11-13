@@ -85,13 +85,7 @@ def new_state():
             "toy": {}, "days": {}, "served": {}}
 
 
-def _serve(state):
-    """Remember the settings GET /v1/config hands out at this rev (the last few revs): a toy that reports them
-    back acknowledges them, it did not change them."""
-    sv = state.setdefault("served", {})
-    sv[str(state["rev"])] = json.loads(json.dumps(state["settings"]))
-    for old in sorted(sv, key=int)[:-8]:
-        del sv[old]
+SERVED_MAX = 32  # snapshots kept for a toy that never reports back (one per GET of a new rev, so few)
 
 
 def page_change(state, patch):
@@ -101,7 +95,6 @@ def page_change(state, patch):
     if new == state["settings"]:
         return False
     state["settings"], state["rev"] = new, (state["rev"] + 1) & REV_MAX
-    _serve(state)
     return True
 
 
@@ -116,8 +109,12 @@ def toy_report(state, body, today=None):
     # What the toy started from: the config it fetched since its last report (served at toy_rev), else what it
     # reported last time. A value that differs from that is the toy's own change; an equal one is just an
     # acknowledgement, even when the page has moved on since (a status that arrives late cannot undo it).
-    served = state.get("served", {}).get(str(toy_rev))
-    base = served if served is not None and toy_rev != state["toy"].get("rev") else state["toy_settings"]
+    sv = state.setdefault("served", {})
+    served = sv.get(str(toy_rev)) if toy_rev != state["toy"].get("rev") else None
+    base = served if served is not None else state["toy_settings"]
+    if served is not None:  # acknowledged (with any older one): the toy is past them
+        for k in [k for k in sv if int(k) <= toy_rev]:
+            del sv[k]
     page = state["settings"]
     merged = {**page, **{k: v for k, v in toy.items() if v != base.get(k)}}
     if "questions" in toy:  # per question: the toy switching WATER off does not undo the page switching TEETH_AM off
@@ -127,7 +124,6 @@ def toy_report(state, body, today=None):
     state["settings"], state["toy_settings"] = merged, toy_full
     # equal to what the toy has: its rev, so its next GET is a 304; otherwise newer than both
     state["rev"] = (max(state["rev"], toy_rev) + (0 if merged == toy_full else 1)) & REV_MAX
-    _serve(state)
     st = state["toy"]
     st.update(rev=toy_rev, last_seen=datetime.now().astimezone().isoformat(timespec="seconds"))
     for k, ok in (("battery", lambda v: type(v) is int and -1 <= v <= 100), ("plugged", lambda v: type(v) is bool),
@@ -149,8 +145,16 @@ def toy_report(state, body, today=None):
 
 
 def config_for(state, toy_rev):
-    """GET /v1/config: None (= 304) when the toy already has this rev."""
-    return None if toy_rev == state["rev"] else {"rev": state["rev"], "settings": state["settings"]}
+    """GET /v1/config: None (= 304) when the toy already has this rev. Otherwise the settings handed out are kept
+    in state["served"] (the caller saves the state) until the toy acknowledges that rev: a value it reports back
+    unchanged is then an acknowledgement, not its own change (a status that arrives late cannot undo the page)."""
+    if toy_rev == state["rev"]:
+        return None
+    sv = state.setdefault("served", {})
+    sv[str(state["rev"])] = json.loads(json.dumps(state["settings"]))
+    for old in sorted(sv, key=int)[:-SERVED_MAX]:
+        del sv[old]
+    return {"rev": state["rev"], "settings": state["settings"]}
 
 
 class Store:
