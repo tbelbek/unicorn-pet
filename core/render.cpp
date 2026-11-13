@@ -625,8 +625,9 @@ static void menu(const Game& g) {
         } else if (i == rec && !g.calm()) {                          // her need gently bounces
             dy = arc(t % 1100, 500, 6);
         }
-        icon(icons[i], scale, cx - UP_ICON_W * scale / 2, 388 - UP_ICON_H * scale / 2 + dy);
-        if (text_w(T(labels[i]), 1) <= 80) text_fit(T(labels[i]), cx, 422, 2, i == g.menu ? INK : DIM, 80);
+        // the word on top, the picture below: the panel's rounded bottom corners hid BESLE and YIKA (on the board)
+        if (text_w(T(labels[i]), 1) <= 80) text_fit(T(labels[i]), cx, 366, 2, i == g.menu ? INK : DIM, 80);
+        icon(icons[i], scale, cx - UP_ICON_W * scale / 2, 410 - UP_ICON_H * scale / 2 + dy);
     }
 }
 
