@@ -1,13 +1,14 @@
 #include <Arduino.h>
 #include <time.h>
 #include <WiFi.h>
-#include <WiFiMulti.h>
 #include <HTTPClient.h>
 #include <esp_sntp.h>
 #include "clock.h"
 #include "config.h"
 #include "rtc.h"
 #include "tz.h"
+#include "ota.h"
+#include "net.h"
 #include "wifi_setup.h"
 
 static Preferences* nv;
@@ -74,8 +75,10 @@ void clock_begin(Preferences& prefs) {
     pick_zone();
     // A new firmware keeps a running clock (flashing must not undo WiFi or a parent's setting);
     // it only restarts the clock from its build time when the clock is clearly behind it or had
-    // stopped. A flat battery stops the oscillator: breaks still time from the restarted clock,
-    // but the date is a guess until WiFi, a parent (settings > SAAT) or the next flash sets it.
+    // stopped. Such a clock runs (breaks time from it) but its date is only a guess: __DATE__ is
+    // when this file was compiled, which may be days before the flash, and that would hatch her on
+    // the wrong day and throw a "missed you" party at the first WiFi sync. Only WiFi or a parent
+    // (settings > SAAT) makes the calendar trusted.
     uint32_t build = build_local();
     bool fresh = prefs.getUInt("build", 0) != build, lost = rtc_lost();
     uint32_t now = rtc_now();
@@ -83,9 +86,9 @@ void clock_begin(Preferences& prefs) {
     bool seeded = seed && rtc_set(to_utc(build));
     if (fresh && (!seed || seeded)) {      // a failed write is retried on the next boot of this build
         prefs.putUInt("build", build);
-        if (seeded) prefs.putBool("cal", true);   // a kept clock keeps its trust
+        if (seeded) prefs.putBool("cal", false);   // a kept clock keeps its trust; a seeded one has none
     } else if (lost) {
-        prefs.putBool("cal", false);       // an old build's time after a flat battery is only a guess
+        prefs.putBool("cal", false);
     }
     trusted = prefs.getBool("cal", false);
 }
@@ -130,7 +133,7 @@ bool clock_set_utc(uint32_t utc) {         // main task only (I2C)
 
 // ---- WiFi sync: a one-shot task per attempt, results handed over through a queue -----------
 
-struct Sync { uint32_t utc, at_ms; bool zone_ok; long offset; char zone[40]; };   // utc as of at_ms
+struct Sync { uint32_t utc, at_ms; bool zone_ok; long offset; char zone[40]; int newest; };   // utc as of at_ms
 struct Job { bool want_zone; int n; WifiNet nets[WIFI_KNOWN_MAX]; };            // a copy for the task
 static QueueHandle_t results;
 static volatile bool running;
@@ -139,13 +142,9 @@ static uint32_t next_ms = 3000;            // first try shortly after power-up
 static void sync_task(void* arg) {
     Job* job = (Job*)arg;
     Sync r = {};
-    {                                      // scoped: WiFiMulti must be destroyed before vTaskDelete
-    WiFiMulti multi;
-    for (int i = 0; i < job->n; i++) multi.addAP(job->nets[i].ssid, job->nets[i].pass);
-    WiFi.mode(WIFI_STA);
-    uint32_t t0 = millis();
-    while (multi.run(2000) != WL_CONNECTED && millis() - t0 < 15000) delay(200);
-    if (WiFi.status() == WL_CONNECTED) {
+    bool joined = false;
+    {                                      // scoped: HTTPClient must be destroyed before vTaskDelete
+    if ((joined = wifi_join(job->nets, job->n))) {
         ntp_start();
         for (int i = 0; i < 60 && !ntp_done(&r.utc); i++) delay(250);
         if (r.utc) r.at_ms = millis();
@@ -159,11 +158,12 @@ static void sync_task(void* arg) {
             }
             http.end();
         }
+        r.newest = ota_latest();           // while connected: is a newer signed firmware out? (0: unknown)
+        net_sync_here();                   // connected anyway: the parent page's settings, the toy's status
     }
     }
     delete job;
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);                   // the radio is off again until the next sync
+    if (joined) wifi_leave();              // the radio is off again until the next sync (unless shared)
     xQueueOverwrite(results, &r);
     running = false;
     vTaskDelete(nullptr);
@@ -186,11 +186,12 @@ void clock_poll(uint32_t now_ms) {
             Serial.printf("time zone: %s (%s)\n", r.zone, rule);
         }
         if (r.utc) clock_set_utc(r.utc + (millis() - r.at_ms + 500) / 1000);   // + the seconds since NTP answered
+        ota_seen(r.newest);                // the settings mark a waiting update
         next_ms = now_ms + (r.utc ? 12u * 3600000u : 30u * 60000u);   // twice a day, or retry soon
         if (!next_ms) next_ms = 1;
     }
     // one radio owner: no sync while a parent's WiFi setup holds the radio
-    if (running || wifi_setup_busy() || (int32_t)(now_ms - next_ms) < 0) return;
+    if (running || wifi_setup_busy() || ota_busy() || (int32_t)(now_ms - next_ms) < 0) return;
     next_ms = now_ms + 30u * 60000u;       // if this attempt never reports back
     Job* job = new Job();
     job->n = wifi_known(job->nets, WIFI_KNOWN_MAX);
@@ -198,7 +199,7 @@ void clock_poll(uint32_t now_ms) {
     uint32_t today = rtc_now() / 86400, last = nv->getUInt("zday", 0);
     job->want_zone = !fixed_rule() && (!nv->getString("zrule", "").length() || today >= last + 7);
     running = true;
-    if (xTaskCreatePinnedToCore(sync_task, "clock", 8192, job, 1, nullptr, 0) != pdPASS) { running = false; delete job; }
+    if (xTaskCreatePinnedToCore(sync_task, "clock", 16384, job, 1, nullptr, 0) != pdPASS) { running = false; delete job; }
 }
 
 bool clock_busy() { return running; }

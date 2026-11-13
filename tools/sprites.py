@@ -19,9 +19,9 @@ PALETTES = {
         sparkle=None),
     "gece": dict(  # galaxy: violet coat, night-sky mane with stars, crystal horn
         name="Gece Yıldızı", body="#8E7CFF", shade="#6A55E0", far="#5B46C8", muzzle="#B4A8FF",
-        outline="#3A2C9C", hoof="#3B2A8F", horn="#D9FBFF", horn2="#7FE3FF",
+        outline="#4838B4", hoof="#4C3AA0", horn="#D9FBFF", horn2="#7FE3FF",
         eye="#170C3A", blush="#FF7AD9",
-        mane=["#2E22A6", "#5A35D6", "#8E4BEA", "#C463E8", "#F28AE0", "#FFD1F2"],
+        mane=["#4A3CC0", "#6438DC", "#8E4BEA", "#C463E8", "#F28AE0", "#FFD1F2"],
         sparkle="#FFFFFF", forelock=(3, 4), wings=("#FFFFFF", "#C9BEFF")),
     "seker": dict(  # candy: pink coat, mint/lemon mane, peppermint horn
         name="Şeker", body="#FFC2E0", shade="#F48DC0", far="#E879B0", muzzle="#FFDDEE",
@@ -271,9 +271,11 @@ def with_props(cells, pose, frame=0, outline="#2A1F4A"):
 def face(px, p, mood, bob, hx=0, hy=0, frame=0):
     def dot(x, y, c): px[(x + hx, y + OY + hy)] = c
     if mood in ("idle", "hungry", "sad"):
-        for x, y in [(29, 12), (30, 12), (29, 13), (30, 13), (29, 14), (30, 14)]:
+        # a round 3x5 eye with a 2-pixel catch-light (from the AI reference pass: reads at arm's length)
+        for x, y in [(29, 11), (30, 11), (30, 12), (28, 13), (29, 13), (30, 13), (28, 14), (29, 14),
+                     (30, 14), (29, 15), (30, 15)]:
             dot(x, y, p["eye"])
-        dot(29, 12, "#FFFFFF")                       # catch-light
+        dot(28, 12, "#FFFFFF"); dot(29, 12, "#FFFFFF")
     elif mood in ("happy", "eating"):                 # ^ ^ closed smiling eye
         for x, y in [(28, 13), (29, 12), (30, 12), (31, 13)]:
             dot(x, y, p["eye"])
@@ -287,7 +289,7 @@ def face(px, p, mood, bob, hx=0, hy=0, frame=0):
     if mood == "sad":                                 # frown + a tear
         for x, y in [(31, 20), (32, 19), (33, 19), (34, 20)]:
             dot(x, y, p["eye"])
-        dot(29, 15, "#9FE7FF"); dot(29, 16, "#9FE7FF")
+        dot(28, 15, "#9FE7FF"); dot(28, 16, "#9FE7FF")
     if mood == "happy":
         for x, y in [(31, 19), (32, 20), (33, 20), (34, 19)]:
             dot(x, y, p["eye"])

@@ -38,7 +38,13 @@ static void chapter(const char* c) { caption = c; }
 static const u32 DAY = 9803;               // 2026-11-03
 static u32 at(int h, int m, int day = 0) { return (DAY + day) * 86400u + h * 3600u + m * 60u; }
 static void tap_menu(Game& g, int item) { g.input(IN_TOUCH, 46 + item * MENU_STEP, 400); }
-static void tap_row(Game& g, int row) { g.input(IN_TOUCH, 300, SET_Y0 + row * SET_ROW_H + 18); }
+static void tap_set(Game& g, int x, int row) {   // a settings row, turning to its half of a long list first
+    int n = g.set_rows();
+    if (row != n - 1 && set_half(n, row) != set_half(n, g.set_row))
+        g.input(IN_TOUCH, x, SET_Y0 + (set_half(n, row) ? SET_SPLIT : 0) * SET_ROW_H + 18);
+    g.input(IN_TOUCH, x, SET_Y0 + set_row_slot(n, row) * SET_ROW_H + 18);
+}
+static void tap_row(Game& g, int row) { tap_set(g, 300, row); }
 static void tap_button(Game& g, int right) { g.input(IN_TOUCH, right ? 280 : 90, (WBTN_Y0 + WBTN_Y1) / 2); }
 static void quiet(Game& g) { g.greeting = 0; g.party = 0; g.memory_new = 0; g.petting = 0; g.hint_pet = 0; }
 static void full(Game& g) { for (int i = 0; i < NSTATS; i++) g.set_stat(i, 9000); }
@@ -201,9 +207,9 @@ int main() {
     g.wifi_status(WST_CLOCK, 0); play(g, 800);
     g.wifi_status(WST_OK, 0); play(g, 2200);
     tap_button(g, 1); g.wifi_req = WREQ_NONE; play(g, 400);
-    g.input(IN_TOUCH, 184, SET_Y0 + WF_BACK * SET_ROW_H + 18); play(g, 200);
+    tap_set(g, 184, WF_BACK); play(g, 200);
     tap_row(g, HUB_BACK); play(g, 200);
-    g.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    tap_set(g, 184, SET_EXIT);
 
     chapter("Unicorn Pet");
     full(g); quiet(g);

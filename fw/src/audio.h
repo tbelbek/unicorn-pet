@@ -1,6 +1,20 @@
 #pragma once
-// Plays the core's sound cues through the ES8311 codec on a background task.
+#include <stdint.h>
+// Sound and the microphone, through the ES8311 codec on a background task (the audio task).
 bool audio_begin();          // after Wire.begin(); false if the codec does not answer
-void audio_play(int sfx);    // non-blocking; a new cue cuts the current one short
+// A cue: her routine clip (routines_tr.bin) if clip >= 0, else her spoken line (up::V_*) in lang (with the
+// child's name from voice_name.bin when lang is Turkish and the pack is there), else the sfx tune.
+// A new cue cuts the old one short.
+void audio_play(int sfx, int line = 0, int lang = 0, int clip = -1);
 void audio_level(int level);  // 0 normal, 1 low, 2 off (parent setting)
-bool audio_busy();           // true while a melody is still sounding (keeps the CPU awake)
+bool audio_busy();           // a tune, a line or a recording is under way (keeps the CPU awake)
+
+// Listening (up::LK_*): after whatever is playing, the task records from the codec's ADC, 16 kHz mono.
+//   LK_YESNO / LK_OPEN: from the first speech until 0.8 s of silence, at most 6 s (nothing in 5 s: silent)
+//   LK_LEVEL: about 1 s, only the level is kept     LK_TV: 5 s
+void audio_mic(bool on);     // main task only (I2C): the codec's microphone path powered up or down
+void audio_listen(int kind);
+void audio_listen_cancel();
+bool audio_listen_started();  // once per recording: the child can speak now (core: listen_started)
+struct Heard { int kind; bool speech; int db, loud_pct; const uint8_t* wav; uint32_t len; };
+bool audio_heard(Heard* out); // a finished recording; wav (a whole WAV file) stays valid until the next audio_listen

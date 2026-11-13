@@ -19,10 +19,13 @@
 #include "rtc.h"
 #include "clock.h"
 #include "wifi_setup.h"
+#include "ota.h"
+#include "store.h"
+#include "net.h"
 
 static const int LCD_CS = 12, LCD_SCLK = 11, LCD_D0 = 4, LCD_D1 = 5, LCD_D2 = 6, LCD_D3 = 7;
 static const int I2C_SDA = 15, I2C_SCL = 14, TP_INT = 21, KEY_BOOT = 0;
-static const uint8_t TCA9554_ADDR = 0x20, FT3168_ADDR = 0x38;
+static const uint8_t TCA9554_ADDR = 0x20, FT3168_ADDR = 0x38, CST820_ADDR = 0x15;
 static const uint8_t EXIO_PWR = 4;                        // PWR key reads HIGH while held
 static const bool TOUCH_SWAP_XY = false, TOUCH_FLIP_X = false, TOUCH_FLIP_Y = false;   // VERIFY
 static const bool TILT_FLIP = false;                      // VERIFY: tilting right moves the cloud right
@@ -35,13 +38,11 @@ static const uint32_t I2C_HZ = 400000;
 static const uint32_t LCD_HZ = 40000000;                  // QSPI clock; VERIFY whether 80 MHz is clean
 
 static Arduino_DataBus* bus = new Arduino_ESP32QSPI(LCD_CS, LCD_SCLK, LCD_D0, LCD_D1, LCD_D2, LCD_D3);
-// Waveshare's examples drive this board as SH8601; the product page also lists CO5300 for
-// newer batches. Build with -DPANEL_CO5300 if the screen stays black.
-#ifdef PANEL_CO5300
-static Arduino_CO5300* lcd = new Arduino_CO5300(bus, GFX_NOT_DEFINED, 0, up::SCREEN_W, up::SCREEN_H);   // VERIFY offsets
-#else
-static Arduino_SH8601* lcd = new Arduino_SH8601(bus, GFX_NOT_DEFINED, 0, up::SCREEN_W, up::SCREEN_H);
-#endif
+// Two batches of this board: SH8601 panel + FT3168 touch (0x38), and newer CO5300 + CST820 (0x15),
+// whose panel needs a 16-pixel column offset (Waveshare's own V2 example and ESP-IDF BSP). The touch
+// chip that answers at boot tells them apart; -DPANEL_CO5300 / -DPANEL_SH8601 force one.
+static Arduino_OLED* lcd;
+static uint8_t touch_addr = FT3168_ADDR;
 static XPowersPMU pmu;
 static bool pmu_ok;
 static SensorQMI8658 imu;
@@ -83,8 +84,11 @@ static bool panel_stale = true;           // the panel's content is unknown: sen
 
 static void panel_power(bool on) {
     if (on == panel_on) return;
-    if (on) { lcd->displayOn(); lcd->setBrightness(game.brightness()); panel_stale = true; }
-    else lcd->displayOff();       // AMOLED: every pixel off, nothing to leak
+    if (on) { lcd->displayOn(); lcd->setBrightness(game.screen_brightness()); panel_stale = true; }
+    else {
+        lcd->displayOff();        // AMOLED: every pixel off, nothing to leak
+        if (pmu_ok) pmu.clearIrqStatus();   // a press made while lit is not a new one in the dark
+    }
     panel_on = on;
 }
 
@@ -97,6 +101,7 @@ static uint32_t row_sum[up::SCREEN_H];
 static void push_frame() {
     static uint8_t sends;
     up::render(game, fb);
+    ota_frame_pushed(millis());            // a new firmware on trial is kept once it has drawn for a while
     bool full = panel_stale || ++sends % 64 == 0;
     int y0 = up::SCREEN_H, y1 = -1;
     const uint32_t* w = (const uint32_t*)fb;
@@ -122,9 +127,21 @@ static bool edge(bool down, bool* last, uint32_t* t, uint32_t debounce) {
     return false;
 }
 
+// PWR is also the AXP2101's power key. While the screen is dark we only wake every SLEEP_POLL_US,
+// so a child's quick press (~100 ms) would often fall between two looks at EXIO4: the PMU latches
+// a short press as an interrupt flag, which is read (and cleared) instead.
+static bool pmu_short_press() {
+    if (!pmu_ok) return false;
+    pmu.getIrqStatus();
+    bool pressed = pmu.isPekeyShortPressIrq();
+    pmu.clearIrqStatus();
+    return pressed;
+}
+
 static bool pwr_pressed() {
     static bool last; static uint32_t t, polled;
-    if (panel_on && millis() - polled < 20) return false;   // a button, not a sensor: 50 Hz is plenty
+    if (!panel_on) { tca_read(0x00); return pmu_short_press(); }
+    if (millis() - polled < 20) return false;   // a button, not a sensor: 50 Hz is plenty
     polled = millis();
     int v = tca_read(0x00);
     return edge(v >= 0 && ((v >> EXIO_PWR) & 1), &last, &t, 60);
@@ -133,9 +150,9 @@ static bool pwr_pressed() {
 static bool touch_read(int* x, int* y) {
     static bool was_down = false;
     uint8_t r[5];
-    Wire.beginTransmission(FT3168_ADDR);
+    Wire.beginTransmission(touch_addr);
     Wire.write(0x02);             // finger count, then X1 hi/lo, Y1 hi/lo
-    if (Wire.endTransmission(false) != 0 || Wire.requestFrom(FT3168_ADDR, (uint8_t)5) != 5) return false;
+    if (Wire.endTransmission(false) != 0 || Wire.requestFrom(touch_addr, (uint8_t)5) != 5) return false;
     for (int i = 0; i < 5; i++) r[i] = Wire.read();
     bool down = (r[0] & 0x0F) > 0;
     bool press = down && !was_down;          // only the moment the finger lands counts
@@ -239,9 +256,34 @@ void setup() {
         pmu.setChargeTargetVoltage(3);        // 4.2 V, as Waveshare's example sets it
         pmu.enableBattDetection();
         pmu.enableBattVoltageMeasure();       // needed for getBatteryPercent()
+        // stop before the cell is flat: below ~3.3 V the 3.3 V rail sags and the ESP32/PSRAM misbehave
+        // (resets that light the screen again and again), and a Li-ion cell should not go to 2.6 V
+        pmu.setSysPowerDownVoltage(3300);
+        pmu.disableIRQ(XPOWERS_AXP2101_ALL_IRQ);
+        pmu.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ);
+        pmu.clearIrqStatus();
     }
     expander_init();
 
+    // which batch: the CST820 answers at 0x15 right after its reset pulse (then naps, so ask now)
+    Wire.beginTransmission(CST820_ADDR);
+    bool v2 = Wire.endTransmission() == 0;
+#if defined(PANEL_CO5300)
+    v2 = true;
+#elif defined(PANEL_SH8601)
+    v2 = false;
+#endif
+    if (v2) {
+        touch_addr = CST820_ADDR;
+        Wire.beginTransmission(CST820_ADDR);  // no auto-sleep: we poll it, it would stop answering
+        Wire.write(0xFE);
+        Wire.write(0x01);
+        Wire.endTransmission();
+        lcd = new Arduino_CO5300(bus, GFX_NOT_DEFINED, 0, up::SCREEN_W, up::SCREEN_H, 16, 0, 0, 0);
+    } else {
+        lcd = new Arduino_SH8601(bus, GFX_NOT_DEFINED, 0, up::SCREEN_W, up::SCREEN_H);
+    }
+    Serial.printf("board: %s panel, touch at 0x%02X\n", v2 ? "CO5300" : "SH8601", touch_addr);
     if (!lcd->begin(LCD_HZ)) Serial.println("display init failed");
     lcd->setBrightness(BRIGHTNESS);
 
@@ -262,14 +304,46 @@ void setup() {
     fb = (uint16_t*)ps_malloc(up::SCREEN_W * up::SCREEN_H * sizeof(uint16_t));
     if (!fb) { Serial.println("no PSRAM for framebuffer"); for (;;) delay(1000); }
 
+    store_begin();                            // the card or LittleFS: private packs, the listener's address
     prefs.begin("unicorn", false);
     game.init(esp_random());
     clock_begin(prefs);
     wifi_setup_begin(game);                   // saved networks, shown in the settings
+    ota_begin(game);                          // the running version (settings > SAAT > GÜNCELLEME)
+    net_begin();                              // the home listener: answers, journal, TV samples, settings sync
     { uint32_t utc = rtc_now();             // one read: local and UTC agree
       game.set_wall(clock_local(utc), clock_trusted(), utc); }   // before the save, so time spent off counts
     load_game();
     push_frame();
+    store_load_packs();                       // after the first frame: ~1.7 MB into PSRAM, in a task
+}
+
+// Her daily routine and TV test mode: the core asks (F_LISTEN), the audio task records, net.cpp asks the listener.
+static void listening(uint32_t f) {
+    static bool packs_known;
+    if (!packs_known) {                       // the packs finish loading a moment after boot
+        Pack p;
+        game.has_routines = store_pack(PACK_ROUTINES, &p);
+        game.has_names = store_pack(PACK_NAMES, &p);
+        packs_known = game.has_routines && game.has_names;
+        static uint32_t gave_up = millis() + 15000;
+        if ((int32_t)(millis() - gave_up) > 0) packs_known = true;   // (absent: the game as before)
+    }
+    if (f & up::F_LISTEN) {
+        int req = game.listen_req, kind = game.listen_kind;
+        game.listen_req = up::LREQ_NONE;
+        if (req == up::LREQ_CANCEL) { audio_listen_cancel(); audio_mic(false); }
+        else if (req == up::LREQ_LISTEN) { audio_mic(true); audio_listen(kind); }   // after her question
+    }
+    if (audio_listen_started()) game.listen_started();
+    Heard h;
+    if (audio_heard(&h)) {
+        audio_mic(false);                     // the microphone is off again between moments
+        if (h.kind == up::LK_LEVEL) game.level_result(h.db, h.loud_pct);
+        else if (h.kind == up::LK_TV) net_tv_sample(h.wav, h.len);
+        else if (!h.speech) game.listen_result(up::ANS_SILENT);   // nothing said: nothing to send
+        else net_answer(game.listen_q, h.kind, h.wav, h.len);
+    }
 }
 
 void loop() {
@@ -304,7 +378,7 @@ void loop() {
         game.set_battery(pmu_ok && pmu.isBatteryConnect() ? pmu.getBatteryPercent() : -1);   // -1 on a PMU error too
     }
     static int bright = -1;                              // parent settings: brightness, volume
-    if (panel_on && game.brightness() != bright) { bright = game.brightness(); lcd->setBrightness(bright); }
+    if (panel_on && game.screen_brightness() != bright) { bright = game.screen_brightness(); lcd->setBrightness(bright); }   // dims at night
     audio_level(game.volume());
 
     uint32_t f = game.tick(dt);
@@ -312,7 +386,21 @@ void loop() {
     if (f & up::F_CLOCK) clock_set_local(game.wall_s);   // a parent set the date and time
     clock_poll(now);                          // WiFi time (and zone) sync, about twice a day
     wifi_setup_poll(game, now, f);            // a parent adding a network from the toy
-    if (f & up::F_SOUND) audio_play(game.take_sfx());
+    // the update's battery rule on fresh readings: the game's plugged state is debounced over ~2 s
+    bool power_ok = !(f & up::F_UPDATE) || (pmu_ok && (pmu.isVbusIn() ||
+                    (pmu.isBatteryConnect() && pmu.getBatteryPercent() >= 50)));
+    if (ota_poll(game, now, f, power_ok)) {             // a verified update is in the other slot: save her, restart
+        save_game();
+        push_frame();                         // "restarting"
+        delay(1500);
+        ESP.restart();
+    }
+    if (f & up::F_SOUND) {
+        int line, clip, sfx = game.take_sfx(&line, &clip);
+        audio_play(sfx, line, game.s.lang, clip);   // a routine clip, her voice, else the tune
+    }
+    listening(f);                             // (after the sound: she asks first, then listens)
+    net_poll(game, now);
     panel_power(f & up::F_SCREEN_ON);
     // the core asks for a frame on every call while something moves; cap pushes at ~30 fps
     static bool pending;
@@ -324,6 +412,7 @@ void loop() {
         pending = false;
     }
 
-    if (panel_on || audio_busy() || clock_busy() || wifi_setup_busy()) delay(5);
+    // light sleep would drop the WiFi association: while the link is up only modem sleep (USB power, mostly)
+    if (panel_on || audio_busy() || clock_busy() || wifi_setup_busy() || ota_busy() || net_busy()) delay(5);
     else nap();
 }

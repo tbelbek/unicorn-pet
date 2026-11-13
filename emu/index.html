@@ -107,12 +107,36 @@
         <dt>Ekran</dt><dd id="scr">–</dd>
         <dt>Ses</dt><dd id="snd">–</dd>
         <dt>Ekran süresi</dt><dd id="play">–</dd>
+        <dt>Yazılım</dt><dd id="fw">–</dd>
       </dl>
     </section>
     <section>
       <h2>İHTİYAÇLAR</h2>
       <div id="stats"></div>
       <p class="hint">Kaydırarak ayarla: aç, yorgun ya da kirli hâlleri hemen test edebilirsin.</p>
+    </section>
+    <section>
+      <h2>GÜNLÜK RUTİN</h2>
+      <dl>
+        <dt>Soru</dt><dd id="rq">–</dd>
+        <dt>Bugün</dt><dd id="rstars">–</dd>
+        <dt>Radyo</dt><dd id="radio">–</dd>
+        <dt>Ayarlar</dt><dd id="sync">–</dd>
+      </dl>
+      <label class="stat" style="grid-template-columns:auto 1fr"><input type="checkbox" id="rtest">
+        <span>Rutini dene: <code>routines_tr.bin</code> yoksa da sorar (sessiz, sadece resimler)</span></label>
+      <label class="stat" style="grid-template-columns:auto 1fr"><span>Dinleyici</span>
+        <input type="url" id="listener" placeholder="http://mac.local:8765 (boşsa ✔/✖ düğmeleri)"></label>
+      <label class="stat" style="grid-template-columns:auto 1fr"><span>Jeton</span><input type="password" id="token" autocomplete="off"></label>
+      <label class="stat" style="grid-template-columns:auto 1fr"><input type="checkbox" id="tvloud">
+        <span>Odada TV açık (TV testi her dakika ses seviyesine bakar)</span></label>
+      <div class="seg">
+        <button class="b" id="pagechg" title="Ebeveyn sayfasında (taklit) tatil modunu ve parlaklığı değiştirir">SAYFADA DEĞİŞTİR</button>
+        <button class="b" id="syncnow" title="Cihaz dinleyiciye bağlandığında yaptığı gibi: ayarları al, durumu gönder">EŞİTLE (SAYFA)</button>
+      </div>
+      <p class="hint">Soru zamanı gelince (sabah uyandıktan sonraki saat, akşam yemeği 18:00, yatmadan önce)
+        sorar ve dinler. Dinleyici adresi boşsa ya da cevap gelmezse ✔ / ✖ düğmeleri çıkar. Gerçek konuşma için
+        1× hızda kalın; tarayıcı mikrofon izni ister. Ebeveyn sayfası adres yoksa taklit edilir.</p>
     </section>
     <section>
       <h2>GÜÇ VE KAYIT</h2>
@@ -136,6 +160,8 @@
       <label class="stat" style="grid-template-columns:auto 1fr auto">
         <span>Birlikte gün</span><input type="number" id="days" min="0" max="9999" step="1">
         <span id="stage"></span></label>
+      <label class="stat" style="grid-template-columns:auto 1fr"><input type="checkbox" id="newfw">
+        <span>yeni sürüm var: GitHub'da bir üst sürüm yayınlanmış gibi (ayarlar &gt; SAAT &gt; GÜNCELLEME; kayıtlı bir WiFi ağı gerekir)</span></label>
       <p class="hint">Güç kesilince zaman durur (cihazdaki gibi); açınca son kayıttan devam eder.
         Unicorn'a dokununca sevilir (kalpler); üstteki isme dokununca bilgi ekranı açılır.
         EBEVEYN düğmesi (cihazda BOOT'a hızlıca 3 kez bas, üçüncüsünü 3 sn tut; buradaki BOOT da öyle çalışır): kapıda unicorn'u geri çağırır, başka ekranlarda ebeveyn
@@ -149,11 +175,11 @@ const W = 368, H = 448, KEY = "unicorn-pet-save", WALL_KEY = "unicorn-pet-wall-o
 const SCENES = ["Yumurta", "Çıkıyor", "Ev", "Yemek", "Kutlama", "Banyo", "Uyku", "Bilgi (yüz)", "Çok yorgun",
                 "Yıldız yakala", "Dışarı çıkıyor", "Dışarıda (kapı)", "Eve dönüyor", "Yiyecek seçiyor",
                 "Ebeveyn ayarları", "Yumurta seçiyor", "Oyuncak kutusu", "Müzik bahçesi", "Tüy yakala (bulut)",
-                "Ayna", "Anı defteri", "Şezlong (şarjda)"];
+                "Ayna", "Anı defteri", "Şezlong (şarjda)", "Rutin sorusu"];
 const MOODS = ["Normal", "Mutlu", "Aç", "Uykulu", "Üzgün"];
 const CHARS = ["Pamuk", "Gece Yıldızı", "Şeker", "Deniz"];
 const STATS = ["Tokluk", "Mutluluk", "Enerji", "Temizlik"];
-const IN = { NEXT: 1, SELECT: 2, TOUCH: 3, SHAKE: 4, PARENT: 5 }, F = { REDRAW: 1, SCREEN_ON: 2, SAVE: 4, SOUND: 8, CLOCK: 16, WIFI: 32 };
+const IN = { NEXT: 1, SELECT: 2, TOUCH: 3, SHAKE: 4, PARENT: 5 }, F = { REDRAW: 1, SCREEN_ON: 2, SAVE: 4, SOUND: 8, CLOCK: 16, WIFI: 32, UPDATE: 64, LISTEN: 128 };
 
 const { instance } = await WebAssembly.instantiateStreaming(fetch("unicorn.wasm"), {});
 const w = instance.exports;
@@ -190,7 +216,10 @@ function showClock() {
   if (document.activeElement !== $("days")) $("days").value = w.up_care_days();
   $("stage").textContent = STAGES[w.up_stage()] || "";
 }
-$("ntp").onclick = () => { wallMs = Date.now(); $("rtc").checked = true; save(); };   // like a WiFi sync
+$("ntp").onclick = () => {                 // like a WiFi sync: the clock, and a quiet look for a new version
+  wallMs = Date.now(); $("rtc").checked = true; save();
+  if (mock.saved.length) updateSeen();
+};
 $("clock").onchange = () => {              // jump the virtual clock (the value is local time)
   const d = new Date($("clock").value), y = d.getFullYear();
   if (isNaN(d) || y < 2001 || y > 2099) { showClock(); return; }   // the toy counts from 2000 (u32 seconds)
@@ -216,6 +245,7 @@ function save() {
   localStorage.setItem(WALL_KEY, String(Math.round(wallMs - Date.now())));
 }
 function boot() {                                   // like the firmware: fresh state, then NVS
+  updGen++;                                         // an update under way did not survive the power
   w.up_init((Math.random() * 2 ** 32) >>> 0);
   w.up_set_wall(wallNow(), 1, utcNow());                         // like the firmware: read the RTC before NVS
   const saved = localStorage.getItem(KEY);
@@ -228,6 +258,8 @@ function boot() {                                   // like the firmware: fresh 
       localStorage.setItem(KEY + "-bad", saved);
   }
   pushList();                                       // the saved networks survive a power cut (NVS on the board)
+  setPacks();                                       // the SD card / LittleFS packs, as the board finds them
+  w.up_set_fw_version(fwVersion);                   // the "flashed" firmware's version
   screenOn = true;
   blit();
 }
@@ -256,13 +288,16 @@ let wifiGen = 0;                             // a stopped session's pending step
 let virt = 0, session = null;
 const timers = [];
 const later = (ms, fn) => timers.push({ at: virt + ms, gen: wifiGen, fn });
+let updGen = 0;                              // the update's own steps: a reboot (or power cut) ends them
+const laterU = (ms, fn) => timers.push({ at: virt + ms, upd: updGen, fn });
+const updating = () => timers.some((t) => t.upd === updGen);
 function runTimers(ms) {
   virt += ms;
   for (let i = 0; i < timers.length;) {
     const tm = timers[i];
     if (tm.at > virt) { i++; continue; }
     timers.splice(i, 1);
-    if (tm.gen === wifiGen) tm.fn();
+    if (tm.upd !== undefined ? tm.upd === updGen : tm.gen === wifiGen) tm.fn();
   }
   if (!session) return;
   const st = w.up_wifi_stage();
@@ -316,6 +351,7 @@ function endWifi() {                           // power cut, a new egg or the en
   $("portal").src = "about:blank";
 }
 function wifiRequest() {
+  if (updating() && w.up_wifi_req() === WREQ.START) return;   // one radio owner: after the update (it waits)
   const req = w.up_wifi_req(), arg = w.up_wifi_arg();
   w.up_wifi_take();
   if (req === WREQ.START || req === WREQ.STOP) wifiGen++;
@@ -339,6 +375,40 @@ function wifiRequest() {
     mock.saved.splice(arg, 1);
     saveNets();
     pushList();
+  }
+}
+
+// ---- firmware update demo: plays fw/src/ota.cpp on virtual time; the "yeni sürüm var" box decides ----
+// whether the pretend GitHub release is one version up. Installing restarts the toy, keeping the save.
+const UST = { IDLE: 0, CHECKING: 1, LATEST: 2, AVAILABLE: 3, DOWNLOADING: 4, VERIFYING: 5, RESTARTING: 6, NO_WIFI: 7 };
+const UREQ = { CHECK: 1, INSTALL: 2 }, FW_KEY = "unicorn-pet-fw";
+let fwVersion = Number(localStorage.getItem(FW_KEY)) || 1;
+const released = () => fwVersion + ($("newfw").checked ? 1 : 0);   // what the mock manifest says
+function updateSeen() {                        // the twice-daily sync's quiet check
+  const st = w.up_update_stage();
+  if (st < UST.DOWNLOADING || st > UST.RESTARTING) w.up_update_status(st, 0, released());
+}
+function updateRequest() {
+  if (session || updating()) return;          // one radio owner: the WiFi setup first (the request waits)
+  const req = w.up_update_req();
+  w.up_update_take();
+  if (!mock.saved.length) return laterU(400, () => w.up_update_status(UST.NO_WIFI, 0, 0));   // nowhere to connect
+  if (req === UREQ.CHECK) {
+    laterU(1500, () => { const v = released(); w.up_update_status(v > fwVersion ? UST.AVAILABLE : UST.LATEST, 0, v); });
+  } else if (req === UREQ.INSTALL) {
+    const v = released();
+    if (v <= fwVersion) return laterU(1500, () => w.up_update_status(UST.LATEST, 0, v));
+    for (let i = 1; i <= 20; i++) laterU(1500 * i, () => w.up_update_status(UST.DOWNLOADING, i * 5, 0));
+    laterU(31500, () => w.up_update_status(UST.VERIFYING, 100, 0));
+    laterU(33000, () => w.up_update_status(UST.RESTARTING, 100, 0));
+    laterU(34500, () => {                       // the restart: save, "flash", boot the new version
+      save();
+      fwVersion = v;
+      localStorage.setItem(FW_KEY, String(fwVersion));
+      $("newfw").checked = false;
+      stopSound();
+      boot();
+    });
   }
 }
 
@@ -372,7 +442,61 @@ function play(id) {
   }
 }
 
-function stopSound() { for (const o of voices) try { o.stop(); } catch {} voices = []; }
+// her voice: the board's own packs (tools/voice.py): "UPO1" tables of Ogg Opus clips, decoded by the browser.
+// fw/data/voice.bin always; the private fw/personal/ packs only where they exist (a local checkout).
+const packs = {};
+function parsePack(buf) {                                 // null for anything that is not a pack
+  if (buf.byteLength < 8) return null;
+  const v = new DataView(buf);
+  if (String.fromCharCode(v.getUint8(0), v.getUint8(1), v.getUint8(2), v.getUint8(3)) !== "UPO1") return null;
+  const n = v.getUint16(4, true), per = v.getUint16(6, true);
+  if (!per || 8 + n * 8 > buf.byteLength) return null;
+  const clips = [];
+  for (let i = 0; i < n; i++) {
+    const off = v.getUint32(8 + i * 8, true), len = v.getUint32(12 + i * 8, true);
+    clips.push(off + len <= buf.byteLength ? [off, len] : null);
+  }
+  return { buf, clips, per, cache: new Map() };
+}
+for (const [name, url] of [["voice", "../fw/data/voice.bin"], ["names", "../fw/personal/voice_name.bin"],
+                           ["routines", "../fw/personal/routines_tr.bin"]])
+  fetch(url).then((r) => r.ok ? r.arrayBuffer() : null).then((b) => { if (b) packs[name] = parsePack(b); setPacks(); }).catch(() => {});
+function setPacks() { w.up_set_packs(packs.routines || $("rtest").checked ? 1 : 0, packs.names ? 1 : 0); }
+$("rtest").onchange = setPacks;
+let speakingEnd = 0;                                      // performance.now() when her last line ends
+function playClip(pack, lang, i, vol) {                   // false when the pack has no such clip
+  const p = packs[pack];
+  if (!p || i < 0 || i >= p.per || lang * p.per + i >= p.clips.length || !p.clips[lang * p.per + i]) return false;
+  const [off, len] = p.clips[lang * p.per + i], key = lang * p.per + i;
+  for (const o of voices) try { o.stop(); } catch {}
+  voices = [];
+  audio ??= new AudioContext();
+  if (audio.state === "suspended") audio.resume();
+  const gen = ++sayGen;
+  let ready = p.cache.get(key);
+  if (!ready) { ready = audio.decodeAudioData(p.buf.slice(off, off + len)); p.cache.set(key, ready); }
+  speakingEnd = performance.now() + 4000;                 // until we know how long it is
+  ready.then((buf) => {
+    if (gen !== sayGen || !powered) return;               // a newer cue (or the power) came first
+    const src = audio.createBufferSource(), g = audio.createGain();
+    src.buffer = buf; g.gain.value = vol;
+    src.connect(g).connect(audio.destination); src.start();
+    voices.push(src);
+    speakingEnd = performance.now() + buf.duration * 1000;
+  }, () => { p.cache.delete(key); speakingEnd = 0; });
+  return true;
+}
+let sayGen = 0;
+function say(sfx, line, clip) {                           // true when she spoke (then no tune)
+  const vol = [0.9, 0.45, 0][w.up_volume()];
+  if (!vol) return false;
+  if (clip >= 0) return playClip("routines", 0, clip, vol) || $("rtest").checked;   // (no pack: a silent test)
+  if (!line) return false;
+  const lang = w.up_lang(), named = lang === 0 ? w.up_name_line(sfx, line) : -1;   // her name: Turkish only
+  return (named >= 0 && playClip("names", 0, named, vol)) || playClip("voice", lang, line - 1, vol);
+}
+
+function stopSound() { sayGen++; for (const o of voices) try { o.stop(); } catch {} voices = []; speakingEnd = 0; listenGen++; }
 function silenceIfOff() {
   if (w.up_volume() === 2 && voices.length) { for (const o of voices) try { o.stop(); } catch {} voices = []; }
 }
@@ -401,12 +525,14 @@ function step(dt) {
     save();
   }
   if (f & F.WIFI) wifiRequest();
+  if (f & F.UPDATE) updateRequest();
   if (f & F.SAVE) save();
-  if (f & F.SOUND) play(w.up_take_sfx());
+  if (f & F.SOUND) { const id = w.up_take_sfx(), line = w.up_taken_line(), clip = w.up_taken_clip(); if (!say(id, line, clip)) play(id); }
+  if (f & F.LISTEN) listenRequest();
   silenceIfOff();
   const on = !!(f & F.SCREEN_ON);
   if (on && (f & F.REDRAW || !screenOn)) blit();
-  canvas.style.filter = `brightness(${(0.35 + 0.65 * w.up_brightness() / 255).toFixed(2)})`;
+  canvas.style.filter = `brightness(${(0.15 + 0.85 * w.up_brightness() / 255).toFixed(2)})`;
   if (!on && screenOn) black();
   screenOn = on;
   device.classList.toggle("screen-off", !on);
@@ -426,6 +552,7 @@ function frame(now) {
   simLeft -= dt;
   if (powered) step(dt);
   if (powered) runTimers(dt); else if (session) endWifi();
+  if (powered && w.up_link(0) === 2 && virt - lastSync >= 60000) syncNow();   // plugged in: like net.cpp's 60 s poll
   if (powered) panel();
   if (Math.floor(now / 500) !== Math.floor((now - raw) / 500)) {
     showClock();
@@ -433,6 +560,190 @@ function frame(now) {
   }
   requestAnimationFrame(frame);
 }
+
+// ---- her daily routine: the board's audio.cpp (listening) and net.cpp (the listener) ----------
+const ANS = { YES: 1, NO: 2, UNCLEAR: 3, SILENT: 4, SAID: 5, TAP_YES: 6, TAP_NO: 7, NO_LISTENER: 8 };
+const LK = { YESNO: 0, OPEN: 1, LEVEL: 2, TV: 3 }, LREQ = { LISTEN: 1, CANCEL: 2 };
+const LINKS = ["kapalı", "açık (soru / TV örneği için)", "hep açık (şarjda)"];
+const ANS_NAMES = ["", "yes", "no", "unclear", "silent", "said", "tap_yes", "tap_no"];
+const qKey = (q) => { const p = w.up_q_key(q), b = new Uint8Array(w.memory.buffer, p, 32); return new TextDecoder().decode(b.slice(0, b.indexOf(0))); };
+for (const id of ["listener", "token"]) {                 // this browser's own dev settings (never sent anywhere else)
+  try { $(id).value = localStorage.getItem("unicorn-pet-" + id) || ""; } catch {}
+  $(id).onchange = () => { try { localStorage.setItem("unicorn-pet-" + id, $(id).value); } catch {} };
+}
+const listenerUrl = () => $("listener").value.trim().replace(/\/+$/, "");
+let listenGen = 0, tvSent = 0;
+const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+function localIso() {                                     // X-Recorded-At: the toy's local time with its offset
+  const d = new Date(wallMs), off = -d.getTimezoneOffset(), p = (n) => String(Math.abs(n)).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}` +
+         `${off < 0 ? "-" : "+"}${p(Math.trunc(off / 60))}:${p(off % 60)}`;
+}
+async function post(path, body, headers, ms) {           // the listener, with the board's time limits
+  const ac = new AbortController(), t = setTimeout(() => ac.abort(), ms);
+  try {
+    const r = await fetch(listenerUrl() + path, { method: body ? "POST" : "GET", body, signal: ac.signal,
+      headers: { "X-Token": $("token").value, ...headers } });
+    return r;
+  } finally { clearTimeout(t); }
+}
+// The microphone, like audio.cpp: 16 kHz mono; with vad, from the first speech until 0.8 s of silence (at most
+// 6 s); else a fixed length. Resolves to { wav, speech } or null (no microphone).
+async function record(vad, seconds) {
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true } }); }
+  catch { return null; }
+  const ac = new AudioContext({ sampleRate: 16000 }), src = ac.createMediaStreamSource(stream);
+  const node = ac.createScriptProcessor(1024, 1, 1), chunks = [];
+  let floor = 0, frames = 0, speech = false, quiet = 0, done;
+  const finished = new Promise((ok) => { done = ok; });
+  node.onaudioprocess = (e) => {
+    const x = e.inputBuffer.getChannelData(0);
+    chunks.push(new Float32Array(x));
+    let sum = 0;
+    for (const v of x) sum += v * v;
+    const rms = Math.sqrt(sum / x.length), ms = x.length / 16;
+    frames++;
+    if (frames <= 4) floor = Math.max(floor, rms);        // the room, before anyone speaks
+    else if (rms > Math.max(0.02, floor * 3)) { speech = true; quiet = 0; }
+    else if (speech) quiet += ms;
+    const total = chunks.length * x.length / 16000;
+    if ((vad && speech && quiet >= 800) || total >= seconds) done();
+  };
+  src.connect(node); node.connect(ac.destination);
+  await finished;
+  node.disconnect(); src.disconnect(); stream.getTracks().forEach((t) => t.stop()); ac.close();   // the mic off again
+  const n = chunks.reduce((k, c) => k + c.length, 0), wav = new DataView(new ArrayBuffer(44 + n * 2));
+  const str = (o, t) => { for (let i = 0; i < t.length; i++) wav.setUint8(o + i, t.charCodeAt(i)); };
+  str(0, "RIFF"); wav.setUint32(4, 36 + n * 2, true); str(8, "WAVEfmt "); wav.setUint32(16, 16, true);
+  wav.setUint16(20, 1, true); wav.setUint16(22, 1, true); wav.setUint32(24, 16000, true); wav.setUint32(28, 32000, true);
+  wav.setUint16(32, 2, true); wav.setUint16(34, 16, true); str(36, "data"); wav.setUint32(40, n * 2, true);
+  let o = 44;
+  for (const c of chunks) for (const v of c) { wav.setInt16(o, Math.max(-32768, Math.min(32767, v * 32767)), true); o += 2; }
+  return { wav: wav.buffer, speech };
+}
+async function hear(q, kind) {                            // after she has asked: listen, then ask the listener
+  const gen = ++listenGen;
+  while (performance.now() < speakingEnd) await sleep(50);   // her question first
+  if (gen !== listenGen || !powered) return;
+  w.up_listen_started();
+  if (!listenerUrl() || !navigator.mediaDevices) { w.up_listen_result(ANS.NO_LISTENER); return; }   // the buttons
+  const rec = await record(true, 6);
+  if (gen !== listenGen || !powered) return;
+  if (!rec) { w.up_listen_result(ANS.NO_LISTENER); return; }
+  if (!rec.speech) { w.up_listen_result(ANS.SILENT); syncNow(); return; }   // nothing said: nothing to send
+  let a = kind === LK.OPEN ? ANS.SAID : ANS.NO_LISTENER;  // unreachable: the open answer still gets a reply
+  try {
+    const ping = await post("/v1/ping", null, {}, 2000);
+    if (ping.ok) {
+      const r = await post("/v1/answer", rec.wav, { "Content-Type": "audio/wav", "X-Question": qKey(q),
+        "X-Kind": kind === LK.OPEN ? "open" : "yesno", "X-Recorded-At": localIso() }, 6000);
+      const j = r.ok ? await r.json() : {};
+      a = { yes: ANS.YES, no: ANS.NO, unclear: ANS.UNCLEAR, silent: ANS.SILENT, said: ANS.SAID }[j.answer] ?? a;
+    }
+  } catch {}
+  if (gen === listenGen && powered) w.up_listen_result(a);
+  syncNow();                                              // connected anyway: the settings too
+}
+async function tvSample() {                               // TV test: 5 s for the listener, nothing shown
+  tvSent++;
+  if (!listenerUrl()) return;
+  const rec = await record(false, 5);
+  if (!rec) return;
+  try { await post("/v1/tv-sample", rec.wav, { "Content-Type": "audio/wav", "X-Recorded-At": localIso() }, 6000); syncNow(); } catch {}
+}
+function listenRequest() {
+  const req = w.up_listen_req(), kind = w.up_listen_kind(), q = w.up_listen_q();
+  w.up_listen_take();
+  if (req === LREQ.CANCEL) { listenGen++; return; }
+  if (kind === LK.LEVEL) {                                // ~1 s of ambient level, measured on the toy only
+    const tv = $("tvloud").checked;
+    w.up_level_result(tv ? -30 : -70, tv ? 90 : 5);       // (the next tick asks for a sample if it lasts)
+  } else if (kind === LK.TV) tvSample();
+  else hear(q, kind);
+}
+
+// ---- settings sync with the parent page (server/API.md), or its mock when no listener is set ------------------
+const SKEYS = ["routines", "questions", "wake_weekday", "wake_weekend", "bedtime", "holiday", "holiday_ranges",
+               "tv_test", "lang", "volume", "brightness", "play_min", "break_min", "calm", "shake"];
+const LANG_CODES = ["tr", "en", "es", "fr", "de", "pt", "it", "ru", "sv", "id"], HOL_MAX = 4;
+const BOOL_KEYS = new Set(["routines", "holiday", "tv_test", "calm", "shake"]), TIME_KEYS = new Set(["wake_weekday", "wake_weekend", "bedtime"]);
+const DAY0 = Date.UTC(2000, 0, 1), dayIso = (d) => new Date(DAY0 + d * 86400000).toISOString().slice(0, 10);
+const isoDay = (s) => Math.round((Date.parse(s + "T00:00:00Z") - DAY0) / 86400000);
+const hhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+function toySettings() {                                  // the core's Settings, as the page's JSON
+  w.up_get_settings();
+  const K = w.up_settings_count(), a = new Uint16Array(w.memory.buffer, w.up_settings_buf(), K + HOL_MAX * 2), out = {};
+  SKEYS.forEach((k, i) => {
+    const v = a[i];
+    if (k === "questions") { out[k] = {}; for (let q = 0; q < w.up_q_count(); q++) out[k][qKey(q)] = !!(v >> q & 1); }
+    else if (k === "holiday_ranges") out[k] = Array.from({ length: v }, (_, r) => [dayIso(a[K + r * 2]), dayIso(a[K + r * 2 + 1])]);
+    else out[k] = BOOL_KEYS.has(k) ? !!v : TIME_KEYS.has(k) ? hhmm(v) : k === "lang" ? LANG_CODES[v] : v;
+  });
+  out.tv_test_since = w.up_tv_day() ? dayIso(w.up_tv_day()) : "";
+  return out;
+}
+function applyPage(rev, js) {                             // the page's JSON into the core (it checks every value)
+  w.up_get_settings();
+  const K = w.up_settings_count(), a = new Uint16Array(w.memory.buffer, w.up_settings_buf(), K + HOL_MAX * 2 + 1);
+  let present = 0;
+  if (typeof js.tv_test_since === "string") a[K + HOL_MAX * 2] = js.tv_test_since ? isoDay(js.tv_test_since) : 0;
+  SKEYS.forEach((k, i) => {
+    if (!(k in js)) return;
+    const v = js[k];
+    if (k === "questions") { for (let q = 0; q < w.up_q_count(); q++) if (qKey(q) in v) a[i] = v[qKey(q)] ? a[i] | 1 << q : a[i] & ~(1 << q); }
+    else if (k === "holiday_ranges") {
+      if (!Array.isArray(v) || v.length > HOL_MAX) return;
+      v.forEach(([f, t], r) => { a[K + r * 2] = isoDay(f); a[K + r * 2 + 1] = isoDay(t); });
+      a[i] = v.length;
+    } else if (TIME_KEYS.has(k)) { const m = /^(\d\d):(\d\d)$/.exec(v); if (!m) return; a[i] = +m[1] * 60 + +m[2]; }
+    else if (k === "lang") { const l = LANG_CODES.indexOf(v); if (l < 0) return; a[i] = l; }
+    else a[i] = BOOL_KEYS.has(k) ? (v ? 1 : 0) : Math.max(0, Math.min(65535, v | 0));
+    present |= 1 << i;
+  });
+  w.up_apply_settings(rev >>> 0, present);
+}
+function status(rev) {                                    // what POST /v1/status carries
+  const answers = [];
+  for (let q = 0; q < w.up_q_count(); q++) {
+    const r = w.up_r_ans(q);
+    if (r) answers.push({ q: qKey(q), a: ANS_NAMES[r >> 11] || "", t: hhmm(r & 2047) });
+  }
+  return { rev, settings: toySettings(), battery: +$("batt").value, plugged: $("plug").checked, fw: fwVersion,
+           update: $("newfw").checked ? fwVersion + 1 : 0, day: { answers, stars: w.up_stars_today() } };
+}
+// the mock page: its config, and the three-way merge server/parent.py does against the toy's last report
+const page = { rev: 0, settings: null, last: null };
+$("pagechg").onclick = () => {
+  page.settings ??= toySettings();
+  page.settings.holiday = !page.settings.holiday;
+  page.settings.brightness = page.settings.brightness === 255 ? 120 : 255;
+  page.rev++;
+  panel();
+};
+let syncing = false, lastSync = 0;
+async function syncNow() {
+  if (syncing || !powered) return;
+  syncing = true;
+  lastSync = virt;
+  w.up_sync_mark();                                    // the toy's changes this sync carries
+  try {
+    if (listenerUrl()) {                                  // the real listener: GET /v1/config, POST /v1/status
+      const r = await post("/v1/config", null, { "X-Config-Rev": String(w.up_cfg_rev()) }, 6000);
+      if (r.status === 200) { const j = await r.json(); applyPage(j.rev, j.settings || {}); }
+      const s = await post("/v1/status", JSON.stringify(status(w.up_cfg_rev())), { "Content-Type": "application/json" }, 6000);
+      if (s.ok) w.up_settings_synced();
+    } else {                                              // the mock
+      if (page.settings && page.rev !== w.up_cfg_rev()) applyPage(page.rev, page.settings);
+      const mine = status(w.up_cfg_rev()).settings, merged = { ...(page.settings || mine) };
+      for (const k of SKEYS) if (!page.last || JSON.stringify(mine[k]) !== JSON.stringify(page.last[k])) merged[k] = mine[k];
+      if (JSON.stringify(merged) !== JSON.stringify(page.settings)) { page.settings = merged; page.rev = Math.max(page.rev, w.up_cfg_rev()) + 1; }
+      page.last = mine;
+      w.up_settings_synced();
+    }
+  } catch {} finally { syncing = false; }
+}
+$("syncnow").onclick = syncNow;
 
 // ---- inputs ---------------------------------------------------------------------------
 canvas.addEventListener("pointerdown", (e) => {
@@ -494,7 +805,13 @@ function panel() {
   const a = w.up_age_s();
   $("age").textContent = `${Math.floor(a / 86400)} g ${Math.floor(a / 3600) % 24} sa ${Math.floor(a / 60) % 60} dk`;
   $("scr").textContent = !powered ? "güç yok" : screenOn ? "açık" : "kapalı (20 sn boşta)";
-  $("snd").textContent = w.up_muted() ? "kapalı" : "açık";
+  $("snd").textContent = ["açık", "kısık", "kapalı"][w.up_volume()];   // the parent's volume setting
+  $("fw").textContent = `v${fwVersion}` + ($("newfw").checked ? ` (GitHub'da v${fwVersion + 1})` : "");
+  const st = ["soruyor", "dinliyor", "✔ / ✖ bekliyor", "cevap verdi"];
+  $("rq").textContent = w.up_scene() === 22 ? `${qKey(w.up_r_q())} · ${st[w.up_r_stage()]}` : packs.routines ? "–" : $("rtest").checked ? "– (paketsiz deneme)" : "routines_tr.bin yok";
+  $("rstars").textContent = `${w.up_stars_today()} yıldız`;
+  $("radio").textContent = LINKS[w.up_link(0)] + (tvSent ? ` · ${tvSent} TV örneği` : "");
+  $("sync").textContent = `rev ${w.up_cfg_rev()}${w.up_cfg_dirty() ? " · cihazda değişti" : ""}${!listenerUrl() && page.rev !== w.up_cfg_rev() ? ` · sayfada rev ${page.rev}` : ""}`;
   const away = w.up_away_ms();
   $("play").textContent = away ? `dışarıda, ${Math.ceil(away / 60000)} dk sonra döner`
                                : `${Math.floor(w.up_play_ms() / 60000)} / 10 dk`;
@@ -523,6 +840,7 @@ $("shot").onclick = () => {
 $("reset").onclick = () => {
   localStorage.removeItem(KEY); localStorage.removeItem(WALL_KEY); wallMs = Date.now();
   stopSound(); endWifi(); mock.saved = []; saveNets();
+  localStorage.removeItem(FW_KEY); fwVersion = 1; $("newfw").checked = false;
   if (!powered) $("power").click();               // a new egg comes with the power on
   boot();
 };

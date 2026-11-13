@@ -28,7 +28,8 @@ void* memmove(void* d, const void* s, unsigned long n) {
 
 static Game G;
 static u16 FBUF[SCREEN_W * SCREEN_H];
-static u8 SAVEBUF[64];   // >= SAVE_SIZE; also takes older, shorter saves
+static u8 SAVEBUF[192];  // >= SAVE_SIZE; also takes older, shorter saves
+static_assert(sizeof SAVEBUF >= SAVE_SIZE, "the save fits");
 
 #define API(name) extern "C" __attribute__((export_name(#name)))
 
@@ -55,10 +56,15 @@ API(up_character) int up_character() { return G.s.character; }
 API(up_age_s) u32 up_age_s() { return G.s.age_s; }
 API(up_hatched) int up_hatched() { return G.s.hatched; }
 API(up_max_stat) int up_max_stat() { return MAX_STAT; }
-API(up_take_sfx) int up_take_sfx() { return G.take_sfx(); }
+static int taken_line, taken_clip;
+API(up_take_sfx) int up_take_sfx() { return G.take_sfx(&taken_line, &taken_clip); }
+API(up_taken_line) int up_taken_line() { return taken_line; }   // what she says with that cue (V_NONE: nothing)
+API(up_taken_clip) int up_taken_clip() { return taken_clip; }   // a routines_tr.bin clip instead (-1: none)
+API(up_name_line) int up_name_line(int sfx, int line) { return name_line(sfx, line); }
+API(up_lang) int up_lang() { return G.s.lang; }
 API(up_melody) const Note* up_melody(int sfx) { int n; return melody(sfx, &n); }
 API(up_melody_len) int up_melody_len(int sfx) { int n; melody(sfx, &n); return n; }
-API(up_muted) int up_muted() { return G.s.muted; }
+API(up_muted) int up_muted() { return G.volume() == VOL_OFF; }   // sound off (old saves' mute is folded in)
 API(up_play_ms) u32 up_play_ms() { return G.play_ms; }
 API(up_away_ms) u32 up_away_ms() { return G.away_ms; }
 API(up_set_wall) void up_set_wall(u32 local_s, int calendar, u32 utc_s) { G.set_wall(local_s, calendar != 0, utc_s); }
@@ -71,7 +77,7 @@ API(up_greeting) int up_greeting() { return G.greeting; }
 API(up_dream) int up_dream() { return G.dream(); }
 API(up_set_play_ms) void up_set_play_ms(u32 ms) { G.play_ms = ms; }       // test button
 API(up_volume) int up_volume() { return G.volume(); }
-API(up_brightness) int up_brightness() { return G.brightness(); }
+API(up_brightness) int up_brightness() { return G.screen_brightness(); }
 API(up_set_battery) void up_set_battery(int pct) { G.set_battery(pct); }
 API(up_set_plugged) void up_set_plugged(int usb) { G.set_plugged(usb != 0); }
 API(up_set_boot) void up_set_boot(int down) { G.set_boot(down != 0); }
@@ -90,3 +96,38 @@ API(up_wifi_list_add) void up_wifi_list_add(int fixed) { G.wifi_list_add(TEXT, f
 API(up_plugged) int up_plugged() { return G.plugged; }
 API(up_set_tilt) void up_set_tilt(int v) { G.set_tilt(v); }
 API(up_accessory) int up_accessory() { return G.s.accessory; }
+// firmware update: the page's mock plays the board's ota.cpp (manifest, download, restart)
+API(up_set_fw_version) void up_set_fw_version(int v) { G.fw_version = (u16)v; }
+API(up_update_req) int up_update_req() { return G.update_req; }
+API(up_update_take) void up_update_take() { G.update_req = UREQ_NONE; }
+API(up_update_stage) int up_update_stage() { return G.update_stage; }
+API(up_update_view) int up_update_view() { return G.update_view(); }
+API(up_update_status) void up_update_status(int stage, int pct, int ver) { G.update_status(stage, pct, ver); }
+// her daily routine: the page plays the board's audio.cpp (record) and net.cpp (the listener), or the buttons
+API(up_set_packs) void up_set_packs(int routines, int names) { G.has_routines = (u8)routines; G.has_names = (u8)names; }
+API(up_listen_req) int up_listen_req() { return G.listen_req; }
+API(up_listen_kind) int up_listen_kind() { return G.listen_kind; }
+API(up_listen_q) int up_listen_q() { return G.listen_q; }
+API(up_listen_take) void up_listen_take() { G.listen_req = LREQ_NONE; }
+API(up_listen_started) void up_listen_started() { G.listen_started(); }
+API(up_listen_result) void up_listen_result(int a) { G.listen_result(a); }
+API(up_level_result) void up_level_result(int db, int pct) { G.level_result(db, pct); }
+API(up_q_key) const char* up_q_key(int q) { return q >= 0 && q < Q_COUNT ? Q_KEY[q] : ""; }
+API(up_q_count) int up_q_count() { return Q_COUNT; }
+API(up_r_stage) int up_r_stage() { return G.r_stage; }
+API(up_r_q) int up_r_q() { return G.r_q; }
+API(up_r_ans) int up_r_ans(int q) { return q >= 0 && q < Q_COUNT ? G.s.r_ans[q] : 0; }
+API(up_stars_today) int up_stars_today() { return G.stars_today(); }
+API(up_link) int up_link(int sample_waiting) { return G.link(sample_waiting != 0); }
+API(up_tv_day) int up_tv_day() { return G.s.tv_day; }
+// settings sync with the parent page (server/API.md): a Settings struct the page reads and writes
+static Settings SET;
+API(up_settings_buf) u16* up_settings_buf() { return SET.v; }   // v[K_COUNT], hol[HOL_MAX][2], then tv_day
+API(up_settings_count) int up_settings_count() { return K_COUNT; }
+API(up_get_settings) void up_get_settings() { SET = G.settings(); }
+API(up_apply_settings) void up_apply_settings(u32 rev, int present) { G.apply_settings(rev, SET, (u16)present); }
+API(up_cfg_rev) u32 up_cfg_rev() { return G.s.cfg_rev; }
+API(up_cfg_dirty) int up_cfg_dirty() { return G.s.cfg_dirty; }
+static SyncMark MARK;                    // what the sync in flight carries (one at a time)
+API(up_sync_mark) int up_sync_mark() { MARK = G.sync_mark(); return MARK.dirty; }
+API(up_settings_synced) void up_settings_synced() { G.settings_synced(MARK); }

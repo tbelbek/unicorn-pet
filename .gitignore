@@ -3,3 +3,8 @@ fw/.pio/
 emu/unicorn.wasm
 __pycache__/
 fw/src/secrets.h
+tools/.voice_cache/
+emu/sfx-pilot/
+fw/personal/
+dist/
+*.pem

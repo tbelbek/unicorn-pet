@@ -4,11 +4,15 @@
 
 namespace up {
 
+#include "voice.gen.h"            // enum Voice: her spoken lines (tools/voice.py)
+
 typedef unsigned char u8;
 typedef signed char i8;
 typedef unsigned short u16;
 typedef short i16;
 typedef unsigned int u32;
+
+#include "routine.gen.h"          // her daily-routine questions (tools/routines.py via tools/voice.py)
 
 enum { SCREEN_W = 368, SCREEN_H = 448 };
 
@@ -20,7 +24,9 @@ enum Input { IN_NEXT = 1, IN_SELECT = 2, IN_TOUCH = 3, IN_SHAKE = 4,
 // Core -> platform, returned by Game::tick
 enum Flags { F_REDRAW = 1, F_SCREEN_ON = 2, F_SAVE = 4, F_SOUND = 8,   // F_SOUND: call take_sfx()
              F_CLOCK = 16,     // a parent set the clock: write Game::wall_s (local) to the RTC
-             F_WIFI = 32 };    // a WiFi setup request: read Game::wifi_req (and wifi_arg)
+             F_WIFI = 32,      // a WiFi setup request: read Game::wifi_req (and wifi_arg)
+             F_UPDATE = 64,    // a firmware update request: read Game::update_req
+             F_LISTEN = 128 }; // listen to the child (or stop): read Game::listen_req (see listen_result)
 
 // Sound cues. The melodies live in sound.cpp so the board and the emulator play the same notes.
 enum Sfx { SFX_NONE, SFX_TAP, SFX_HATCH, SFX_EAT, SFX_PLAY, SFX_WASH, SFX_SLEEP, SFX_WAKE, SFX_REFUSE,
@@ -29,6 +35,15 @@ enum Sfx { SFX_NONE, SFX_TAP, SFX_HATCH, SFX_EAT, SFX_PLAY, SFX_WASH, SFX_SLEEP,
 struct Note { u16 hz, ms; };             // hz = 0 is a rest
 const Note* melody(int sfx, int* count);
 void set_echo(const u8* flowers, int n);   // SFX_ECHO plays these flowers' notes back as one tune
+// Her voice: packs from tools/voice.py ("UPO1": a table of Ogg Opus clips, 16 kHz mono, 16 kbps).
+// fw/data/voice.bin (public lines, clip = line - 1 per language), fw/personal/voice_name.bin (NameLine) and
+// routines_tr.bin (routine.gen.h), both Turkish only. pack_clip() checks the whole clip first (a damaged or
+// cut-short pack plays nothing); ogg_packet() then hands out its Opus packets for the platform's decoder.
+enum { VOICE_RATE = 16000 };
+struct Clip { const u8* data; u32 len, page, body, samples; u16 pre_skip; u8 seg; };   // samples: at 16 kHz
+bool pack_clip(const u8* bin, u32 len, int lang, int index, Clip* c);
+int ogg_packet(Clip* c, const u8** packet);    // length of the next Opus packet, 0 at the end
+int name_line(int sfx, int line);              // the name pack's version of a line (NameLine), -1: none
 
 enum Stat { HUNGER, HAPPY, ENERGY, CLEAN, NSTATS };
 enum { MAX_STAT = 10000 };
@@ -40,7 +55,8 @@ enum Scene { SC_EGG, SC_HATCH, SC_HOME, SC_EAT, SC_PLAY, SC_WASH, SC_SLEEP, SC_I
              SC_LEAVE, SC_AWAY, SC_RETURN, SC_FEED, SC_SETTINGS,     // FEED: pick a snack
              SC_EGG_PICK, SC_TOYS, SC_MUSIC, SC_CLOUD, SC_DRESS,     // choose an egg; Oyna's toy box
              SC_ALBUM,                                               // memories and her garden
-             SC_LOUNGE };                                            // plugged in: on the sun lounger
+             SC_LOUNGE,                                              // plugged in: on the sun lounger
+             SC_ASK };                                               // a routine question: a picture, then listening
 enum Toy { TOY_STARS, TOY_MUSIC, TOY_CLOUD, TOY_DRESS, TOY_HOME, TOY_COUNT };
 enum Accessory { ACC_NONE, ACC_BOW, ACC_FLOWER, ACC_TIARA, ACC_COUNT };
 // What she dreams of. The first dream of a night comes from what she did that day.
@@ -69,21 +85,36 @@ enum Particle { P_NONE, P_HEART, P_SPARKLE, P_BUBBLE, P_CRUMB, P_STAR, P_CONFETT
 // Parent settings (stored in the save; 0 always means "default")
 enum Volume { VOL_NORMAL, VOL_LOW, VOL_OFF };
 enum Opt { OPT_CALM = 1, OPT_NO_SHAKE = 2,        // calm: no bobbing/hops, fewer particles
-           OPT_NO_BEDTIME = 4 };                  // the parent switched the bedtime off
+           OPT_NO_BEDTIME = 4,                    // the parent switched the bedtime off
+           OPT_NO_ROUTINES = 8, OPT_HOLIDAY = 16,  // the daily questions off; holiday mode (no school)
+           OPT_TV_TEST = 32 };                    // TV test mode: 5 s samples for the listener, nothing shown
 // Bedtime: an hour of drowsy swaying, then she falls asleep (standing, if still up); asleep in the
 // night window she cannot be woken until the wake-up time. Needs a trusted calendar.
 enum Bedtime { BED_NONE, BED_DROWSY, BED_SLEEP };
-enum { BED_DEFAULT10 = 117, WAKE_DEFAULT10 = 42, DROWSY_MIN = 60 };   // 19:30, 07:00 (tens of minutes)
-enum SettingRow { SET_VOLUME, SET_LIMIT, SET_BREAK, SET_BRIGHT, SET_CALM, SET_SHAKE, SET_SLEEP, SET_LANG, SET_CLOCK,
-                  SET_EXIT, SET_ROWS };
+enum { BED_DEFAULT10 = 117, WAKE_DEFAULT10 = 42, WAKE_WE_DEFAULT10 = 48,   // 19:30, 07:00, 08:00 at weekends
+       DROWSY_MIN = 60 };                                                    // (tens of minutes)
+enum ClockSet { T_BED, T_WAKE, T_WAKE_WE };   // the parent's times (Game::clock_min), minute precision
+// the everyday rows first: the list shows in two halves (see set_half), ÇIKIŞ on both
+enum SettingRow { SET_VOLUME, SET_LIMIT, SET_BREAK, SET_LANG, SET_CLOCK, SET_SLEEP, SET_BRIGHT, SET_CALM, SET_SHAKE,
+                  SET_ROUTINE, SET_EXIT, SET_ROWS };
 // Screen languages, in tools/i18n.py's order (Latin and Cyrillic: what the pixel font can draw).
 enum Lang { LANG_TR, LANG_EN, LANG_ES, LANG_FR, LANG_DE, LANG_PT, LANG_IT, LANG_RU, LANG_SV, LANG_ID, LANG_COUNT };
-// third settings page: bedtime on/off, bedtime, wake-up time (left half -1, right half +1: 10 minutes)
-enum BedRow { BEDR_ON, BEDR_BED, BEDR_WAKE, BEDR_BACK, BEDR_ROWS };
+// third settings page: bedtime on/off, bedtime, wake-up time on school days and at weekends (left half -1,
+// right half +1: 10 minutes)
+enum BedRow { BEDR_ON, BEDR_BED, BEDR_WAKE, BEDR_WAKE_WE, BEDR_BACK, BEDR_ROWS };
+// the daily routine page: questions on/off, holiday mode, TV test mode, the week's stars
+enum RoutineRow { RT_ON, RT_HOLIDAY, RT_TV, RT_HABITS, RT_BACK, RT_ROWS };
 // Settings pages, and the WiFi setup flow (the toy shows a QR code for a temporary network of its
 // own; the parent picks the home network and types its password on the phone).
-enum SetPage { PG_MAIN, PG_CLOCK, PG_BED, PG_HUB, PG_WIFI, PG_WSTART, PG_WSESSION, PG_WHELP, PG_WLIST, PG_WFORGET };
-enum HubRow { HUB_CLOCK, HUB_WIFI, HUB_BACK, HUB_ROWS };
+enum SetPage { PG_MAIN, PG_CLOCK, PG_BED, PG_HUB, PG_WIFI, PG_WSTART, PG_WSESSION, PG_WHELP, PG_WLIST, PG_WFORGET,
+               PG_UPDATE, PG_ROUTINE, PG_HABITS };
+enum HubRow { HUB_CLOCK, HUB_WIFI, HUB_UPDATE, HUB_BACK, HUB_ROWS };
+// Firmware updates over WiFi (signed releases; the platform checks, downloads and verifies, the core
+// draws the page). IDLE/LATEST/AVAILABLE are at rest; CHECKING..RESTARTING under way; then the errors.
+enum UpdateStage { UST_IDLE, UST_CHECKING, UST_LATEST, UST_AVAILABLE, UST_DOWNLOADING, UST_VERIFYING, UST_RESTARTING,
+                   UST_NO_WIFI, UST_FAILED, UST_BAD_SIG };
+enum UpdateReq { UREQ_NONE, UREQ_CHECK, UREQ_INSTALL };
+enum { UPDATE_MIN_BATTERY = 50 };          // installing needs USB power or at least this much battery
 enum WifiRow { WF_ADD, WF_LIST, WF_BACK, WF_ROWS };
 enum WifiStage { WST_OFF, WST_STARTING, WST_WAIT, WST_PHONE, WST_JOIN, WST_ADDR, WST_CLOCK,   // under way
                  WST_OK, WST_OK_NOCLOCK, WST_BAD_PASS, WST_NOT_FOUND, WST_FULL, WST_TIMEOUT };   // results
@@ -122,7 +153,8 @@ enum {
     FRIEND_MS = 1400,                    // a friend comes to pick her up
     MODE_IDLE_MS = 12000,                // toy modes go home after this long without a deliberate input
     EGG_HINT_MS = 4000,                  // egg picker: a hand shows what to do
-    FOAM_FROM_MS = 400, FOAM_TO_MS = 2800, CROWN_TO_MS = 3300,   // bath: three foam puffs to pop
+    WASH_MS = 6500,                      // the bath: long enough for a five-year-old to pop all three puffs
+    FOAM_FROM_MS = 400, FOAM_TO_MS = 5400, CROWN_TO_MS = 6000,   // bath: three foam puffs to pop (5 s)
     VISIT_FIRST_MS = 8000, VISIT_EVERY_MS = 12000, VISIT_MS = 4000,   // butterfly neighbour
     MUSIC_MS = 20000, NOTES = 6, ECHO_WAIT_MS = 1500, ECHO_GAP_MS = 300,   // music garden
     CLOUD_MS = 15000, FEATHERS = 6, FEATHER_EVERY_MS = 2000, FEATHER_FALL = 6,   // tilt-a-cloud
@@ -169,11 +201,61 @@ struct Save {
     u8 wake10;                //     wake-up time, the same way (42 = 07:00)
     u8 tricks_seen;           //     tricks she has shown off already (a newly learned one comes first)
     u8 lang;                  //     screen language (Lang, 0 = Turkish: older saves stay Turkish)
-    u8 spare;
+    u8 wake_we10;             // v8 (was v7's spare): wake-up time at weekends and on holidays
+    u16 r_day;                //     local day the routine fields below are about (0 = none yet)
+    u16 r_asked, r_done;      //     questions asked today (bit per Question), and finished (no re-ask)
+    u16 q_off;                //     questions the parent switched off (bit per Question)
+    u16 week[7];              //     yes answers (stars) per day: week[day % 7], cleared as days go by
+    u16 cfg_dirty;            //     settings changed on the toy since the last sync (bit per SetKey)
+    u32 cfg_rev;              //     the parent page's config revision the settings are based on
+    u16 hol[4][2];            //     holiday ranges from the parent page: local days, first..last
+    u16 r_ans[Q_COUNT];       //     today's answers: Answer << 11 | minute of the day (0 = none)
+    u16 tv_day;               //     local day TV test mode was switched on (it ends after TV_DAYS)
+    u16 min_ones;             //     the minutes past bed10, wake10, wake_we10 (4 bits each, 0..9): a page's 19:35
     u32 check;                // FNV-1a over everything above
 };
-enum { SAVE_VERSION = 7, SAVE_SIZE = sizeof(Save), SAVE_V1_SIZE = 24, SAVE_V2_SIZE = 28, SAVE_V3_SIZE = 32,
-       SAVE_V4_SIZE = 40, SAVE_V5_SIZE = 40, SAVE_V6_SIZE = 52, BIRTH_CHOSEN = 1 };
+enum { SAVE_VERSION = 8, SAVE_SIZE = sizeof(Save), SAVE_V1_SIZE = 24, SAVE_V2_SIZE = 28, SAVE_V3_SIZE = 32,
+       SAVE_V4_SIZE = 40, SAVE_V5_SIZE = 40, SAVE_V6_SIZE = 52, SAVE_V7_SIZE = 56, BIRTH_CHOSEN = 1, HOL_MAX = 4 };
+static_assert(sizeof(Save) == 128, "the save layout is stored: change it only with a new version");
+
+// ---- her daily routine ---------------------------------------------------------------------------
+// The core asks (F_LISTEN, listen_req) and the platform listens, then reports with listen_result(). Answers
+// as stored in Save::r_ans (3 bits); ANS_NO_LISTENER means "nobody to ask": the big tick and cross buttons.
+enum ListenReq { LREQ_NONE, LREQ_LISTEN, LREQ_CANCEL };
+enum ListenKind { LK_YESNO, LK_OPEN,       // after her question: until 0.8 s of silence, at most 6 s
+                  LK_LEVEL,                // TV test: about 1 s of ambient level, measured on the toy only
+                  LK_TV };                 // TV test: a 5 s sample for the listener (/v1/tv-sample)
+enum Answer { ANS_NONE, ANS_YES, ANS_NO, ANS_UNCLEAR, ANS_SILENT, ANS_SAID, ANS_TAP_YES, ANS_TAP_NO,
+              ANS_NO_LISTENER };
+enum RStage { RS_ASK, RS_LISTEN, RS_BUTTONS, RS_REPLY };
+enum {
+    Q_GAP_MIN = 8, Q_REASK_MIN = 10,       // questions at least 8 minutes apart; one more try 10 min later
+    Q_AT_WINDOW_MIN = 30,                  // a question at a set time (dinner, water) may come this much later
+    R_LISTEN_MS = 30000, R_BUTTONS_MS = 20000, R_REPLY_MS = 5000,   // so a question never wedges
+    R_DARK_LINGER_MS = 5000,               // woke the screen for it: dark again this soon after
+    // TV test mode: once a minute ~1 s of ambient level; two loud checks in a row (sustained, not a slam)
+    // make a 5 s sample. At most TV_PER_HOUR an hour, none for TV_SAME_MIN while the same sound goes on.
+    TV_CHECK_MS = 60000, TV_LEVEL_DB = -42, TV_SUSTAIN_PCT = 60, TV_PER_HOUR = 6, TV_SAME_MIN = 10,
+    TV_CHANGE_DB = 8, TV_DAYS = 7,
+};
+// Radio policy the platform follows (Game::link): off by default; up for a question, a TV sample or a
+// pending upload; kept up while on USB power.
+enum Link { LINK_OFF, LINK_NOW, LINK_STAY };
+
+// Settings the parent page can change too (server/API.md): one plain array the platform serialises.
+// v[]: routines 0/1, questions (bit per Question: 1 = asked), wakes and bedtime in minutes of the day,
+// holiday 0/1, holiday range count (ranges in hol[]), tv test 0/1, lang (Lang), volume (Volume), brightness
+// 1..255, play and break minutes, calm 0/1, shake 0/1.
+enum SetKey { K_ROUTINES, K_QUESTIONS, K_WAKE_WEEKDAY, K_WAKE_WEEKEND, K_BEDTIME, K_HOLIDAY, K_HOLIDAY_RANGES,
+              K_TV_TEST, K_LANG, K_VOLUME, K_BRIGHTNESS, K_PLAY_MIN, K_BREAK_MIN, K_CALM, K_SHAKE, K_COUNT };
+// tv_day: the local day TV test mode was switched on (the page's tv_test_since, 0 = today), taken with K_TV_TEST.
+struct Settings { u16 v[K_COUNT]; u16 hol[HOL_MAX][2]; u16 tv_day; };
+// What a sync carried: the keys changed on the toy (dirty) and each key's edit count then, so its acknowledgement
+// clears only those edits (one made while the request was out stays dirty for the next sync).
+struct SyncMark { u16 dirty; u8 gen[K_COUNT]; };
+// The page's config over mine: the keys it sends (present, bit per SetKey) win, except those changed on the
+// toy since the last sync (dirty), which keep the toy's value. Values out of range keep mine too.
+Settings merge_settings(const Settings& mine, u16 dirty, const Settings& page, u16 present);
 
 // Local calendar from the wall clock (local seconds since 2000-01-01 00:00, 0 = unknown).
 struct Cal { u16 day; u16 minute; u16 year; u8 month, mday, wday, known; };   // wday: 0 = Monday
@@ -185,7 +267,7 @@ struct Target { i16 x, y; i8 vy; u8 alive; };
 
 struct Game {
     Save s;
-    u8 scene, menu, screen_on, frame, taps, dirty, want_save, sfx;
+    u8 scene, menu, screen_on, frame, taps, dirty, want_save, sfx, voice;
     u32 scene_ms, idle_ms, anim_ms, minute_ms, sec_ms, save_ms, rng;
 
     // cosmetic, transient
@@ -204,7 +286,7 @@ struct Game {
     u8 foam_mask, foam_sel, visitor, note_count, echo_i, landed, preview;
     u16 foam_at[3], flower_at[3];          // scene_ms of the last pop / note per target
     u8 notes[NOTES];
-    u32 visit_due, visit_start, last_note_ms, echo_next, tilt_at, dress_at, land_cue_at;
+    u32 visit_due, visit_start, last_note_ms, echo_next, tilt_at, dress_at, land_cue_at, voice_at, voice_line_at[V_COUNT];
     i16 cloud_x, tilt, tilt_f;
     struct Feather { i16 x, y; u8 state; } fea[FEATHERS];   // state: 0 waiting, 1 falling, 2 on cloud, 3 floor
     u32 play_ms, dark_ms, away_ms;        // screen time used, dark streak, time left out
@@ -224,6 +306,9 @@ struct Game {
     u16 wifi_fixed;                       // bit i: list entry i is built in (secrets.h), read-only
     char wifi_ap[WIFI_NAME], wifi_pass[24], wifi_net[WIFI_NAME];   // the toy's network, the home one
     char wifi_names[WIFI_LIST_MAX][WIFI_NAME];
+    // firmware update: the platform sets fw_version (the running one) and reports through update_status
+    u8 update_stage, update_req, update_pct;
+    u16 fw_version, update_ver;           // update_ver: the newest signed version seen (0 = none yet)
     u8 qr[QR_MAX_SIDE_ * QR_MAX_SIDE_];
     u8 boot_down, boot_taps, boot_fired;  // the BOOT key's state machine (set_boot)
     u32 boot_t;                           // time of its last edge
@@ -236,6 +321,21 @@ struct Game {
     u32 party_end;
     u32 memory_at;
     u32 greet_end;
+    // daily routine (RAM; what must survive a power cut is in Save)
+    u8 has_routines, has_names;           // the platform found routines_tr.bin / voice_name.bin
+    u8 r_q, r_stage, r_back, r_was_dark;  // the question on screen, its stage, where she came from
+    u8 listen_req, listen_kind, listen_q, r_sel;   // F_LISTEN: what the platform should do; button cursor
+    u16 rclip;                            // a routine clip to say (index + 1), 0 = none
+    u32 r_at;                             // when the stage started (stamp)
+    u32 r_first[Q_COUNT];                 // minute (day * 1440 + minute) of the first ask, for the re-ask
+    u32 r_last;                           // minute of the last question, for the spacing
+    u16 bag[3 * Q_COUNT + 4];             // shuffle bags of variants: used bits per list
+    u8 bag_last[3 * Q_COUNT + 4];         // and the variant said last + 1 (not first in a new round)
+    // TV test mode (RAM)
+    u32 tv_check_at, tv_samples[TV_PER_HOUR];   // last level check; when the last samples were sent
+    i8 tv_db, tv_sample_db;               // last level; the level when the last sample was taken
+    u8 tv_loud, tv_quiet_since;           // loud checks in a row; a quiet check since the last sample
+    u8 cfg_gen[K_COUNT];                  // edits per settings key (RAM, wraps): see SyncMark
     Part part[NPART];
     Target tgt[GAME_TARGETS];
 
@@ -244,7 +344,10 @@ struct Game {
     u32 save(u8* out) const;                     // returns SAVE_SIZE
     u32 tick(u32 dt_ms);                         // advance time, returns Flags
     void input(int type, int x, int y);
-    int take_sfx();                              // pending cue (once), SFX_NONE if muted
+    int take_sfx(int* line = 0, int* clip = 0);  // pending cue (once), SFX_NONE if muted or at bedtime;
+                                                 // *line: what she says (V_NONE = nothing), played instead
+                                                 // of the cue's tune, in the language s.lang; *clip: a
+                                                 // routines_tr.bin clip to say instead (-1 = none)
     // Local wall-clock seconds since 2000-01-01 from an RTC that keeps running while the board is
     // off (0 = none). Breaks use it; needs still freeze while powered off. calendar = false: the
     // clock ticks but its date is a guess (flat battery), so day/night falls back to daytime.
@@ -264,12 +367,26 @@ struct Game {
     void wifi_list_clear() { wifi_count = 0; wifi_fixed = 0; dirty = 1; }
     void wifi_list_add(const char* name, bool built_in);
     bool wifi_busy() const { return wifi_stage != WST_OFF; }   // a session is open (radio in use)
+    // firmware update, platform -> core: stage (UpdateStage), percent while downloading, and the newest
+    // version it knows (0 = keep the one known)
+    void update_status(int stage, int percent, int version);
+    bool update_waiting() const { return update_ver > fw_version; }   // a newer version is out there
+    bool update_allowed() const { return plugged || (batt_known && battery >= UPDATE_MIN_BATTERY); }
+    bool update_busy() const { return update_stage == UST_CHECKING || (update_stage >= UST_DOWNLOADING &&
+                                                                       update_stage <= UST_RESTARTING); }
+    int update_view() const;                     // what the update page shows (a known newer version: AVAILABLE)
 
     // effective parent settings
     u32 play_limit_ms() const { return (s.limit_min ? s.limit_min : PLAY_LIMIT_MS / 60000) * 60000u; }
     u32 break_ms() const { return (s.break_min ? s.break_min : AWAY_MS / 60000) * 60000u; }
-    int volume() const { return s.muted ? (int)VOL_OFF : s.volume; }
-    int brightness() const { return s.bright ? s.bright : 180; }   // AMOLED level 1..255
+    int volume() const { return s.muted ? (int)VOL_OFF : s.volume; }   // load() folds muted into volume
+    int brightness() const { return s.bright ? s.bright : 180; }   // the parent's AMOLED level 1..255
+    // what the panel shows: at night and at bedtime a fifth of that, a glow, not a lamp in the
+    // child's room (the settings stay readable at the parent's level)
+    int screen_brightness() const {
+        bool night = phase() == PH_NIGHT || bedtime() != BED_NONE;
+        return night && scene != SC_SETTINGS ? (brightness() / 5 < 12 ? 12 : brightness() / 5) : brightness();
+    }
     bool calm() const { return s.opts & OPT_CALM; }
     int recommended() const;                     // menu item her needs point at, -1 = none
     bool foam_window() const;                    // bath: the foam puffs are out
@@ -284,6 +401,7 @@ struct Game {
     int stage() const;                           // Stage, from the care days
     int years() const;                           // birthdays she has had (0 = unknown or none yet)
     int tricks() const;                          // tricks learned so far: 0..TRICKS
+    bool quiet() const { return volume() == VOL_OFF || bedtime() != BED_NONE; }   // no sound: off, or bedtime
     int bedtime() const;                         // Bedtime: none, drowsy hour, or time to sleep
     bool bed_locked() const { return bedtime() != BED_NONE; }   // asleep now = asleep till morning
 
@@ -296,6 +414,26 @@ struct Game {
     u32 stamp() const { return clock_ms + 1; }
     u32 since(u32 st) const { return clock_ms + 1 - st; }
     void set_stat(int i, int v);                 // debug / tests
+    int set_rows() const;                        // rows of the settings list on screen (0: a button page)
+
+    // daily routine, platform -> core: listening began; the answer (Answer); a TV-test level check
+    void listen_started();
+    void listen_result(int answer);
+    void level_result(int db, int loud_pct);     // dBFS (-90..0) and the share of loud frames, 0..100
+    bool routines_on() const { return has_routines && !(s.opts & OPT_NO_ROUTINES); }
+    bool holiday() const;                        // holiday mode, or today is in a page's holiday range
+    bool free_day() const;                       // a weekend day or a holiday: no school, later wake-up
+    int wake_min() const;                        // today's wake-up time (school days / free days), minute of the day
+    int clock_min(int t) const;                  // a ClockSet (bedtime, wake-ups) as a minute of the day
+    void set_clock_min(int t, int minute);
+    int stars_today() const;
+    int link(bool sample_waiting = false) const; // Link: what the radio should do now
+    bool tv_on() const { return s.opts & OPT_TV_TEST; }
+    // settings sync with the parent page (server/API.md): read, apply a newer page config, synced
+    Settings settings() const;
+    void apply_settings(u32 rev, const Settings& page, u16 present);
+    SyncMark sync_mark() const;
+    void settings_synced(const SyncMark& sent);
 
 private:
     void go(u8 sc);
@@ -323,6 +461,7 @@ private:
     void play_note(int flower);
     void press(int item);
     void settings_input(int type, int x, int y);
+    int set_touch(int y);                        // the settings row under a tap, -1: none (or a page turn)
     void clock_input(int type, int x, int y);
     void open_clock();
     void save_clock();
@@ -339,8 +478,21 @@ private:
     void pet_gain();
     void wifi_input(int type, int x, int y);
     void wifi_request(int req, int arg = 0);
+    void update_input(int type, int x, int y);
     void burst(int kind, int x, int y, int n);
-    void cue(int id) { sfx = (u8)id; }
+    void cue(int id, int line = -1);            // a sound, and what she says with it (-1: the usual line)
+    void say_clip(int first, int list);          // a routine clip: one of the 10 from `first`, bag `list`
+    void check_routine();
+    void routine_day();
+    int question_due(u32 abs_min);
+    void ask(int q);
+    void routine_done();
+    void routine_input(int type, int x, int y);
+    void routine_page_input(int type, int x, int y);
+    void check_tv();
+    bool tv_may_listen() const;
+    void routine_cancel();
+    void touched(int key) { s.cfg_dirty |= (u16)(1 << key); cfg_gen[key]++; }
     u32 random();
     u32 crandom();
 };
@@ -355,13 +507,31 @@ static_assert(QR_MAX_SIDE == QR_MAX_SIDE_, "QR buffer size");
 int qr_encode(const char* text, u8* modules, int max_side);
 
 // Hit boxes shared by input handling and rendering.
-enum { MENU_Y0 = 368, MENU_Y1 = 434, MENU_X0 = 10, MENU_STEP = 92, MENU_BTN_W = 72 };
+// menu: buttons centred at MENU_STEP / 2 + i * MENU_STEP; a touch anywhere from MENU_Y0 down takes the nearest
+enum { MENU_Y0 = 368, MENU_Y1 = 434, MENU_STEP = 92 };
 enum { PET_X0 = 64, PET_Y0 = 100, PET_X1 = 304, PET_Y1 = 350 };   // shifted by Game::pet_x
-enum { HEADER_Y1 = 92 };
-enum { SET_Y0 = 64, SET_ROW_H = 34 };             // settings rows (all pages)
-enum { WBTN_Y0 = 384, WBTN_Y1 = 440 };            // WiFi pages: two big buttons along the bottom                          // status bar + name: opens the info screen
-enum { SOUND_X0 = 236, SOUND_Y1 = 48 };          // info screen: sound on/off toggle, top right
+enum { HEADER_Y1 = 92 };                          // status bar + name: opens the info screen
+// Settings rows (all list pages): 48 px = 3.75 mm, at most SET_SLOTS on screen. A longer list shows in two
+// halves: rows [0, SET_SPLIT) and a "more" slot, then an "up" slot and the rest; its last row (exit or back)
+// sits in the bottom slot of both halves.
+enum { SET_Y0 = 56, SET_ROW_H = 48, SET_SLOTS = 7, SET_SPLIT = 5, SLOT_MORE = -2, SLOT_UP = -3 };
+inline int set_half(int n, int row) { return n > SET_SLOTS && row >= SET_SPLIT && row < n - 1; }
+inline int set_row_slot(int n, int row) {        // where a row is drawn (on its own half)
+    return n <= SET_SLOTS || row < SET_SPLIT ? row : row == n - 1 ? SET_SLOTS - 1 : row - SET_SPLIT + 1;
+}
+inline int set_slot_row(int n, int half, int slot) {   // the row in a slot: a row, SLOT_MORE, SLOT_UP or -1
+    if (n <= SET_SLOTS) return slot < n ? slot : -1;
+    if (slot == SET_SLOTS - 1) return n - 1;
+    if (!half) return slot < SET_SPLIT ? slot : SLOT_MORE;
+    if (!slot) return SLOT_UP;
+    return SET_SPLIT + slot - 1 < n - 1 ? SET_SPLIT + slot - 1 : -1;
+}
+static_assert(CLK_ROWS - 1 - SET_SPLIT <= SET_SLOTS - 2 && SET_ROWS - 1 - SET_SPLIT <= SET_SLOTS - 2 &&
+              WIFI_LIST_MAX - SET_SPLIT <= SET_SLOTS - 2, "a settings list does not fit in two halves");
+enum { WBTN_Y0 = 384, WBTN_Y1 = 440 };
+enum { ASK_BTN_Y0 = 296 };                        // a routine question: the big tick (left) and cross (right) below            // WiFi pages: two big buttons along the bottom
+enum { HOUSE_X0 = 272, HOUSE_Y1 = 88 };          // toy modes and the album: the whole top-right corner goes home
 enum { BOOK_X1 = 132, BOOK_Y1 = 56 };            // info screen: the album, top left
-enum { TARGET_HIT = 36 };                         // mini-game star hit box half-size (72 px)
+enum { TARGET_HIT = 52 };                         // mini-game star hit box half-size (104 px = 8 mm)
 
 }  // namespace up

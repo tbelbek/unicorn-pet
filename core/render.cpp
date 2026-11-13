@@ -478,11 +478,24 @@ static void zz(int x, int y) {
     text("z", x + 26, y - 20, 2, DIM, 0);
 }
 
-static void thought(int x, int y) {
+// what she is thinking of: the apple (hungry), soap bubbles (dirty) or a little rain cloud (sad)
+enum { THINK_APPLE, THINK_SOAP, THINK_RAIN };
+static void thought(int x, int y, int what = THINK_APPLE) {
     ellipse(x + 20, y + 20, 20, 20, BUBBLE);
     ellipse(x - 4, y + 42, 6, 6, BUBBLE);
     ellipse(x - 16, y + 56, 3, 3, BUBBLE);
-    icon(IC_APPLE, 4, x + 2, y + 4);
+    if (what == THINK_APPLE) { icon(IC_APPLE, 4, x + 2, y + 4); return; }
+    if (what == THINK_SOAP) {              // the bath icon on a darker disc, so it shows on the white bubble
+        ellipse(x + 20, y + 20, 15, 15, rgb(0x4C, 0x7A, 0xC8));
+        icon(IC_BUBBLE, 3, x + 20 - UP_ICON_W * 3 / 2, y + 20 - UP_ICON_H * 3 / 2);
+        return;
+    }
+    static const u16 RAIN_C = rgb(0x7A, 0x84, 0xA8), DROP = rgb(0x3A, 0x9C, 0xF0);
+    ellipse(x + 13, y + 16, 7, 6, RAIN_C);
+    ellipse(x + 23, y + 12, 9, 8, RAIN_C);
+    ellipse(x + 30, y + 17, 6, 5, RAIN_C);
+    fill(x + 7, y + 16, x + 36, y + 22, RAIN_C);
+    for (int k = 0; k < 3; k++) fill(x + 11 + k * 9, y + 26 + (k & 1) * 4, x + 14 + k * 9, y + 32 + (k & 1) * 4, DROP);
 }
 
 static void sky() {
@@ -578,17 +591,17 @@ static void menu(const Game& g) {
     u32 t = g.clock_ms + g.acc_ms;
     int rec = g.recommended();
     for (int i = 0; i < MENU_COUNT; i++) {
-        int cx = 46 + i * MENU_STEP, scale = 3, dy = 0;
+        int cx = MENU_STEP / 2 + i * MENU_STEP, scale = 4, dy = 0;
         if (i == g.menu)
             rrect(cx - 36, MENU_Y0, cx + 36, MENU_Y1, 12, SEL, PAL[UP_ACCENT[g.s.character]], 2);
         if (i == g.press_item && (int)(g.press_end - t) > 0) {      // dip, then pop past and settle
             int left = (int)(g.press_end - t);
-            scale = left > PRESS_MS * 2 / 3 ? 2 : left > PRESS_MS / 3 ? 4 : 3;
+            scale = left > PRESS_MS * 2 / 3 ? 3 : left > PRESS_MS / 3 ? 5 : 4;
         } else if (i == rec && !g.calm()) {                          // her need gently bounces
             dy = arc(t % 1100, 500, 6);
         }
-        icon(icons[i], scale, cx - UP_ICON_W * scale / 2, 378 + 12 - UP_ICON_H * scale / 2 + dy);
-        text(T(labels[i]), cx, 414, 1, i == g.menu ? INK : DIM);
+        icon(icons[i], scale, cx - UP_ICON_W * scale / 2, 389 - UP_ICON_H * scale / 2 + dy);
+        if (text_w(T(labels[i]), 1) <= 68) text(T(labels[i]), cx, 417, 1, i == g.menu ? INK : DIM);
     }
 }
 
@@ -747,7 +760,9 @@ static void home_like(const Game& g, int state, const char* sub, bool night, int
     if (!g.party) header(g, sub);          // over a high jump's crown; a party's bubble takes its place
     int sx = side_x(g), sy = side_y(g) + dy;
     if (state == M_HAPPY) { sparkle(sx + P(34), sy + P(52), 4, YELLOW); sparkle(sx + P(230), sy + P(42), 3, PINK); }
-    if (state == M_HUNGRY) thought(sx + P(g.facing < 0 ? 10 : 196), sy + P(6));
+    if (state == M_HUNGRY || state == M_SAD)
+        thought(sx + P(g.facing < 0 ? 10 : 196), sy + P(6),
+                state == M_HUNGRY ? THINK_APPLE : g.stat(CLEAN) < NEED_LOW ? THINK_SOAP : THINK_RAIN);
     if (state == M_SLEEPY) zz(sx + P(220) + wave(now(g), 2000, 4), sy + P(32) - (int)(now(g) / 40 % 24));
     if (state == ST_SLEEP && !g.dream() && (g.scene != SC_LOUNGE || night)) zz(sx + P(220) + wave(now(g), 2600, 6), sy + P(118) - (int)(now(g) / 45 % 40));
     if (state == ST_EAT) {                 // today's treat in the bowl, eaten bite by bite
@@ -760,9 +775,9 @@ static void home_like(const Game& g, int state, const char* sub, bool night, int
     if (show_menu) menu(g);
 }
 
-// ---- eggs: one shell per character, patterned in her mane colours -------------------------
+// ---- eggs: one shell per character, in her coat colours with her own pattern ---------------
 
-static void cracks(int x0, int y0, int scale, int stage);
+static void cracks(int x0, int y0, int scale, int stage, u16 ink);
 
 // The line the shell breaks along: a jagged zigzag round the middle, the row per column where
 // the lower half starts. The cracks that come before the hatch trace this same line.
@@ -770,7 +785,7 @@ static const u8 EGG_CUT[UP_EGG_W] = {12, 12, 13, 12, 11, 12, 13, 14, 13, 12, 11,
 enum { EGG_WHOLE, EGG_TOP, EGG_BOTTOM };
 
 static void egg_draw(int c, int x0, int y0, int scale, int crack_stage, int part = EGG_WHOLE) {
-    const u8* e = UP_EGG;
+    const u8* e = UP_EGG + c * UP_EGG_W * UP_EGG_H;   // all four shells share one silhouette
     auto in = [&](int x, int y) {          // this pixel is shell, and in the part being drawn
         if (x < 0 || y < 0 || x >= UP_EGG_W || y >= UP_EGG_H || !e[y * UP_EGG_W + x]) return false;
         return part == EGG_WHOLE || (part == EGG_TOP) == (y < EGG_CUT[x]);
@@ -782,26 +797,15 @@ static void egg_draw(int c, int x0, int y0, int scale, int crack_stage, int part
             u8 i = e[y * UP_EGG_W + x];
             bool edge = !in(x - 1, y) || !in(x + 1, y) || !in(x, y - 1) || !in(x, y + 1);
             bool broken = edge && e[y * UP_EGG_W + x] != rim && part != EGG_WHOLE;
-            u16 col = broken ? PAL[rim] : PAL[i];
-            if (!edge) {
-                bool mark = false;
-                int k = 0;
-                switch (c) {
-                case 0: mark = (x + y) % 6 == 0; k = (y / 4) % 6; break;                    // rainbow stripes
-                case 1: mark = (x * 7 + y * 11) % 17 == 0; k = 5; break;                    // little stars
-                case 2: mark = x % 4 == 1 && y % 4 == 1; k = (x + y) % 6; break;            // candy dots
-                default: mark = (y + (x % 4 < 2 ? 0 : 1)) % 5 == 0; k = 2 + (y / 5) % 3; break;   // waves
-                }
-                if (mark) col = PAL[UP_MANE[c][k]];
-            }
-            fill(x0 + x * scale, y0 + y * scale, x0 + (x + 1) * scale, y0 + (y + 1) * scale, col);
+            fill(x0 + x * scale, y0 + y * scale, x0 + (x + 1) * scale, y0 + (y + 1) * scale,
+                 broken ? PAL[rim] : PAL[i]);
         }
-    if (crack_stage > 0 && part == EGG_WHOLE) cracks(x0, y0, scale, crack_stage);
+    if (crack_stage > 0 && part == EGG_WHOLE) cracks(x0, y0, scale, crack_stage, PAL[UP_EGG_CRACK[c]]);
 }
 
-static void house_button() {                // top-right: back home
-    rrect(292, 16, 348, 72, 12, SEL, LILAC, 2);
-    icon(IC_HOUSE, 4, 320 - UP_ICON_W * 2, 44 - UP_ICON_H * 2);
+static void house_button() {                // top-right: back home (it answers from HOUSE_X0 / HOUSE_Y1)
+    rrect(288, 10, 360, 82, 14, SEL, LILAC, 3);
+    icon(IC_HOUSE, 5, 324 - UP_ICON_W * 5 / 2, 46 - UP_ICON_H * 5 / 2);
 }
 
 static void scene_egg_pick(const Game& g) {
@@ -814,6 +818,8 @@ static void scene_egg_pick(const Game& g) {
         egg_draw(i, EX[i] - UP_EGG_W * 2, EY[i] - UP_EGG_H * 2 + lift, 4, 0);
     }
     if (g.preview) {                       // the heart: "this one!"
+        const u8* face = UP_FRONT + ((g.sel * UP_MOODS + M_HAPPY) * 2 + g.frame) * UP_FRONT_W * UP_FRONT_H;
+        blit(face, UP_FRONT_W, UP_FRONT_H, 1, (SCREEN_W - UP_FRONT_W) / 2, 330, PAL);   // who is inside
         rrect(SCREEN_W / 2 - 36, 382, SCREEN_W / 2 + 36, 438, 14, SEL, PINK, 2);
         icon(IC_HEART, 5, SCREEN_W / 2 - UP_ICON_W * 5 / 2, 390);
         if (g.idle_ms > EGG_HINT_MS) hand_hint(g, SCREEN_W / 2 + 40, 420);
@@ -1379,14 +1385,14 @@ static void dream_cloud(int cx, int cy, int grow, u16 c) {
 static void scene_sleep(const Game& g) {
     if (g.standing) {                      // fell asleep on her feet: eyes shut, a slow sway, Zz
         nudge = g.calm() ? 0 : wave(now(g), 4200, P(4));
-        home_like(g, ST_BLINK, T(S_ASLEEP_STANDING), true, 0, 2);
+        home_like(g, ST_BLINK, T(S_ASLEEP_STANDING), true, 0, 2, !g.bed_locked());   // no menu that cannot answer
         int sx = side_x(g), sy = side_y(g);
         zz(sx + P(g.facing < 0 ? 0 : 220) + wave(now(g), 2600, 6), sy + P(40) - (int)(now(g) / 45 % 40));
         nudge = 0;
         return;
     }
     int dy = g.calm() ? 2 : wave(now(g), 3200, 2) + 2;
-    home_like(g, ST_SLEEP, T(S_SLEEPING), true, 0, dy);
+    home_like(g, ST_SLEEP, T(S_SLEEPING), true, 0, dy, !g.bed_locked());   // at bedtime no buttons that do nothing
     int sx = side_x(g), sy = side_y(g) + dy;
     bool flip = g.facing < 0;
     if (g.tucked_in()) {                   // up to her chin, pulled up from the tail end
@@ -1498,13 +1504,36 @@ template <int N> static void cat(char (&dst)[N], const char* src) {
     dst[k] = 0;
 }
 
-static void settings_row(const Game& g, int i, const char* name, const char* val, bool accent) {
-    int y = SET_Y0 + i * SET_ROW_H;
-    if (i == g.set_row) rrect(16, y, SCREEN_W - 16, y + SET_ROW_H - 4, 10, SEL, LILAC, 2);
-    int room = SCREEN_W - 64 - (*val ? text_w(val, 1) + 12 : 0);   // a long name (or a long word) gets the small size
-    int big = text_w(name, 2) <= room;
-    text_clip(name, 32, y + (big ? 9 : 13), big ? 2 : 1, accent ? YELLOW : INK, room);
-    if (*val) text(val, SCREEN_W - 32 - text_w(val, 1), y + 13, 1, DIM, 0);
+// One row of a settings list (rows on the other half of a long list are skipped). The name is always big;
+// the value sits on its right when both fit, else on a second line under it.
+static void settings_row(const Game& g, int row, const char* name, const char* val, bool accent) {
+    int n = g.set_rows();
+    if (row != n - 1 && set_half(n, row) != set_half(n, g.set_row)) return;
+    int y = SET_Y0 + set_row_slot(n, row) * SET_ROW_H, room = SCREEN_W - 64, vw = *val ? text_w(val, 2) : 0;
+    if (row == g.set_row) rrect(16, y, SCREEN_W - 16, y + SET_ROW_H - 4, 10, SEL, LILAC, 2);
+    u16 c = accent ? YELLOW : INK;
+    int ns = text_w(name, 2) <= room ? 2 : 1;   // only a name too long for any line (a WiFi network's) is small
+    if (text_w(name, ns) + (vw ? vw + 16 : 0) <= room || !vw) {
+        text_clip(name, 32, y + (ns == 2 ? 13 : 18), ns, c, room);
+        if (vw) text(val, SCREEN_W - 32 - vw, y + 13, 2, DIM, 0);
+        return;
+    }
+    text_clip(name, 32, y + (ns == 2 ? 3 : 8), ns, c, room);
+    int vs = vw <= room ? 2 : 1;           // only a value too long for a line of its own gets the small size
+    text(val, SCREEN_W - 32 - text_w(val, vs), y + (vs == 2 ? 23 : 28), vs, DIM, 0);
+}
+
+// The "more" / "up" slot of a long list: a big arrow to the other half, and which half this is.
+static void settings_pager(const Game& g) {
+    int n = g.set_rows();
+    if (n <= SET_SLOTS) return;
+    int half = set_half(n, g.set_row), y = SET_Y0 + (half ? 0 : SET_SPLIT) * SET_ROW_H;
+    rrect(16, y, SCREEN_W - 16, y + SET_ROW_H - 4, 10, BLACK, TRACK, 2);
+    for (int i = 0; i < 12; i++) {         // a chevron: down to the rest, up to the start
+        int w = half ? i : 11 - i;
+        fill(SCREEN_W / 2 - w - 2, y + 16 + i, SCREEN_W / 2 + w + 2, y + 17 + i, LILAC);
+    }
+    text(half ? "2/2" : "1/2", SCREEN_W - 32 - text_w("1/2", 2), y + 13, 2, DIM, 0);
 }
 
 // SC_SETTINGS page 1: the date and time, and her birthday. Left half of a row: -1, right half: +1.
@@ -1533,29 +1562,33 @@ static void scene_clock(const Game& g) {
         }
         settings_row(g, i, T(names[i]), v, i == CLK_SAVE);
     }
+    settings_pager(g);
     text(T(S_HINT_ROWS), SCREEN_W / 2, 420, 1, DIM);
 }
 
-static void hhmm(int tens, char (&out)[8]) {   // tens of minutes after midnight -> "19:30"
+static void hhmm(int minute, char (&out)[8]) {   // minutes after midnight -> "19:30"
     char t[4];
     out[0] = 0;
-    two(tens / 6, t); cat(out, t); cat(out, ":"); two(tens % 6 * 10, t); cat(out, t);
+    two(minute / 60, t); cat(out, t); cat(out, ":"); two(minute % 60, t); cat(out, t);
 }
 
 // SC_SETTINGS page 2: bedtime and wake-up time. Left half of a row: -10 min, right half: +10 min.
 static void scene_bedtime(const Game& g) {
-    static const short names[BEDR_ROWS] = {S_BED_RULE, S_BED_AT, S_WAKE_AT, S_BACK};
+    static const short names[BEDR_ROWS] = {S_BED_RULE, S_BED_AT, S_WAKE_AT, S_WAKE_WE, S_BACK};
     text(T(S_BED_TITLE), SCREEN_W / 2, 30, 2, YELLOW);
     bool on = !(g.s.opts & OPT_NO_BEDTIME);
     for (int i = 0; i < BEDR_ROWS; i++) {
         char v[96] = "", t[8];
         if (i == BEDR_ON) cat(v, on ? T(S_ON) : T(S_OFF));
-        if (i == BEDR_BED || i == BEDR_WAKE) { hhmm(i == BEDR_BED ? g.s.bed10 : g.s.wake10, t); cat(v, "-  "); cat(v, t); cat(v, "  +"); }
+        if (i == BEDR_BED || i == BEDR_WAKE || i == BEDR_WAKE_WE) {
+            hhmm(g.clock_min(i == BEDR_BED ? T_BED : i == BEDR_WAKE ? T_WAKE : T_WAKE_WE), t);
+            cat(v, "-  "); cat(v, t); cat(v, "  +");
+        }
         settings_row(g, i, T(names[i]), v, false);
     }
     const char* help[4] = {T(S_BED_HELP_1), T(S_BED_HELP_2),
                            T(S_BED_HELP_3), g.today().known ? "" : T(S_BED_NO_CLOCK)};
-    for (int k = 0; k < 4; k++) text(help[k], SCREEN_W / 2, 230 + k * 18, 1, DIM);
+    for (int k = 0; k < 4; k++) text(help[k], SCREEN_W / 2, SET_Y0 + BEDR_ROWS * SET_ROW_H + 16 + k * 18, 1, DIM);
     text(T(S_HINT_BED), SCREEN_W / 2, 420, 1, DIM);
 }
 
@@ -1567,13 +1600,15 @@ static void lines(const char* const* l, int n, int y, u16 c = DIM, int gap = 18)
     for (int i = 0; i < n; i++) text(l[i], SCREEN_W / 2, y + i * gap, 1, c);
 }
 
-static void wifi_buttons(const Game& g, const char* left, const char* right) {   // two big buttons
+// two big buttons; sel: the highlighted one (-1: Game::wifi_sel)
+static void wifi_buttons(const Game& g, const char* left, const char* right, int sel = -1) {
     const char* label[2] = {left, right};
+    if (sel < 0) sel = g.wifi_sel;
     for (int i = 0; i < 2; i++) {
         if (!label[i]) continue;
         int x0 = i ? SCREEN_W / 2 + 6 : 16, x1 = i ? SCREEN_W - 16 : SCREEN_W / 2 - 6;
-        rrect(x0, WBTN_Y0, x1, WBTN_Y1, 12, SEL, g.wifi_sel == i ? YELLOW : LILAC, g.wifi_sel == i ? 3 : 2);
-        text(label[i], (x0 + x1) / 2, (WBTN_Y0 + WBTN_Y1) / 2 - 8, 2, INK);
+        rrect(x0, WBTN_Y0, x1, WBTN_Y1, 12, SEL, sel == i ? YELLOW : LILAC, sel == i ? 3 : 2);
+        text_fit(label[i], (x0 + x1) / 2, (WBTN_Y0 + WBTN_Y1) / 2 - 8, 2, INK, x1 - x0);   // a long word: small
     }
 }
 
@@ -1606,9 +1641,18 @@ static void qr_draw(const Game& g, int cx, int top, int max_px) {   // black on 
             if (g.qr[y * n + x]) fill(x0 + (x + 4) * px, top + (y + 4) * px, x0 + (x + 5) * px, top + (y + 5) * px, BLACK);
 }
 
+// A newer firmware is waiting: a yellow dot just before a row's value (where settings_row draws it).
+static void update_dot(const Game& g, int row, const char* name, const char* val) {
+    int n = g.set_rows();
+    if (!g.update_waiting() || (row != n - 1 && set_half(n, row) != set_half(n, g.set_row))) return;
+    int y = SET_Y0 + set_row_slot(n, row) * SET_ROW_H, room = SCREEN_W - 64, vw = text_w(val, 2);
+    bool one = text_w(name, 2) + vw + 16 <= room;
+    ellipse(SCREEN_W - 32 - vw - 12, y + (one ? 20 : 30), 5, 5, YELLOW);
+}
+
 static void scene_hub(const Game& g) {
     text(T(S_HUB_TITLE), SCREEN_W / 2, 30, 2, YELLOW);
-    static const short names[HUB_ROWS] = {S_DATE_TIME, S_WIFI, S_BACK};
+    static const short names[HUB_ROWS] = {S_DATE_TIME, S_WIFI, S_UPDATE, S_BACK};
     for (int i = 0; i < HUB_ROWS; i++) {
         char v[96] = "";
         if (i == HUB_CLOCK) {
@@ -1618,8 +1662,66 @@ static void scene_hub(const Game& g) {
                    two(c.minute / 60, t); cat(v, t); cat(v, ":"); two(c.minute % 60, t); cat(v, t); cat(v, " >"); }
         }
         if (i == HUB_WIFI) fmt(v, S_N_NETWORKS, g.wifi_count);
-        settings_row(g, i, T(names[i]), v, false);
+        if (i == HUB_UPDATE) fmt(v, S_V_N, g.fw_version);   // the running version; a dot: a newer one
+        settings_row(g, i, T(names[i]), v, i == HUB_UPDATE && g.update_waiting());
+        if (i == HUB_UPDATE) update_dot(g, i, T(names[i]), v);
     }
+}
+
+// The firmware update page: the running version, then what the platform reports (see Game::update_view).
+static void scene_update(const Game& g) {
+    text(T(S_UPDATE), SCREEN_W / 2, 30, 2, YELLOW);
+    char line[96];
+    fmt(line, S_VERSION_N, g.fw_version);
+    text(line, SCREEN_W / 2, 64, 2, INK);
+    int v = g.update_view();
+    const char *right = 0, *title = "", *a = "", *b = "";
+    int mark = -1;                         // big_mark kind, -1: none
+    u16 tc = INK;
+    switch (v) {
+    case UST_IDLE:
+        wifi_glyph(SCREEN_W / 2, 170, 6, LILAC);
+        a = T(S_UPD_INFO); b = T(S_UPD_KEEPS); right = T(S_CHECK);
+        break;
+    case UST_CHECKING:
+        wifi_glyph(SCREEN_W / 2, 170, 6, (g.clock_ms / 400) & 1 ? LILAC : DIM);
+        title = T(S_UPD_CHECKING); tc = YELLOW;
+        break;
+    case UST_LATEST:
+        mark = 0; title = T(S_UPD_LATEST); tc = OK_GREEN; right = T(S_CHECK);
+        break;
+    case UST_AVAILABLE:
+        mark = 2; fmt(line, S_UPD_NEW, g.update_ver); title = line; tc = AMBER; b = T(S_UPD_KEEPS);
+        if (g.update_allowed()) right = T(S_INSTALL);
+        else {                             // the battery rule, explained
+            text(T(S_UPD_CHARGE_1), SCREEN_W / 2, 296, 1, AMBER);
+            text(T(S_UPD_CHARGE_2), SCREEN_W / 2, 316, 1, AMBER);
+        }
+        break;
+    case UST_DOWNLOADING: case UST_VERIFYING: {
+        int pct = v == UST_VERIFYING ? 100 : g.update_pct;
+        title = T(v == UST_VERIFYING ? S_UPD_VERIFYING : S_UPD_DOWNLOADING); tc = YELLOW;
+        rrect(40, 230, SCREEN_W - 40, 266, 10, BLACK, LILAC, 2);
+        if (pct) fill(46, 236, 46 + (SCREEN_W - 92) * pct / 100, 260, YELLOW);
+        char p[8];
+        utoa(pct, p); cat(p, "%");
+        text(p, SCREEN_W / 2, 280, 2, INK);
+        text(T(S_UPD_DONT_OFF), SCREEN_W / 2, 330, 1, AMBER);
+        break;
+    }
+    case UST_RESTARTING:
+        mark = 0; title = T(S_UPD_RESTARTING); tc = OK_GREEN; b = T(S_UPD_KEEPS);
+        break;
+    case UST_NO_WIFI: mark = 1; title = T(S_NO_WIFI); tc = BAD_RED; b = T(S_UPD_CHECK_NETS); right = T(S_RETRY); break;
+    case UST_FAILED:  mark = 1; title = T(S_UPD_FAILED); tc = BAD_RED; b = T(S_TIMEOUT_2); right = T(S_RETRY); break;
+    default:          mark = 1; title = T(S_UPD_BAD_SIG); tc = BAD_RED; b = T(S_UPD_OLD_KEPT); right = T(S_RETRY); break;
+    }
+    if (mark >= 0) big_mark(SCREEN_W / 2, 150, mark);
+    if (*title) text(title, SCREEN_W / 2, v == UST_DOWNLOADING || v == UST_VERIFYING ? 196 : 200, 2, tc);
+    if (*a) text(a, SCREEN_W / 2, 236, 1, INK);
+    if (*b) text(b, SCREEN_W / 2, 260, 1, DIM);
+    if (v >= UST_DOWNLOADING && v <= UST_RESTARTING) return;   // nothing to press until it restarts
+    wifi_buttons(g, T(S_BACK), right, right ? g.wifi_sel : 0);
 }
 
 static void scene_wifi(const Game& g) {
@@ -1729,6 +1831,7 @@ static void scene_wlist(const Game& g) {
     for (int i = 0; i < g.wifi_count; i++)
         settings_row(g, i, g.wifi_names[i], (g.wifi_fixed & (1 << i)) ? T(S_FIXED) : T(S_FORGET_MORE), false);
     settings_row(g, g.wifi_count, T(S_BACK), "", false);
+    settings_pager(g);
     if (!g.wifi_count) text(T(S_NO_NETS), SCREEN_W / 2, 140, 1, DIM);
     text(T(S_FIXED_NOTE), SCREEN_W / 2, 420, 1, DIM);
 }
@@ -1742,6 +1845,152 @@ static void scene_wforget(const Game& g) {
 }
 
 // SC_SETTINGS: for grown-ups (BOOT: 3 quick presses, hold the last). Every value cycles on tap / PWR.
+// ---- her daily routine -------------------------------------------------------------------------------
+// Wordless picture cards, one per question (tools/routines.py order), on her coarse pixel grid.
+static const char* const ART_BRUSH[13] = {
+    "..........lll.", ".........lwwwl", "........lwwwl.", ".......lwwwl..", "......lwwwl...", ".....bbbbb....",
+    "....bb........", "...bb.........", "..bb..........", ".bb...........", "bb............", "b.............",
+    ".............."};
+static const char* const ART_SHIRT[12] = {
+    "...ppp..ppp...", ".pppppppppppp.", "pppppppppppppp", "ppp.pppppp.ppp", "pp..pppppp..pp", "....ppwwpp....",
+    "....pwwwwp....", "....ppwwpp....", "....pppppp....", "....pppppp....", "....pppppp....", "....pppppp...."};
+static const char* const ART_UNIFORM[12] = {
+    "...bbw..wbb...", ".bbbbwwwwbbbb.", "bbbbbbrrbbbbbb", "bbb.bbrrbb.bbb", "bb..bbrrbb..bb", "....bbrrbb....",
+    "....bbbrbb....", "....bbbbbb....", "....bbbbbb....", "....bbbbbb....", "....bbbbbb....", "....bbbbbb...."};
+static const char* const ART_COMB[9] = {
+    ".oooooooooooo.", "oooooooooooooo", "oooooooooooooo", "o.o.o.o.o.o.o.", "o.o.o.o.o.o.o.", "o.o.o.o.o.o.o.",
+    "o.o.o.o.o.o.o.", "o.o.o.o.o.o.o.", ".............."};
+static const char* const ART_PILL[8] = {
+    "...rrrrwwww...", "..rrrrrwwwww..", ".rrhrrrwwwwww.", ".rhrrrrwwwwww.", ".rrrrrrwwwwww.", ".rrrrrrwwwwww.",
+    "..rrrrrwwwww..", "...rrrrwwww..."};
+static const char* const ART_EGG_PLATE[9] = {
+    "....llllll....", "..llllllllll..", ".llllwwwwllll.", "lllwwwyywwwlll", "lllwwyyyywwlll", "lllwwwyywwwlll",
+    ".llllwwwwllll.", "..llllllllll..", "....llllll...."};
+static const char* const ART_GLASS[12] = {
+    ".l..........l.", ".l..........l.", ".l..........l.", ".lbbbbbbbbbbl.", ".lbwbbbbbbbbl.", "..lbwbbbbbbl..",
+    "..lbbbbbbbbl..", "..lbbbbbbbbl..", "..lbbbbbbbbl..", "...lbbbbbbl...", "...lbbbbbbl...", "....llllll...."};
+static const char* const ART_DINNER[10] = {
+    "k...llllll....", "k.llllllllll..", "kllnnnnllggll.", "kllnnnnlgggll.", "kllnnnnllglll.", "klllllloooll.",
+    ".llllloooolll.", "..llllllllll..", "....llllll....", ".............."};
+static const char* const ART_TOYBOX[12] = {
+    "..rr.....y....", ".rrrr...yyy...", ".rhrr.yyyyyyy.", ".rrrr..yyyyy..", "..rr...yy.yy..", "nnnnnnnnnnnnnn",
+    "noooooooooooon", "noooooooooooon", "noooonnnnooooon", "noooooooooooon", "noooooooooooon", "nnnnnnnnnnnnnn"};
+static const char* const ART_TOILET[12] = {
+    "wwwww.........", "wwwww.........", "wwwww.........", "wwwwwwwwwwwww.", "kkkkkkkkkkkkk.", ".wwwwwwwwwww..",
+    "..wwwwwwwwww..", "...wwwwwwww...", "....wwwwww....", "....wwwwww....", "...wwwwwwww...", "..............."};
+static const char* const ART_EAR[12] = {
+    "..pppppp..", ".pppppppp.", "ppp....ppp", "pp..pp..pp", "pp.p..p.pp", "....p..ppp", "....p.ppp.", "...pp.pp..",
+    "...p..pp..", "..pp.pp...", ".ppppp....", "..ppp....."};
+
+static const u16 QCOL[] = {INK, rgb(0x55, 0x4E, 0x7A), PINK, rgb(0xFF, 0x5C, 0x6E), rgb(0x5C, 0x9C, 0xFF), YELLOW,
+                           rgb(0x5E, 0xE0, 0x7A), rgb(0xA8, 0xD8, 0xFF), rgb(0xFF, 0x9F, 0x43), rgb(0x9A, 0x5B, 0x34),
+                           rgb(0xFF, 0xFF, 0xFF)};
+static const char QKEYS[] = "wkprbyglonh";
+
+// question q's picture centred on (cx, cy), s screen pixels per art pixel (the heart for the open one)
+static void q_picture(int q, int cx, int cy, int s) {
+    static const char* const* const ART[Q_YESNO] = {ART_BRUSH, ART_BRUSH, ART_SHIRT, ART_UNIFORM, ART_COMB, ART_PILL,
+                                                    ART_EGG_PLATE, ART_GLASS, ART_DINNER, ART_TOYBOX, ART_TOILET};
+    static const u8 H[Q_YESNO] = {13, 13, 12, 12, 9, 8, 9, 12, 10, 12, 12};
+    if (q < 0 || q >= Q_YESNO) { icon(IC_HEART, s * 14 / UP_ICON_W, cx - s * 7, cy - s * 6); return; }
+    art(ART[q], H[q], QKEYS, QCOL, cx - 7 * s, cy - H[q] * s / 2, s);
+}
+
+// SC_ASK: the card says what she asks, an ear while she listens, the big tick and cross when nobody can
+// understand her, and a star for a yes.
+static void scene_ask(const Game& g) {
+    sky();
+    u32 t = now(g);
+    int q = g.r_q;
+    rrect(56, 24, SCREEN_W - 56, 264, 24, SEL, PAL[UP_ACCENT[g.s.character]], 4);
+    q_picture(q, SCREEN_W / 2, 144, 11);
+    icon(g.phase() == PH_DAY ? IC_STAR : IC_MOON, 3, SCREEN_W - 56 - 40, 36);   // a day or an evening question
+    switch (g.r_stage) {
+    case RS_ASK:                           // she is asking: three dots, one after another
+        for (int k = 0; k < 3; k++) {
+            int up = g.calm() ? 0 : arc((t + 1200 - k * 200) % 1200, 400, 10);
+            ellipse(SCREEN_W / 2 - 40 + k * 40, 360 - up, 10, 10, k == (int)(t / 400 % 3) ? INK : DIM);
+        }
+        break;
+    case RS_LISTEN: {                      // she listens: an ear, and the sound coming in
+        art(ART_EAR, 12, QKEYS, QCOL, SCREEN_W / 2 + 4, 320, 6);
+        for (int k = 0; k < 4; k++) {
+            int h = 12 + (g.calm() ? 16 : wave(t + k * 230, 900, 18) + 18);
+            fill(SCREEN_W / 2 - 80 + k * 18, 356 - h, SCREEN_W / 2 - 70 + k * 18, 356 + h, LILAC);
+        }
+        break;
+    }
+    case RS_BUTTONS:                       // yes | no
+        for (int i = 0; i < 2; i++) {
+            int x0 = i ? SCREEN_W / 2 + 6 : 16, x1 = i ? SCREEN_W - 16 : SCREEN_W / 2 - 6;
+            rrect(x0, ASK_BTN_Y0, x1, SCREEN_H - 8, 18, SEL, g.r_sel == i ? YELLOW : LILAC, g.r_sel == i ? 4 : 2);
+            big_mark((x0 + x1) / 2, (ASK_BTN_Y0 + SCREEN_H - 8) / 2, i);
+        }
+        break;
+    case RS_REPLY: {
+        int a = g.s.r_ans[q < Q_COUNT ? q : 0] >> 11;
+        bool yes = a == ANS_YES || a == ANS_TAP_YES || (q == Q_HAPPY && a == ANS_SAID);
+        if (yes && q < Q_YESNO) {          // a star for today, and how many so far
+            int pop = g.calm() ? 0 : arc(t % 1000, 1000, 10);
+            icon(IC_STAR, 10, SCREEN_W / 2 - UP_ICON_W * 5, 318 - pop);
+            char line[48];
+            fmt(line, S_STARS_TODAY, g.stars_today());
+            text_fit(line, SCREEN_W / 2, 412, 2, YELLOW);
+        } else {
+            icon(IC_HEART, 6, SCREEN_W / 2 - UP_ICON_W * 3, 340);
+        }
+        break;
+    }
+    }
+    particles(g);
+}
+
+static void routine_help(const Game& g, int rows) {
+    const char* help[3] = {T(S_RT_HELP_1), T(S_RT_HELP_2), T(S_RT_HELP_3)};
+    (void)g;
+    for (int k = 0; k < 3; k++) text_fit(help[k], SCREEN_W / 2, SET_Y0 + rows * SET_ROW_H + 16 + k * 18, 1, DIM);
+}
+
+// Settings > GÜNLÜK RUTİN
+static void scene_routine(const Game& g) {
+    static const short names[RT_ROWS] = {S_QUESTIONS, S_HOLIDAY, S_TV_TEST, S_HABITS, S_BACK};
+    text(T(S_ROUTINE_ROW), SCREEN_W / 2, 30, 2, YELLOW);
+    for (int i = 0; i < RT_ROWS; i++) {
+        char v[96] = "";
+        switch (i) {
+        case RT_ON:      cat(v, !g.has_routines ? T(S_NO_PACK) : (g.s.opts & OPT_NO_ROUTINES) ? T(S_OFF) : T(S_ON)); break;
+        case RT_HOLIDAY: cat(v, g.s.opts & OPT_HOLIDAY ? T(S_ON) : T(S_OFF)); break;
+        case RT_TV:      cat(v, g.tv_on() ? T(S_ON) : T(S_OFF)); break;
+        }
+        settings_row(g, i, T(names[i]), v, false);
+    }
+    routine_help(g, RT_ROWS);
+    text(T(S_HINT_MAIN), SCREEN_W / 2, 420, 1, DIM);
+}
+
+// Settings > GÜNLÜK RUTİN > BU HAFTA: a star for every yes, the last seven days (today on the right).
+static void scene_habits(const Game& g) {
+    text(T(S_HABITS_TITLE), SCREEN_W / 2, 24, 2, YELLOW);
+    Cal c = g.today();
+    for (int d = 0; d < 7; d++) {
+        int x = 84 + d * 40;
+        u32 day = c.known ? c.day - 6 + d : 0;
+        char n[4] = "";
+        if (c.known) two(calendar(day * 86400u).mday, n);
+        text(n, x + 12, 50, 1, d == 6 ? INK : DIM);
+        bool kept = c.known && day <= g.s.r_day && day + 7 > g.s.r_day;   // only days the week still holds
+        for (int q = 0; q < Q_YESNO; q++) {
+            int y = 66 + q * 30;
+            if (d == 0) { q_picture(q, 32, y + 13, 2); fill(60, y + 28, SCREEN_W - 16, y + 29, TRACK); }
+            if (kept && (g.s.week[day % 7] >> q & 1)) icon(IC_STAR, 2, x + 3, y + 6);
+        }
+    }
+    char line[48];
+    fmt(line, S_STARS_TODAY, g.stars_today());
+    text_fit(line, SCREEN_W / 2, 404, 2, INK);
+    text(T(S_BACK), SCREEN_W / 2, 428, 1, DIM);
+}
+
 static void scene_settings(const Game& g) {
     switch (g.set_page) {
     case PG_CLOCK:    scene_clock(g); return;
@@ -1753,9 +2002,12 @@ static void scene_settings(const Game& g) {
     case PG_WHELP:    scene_whelp(g); return;
     case PG_WLIST:    scene_wlist(g); return;
     case PG_WFORGET:  scene_wforget(g); return;
+    case PG_UPDATE:   scene_update(g); return;
+    case PG_ROUTINE:  scene_routine(g); return;
+    case PG_HABITS:   scene_habits(g); return;
     }
-    static const short names[SET_ROWS] = {S_VOLUME, S_SESSION, S_BREAK, S_BRIGHTNESS, S_CALM, S_SHAKE, S_SLEEP_ROW,
-                                          S_LANGUAGE, S_CLOCK_ROW, S_EXIT};
+    static const short names[SET_ROWS] = {S_VOLUME, S_SESSION, S_BREAK, S_LANGUAGE, S_CLOCK_ROW, S_SLEEP_ROW,
+                                          S_BRIGHTNESS, S_CALM, S_SHAKE, S_ROUTINE_ROW, S_EXIT};
     static const short vols[3] = {S_NORMAL, S_LOW, S_OFF};
     text(T(S_SETTINGS), SCREEN_W / 2, 30, 2, YELLOW);
     for (int i = 0; i < SET_ROWS; i++) {
@@ -1768,10 +2020,13 @@ static void scene_settings(const Game& g) {
         case SET_CALM:   cat(v, g.calm() ? T(S_ON) : T(S_OFF)); break;
         case SET_SHAKE:  cat(v, (g.s.opts & OPT_NO_SHAKE) ? T(S_OFF) : T(S_ON)); break;
         case SET_LANG:   cat(v, UP_LANG_NAME[LANG]); break;
+        case SET_ROUTINE:                  // "AÇIK >", or no routines_tr.bin on the toy
+            cat(v, !g.has_routines ? T(S_NO_PACK) : (g.s.opts & OPT_NO_ROUTINES) ? T(S_OFF) : T(S_ON)); cat(v, " >");
+            break;
         case SET_SLEEP: {                  // "19:30 - 07:00 >"
             if (g.s.opts & OPT_NO_BEDTIME) { cat(v, T(S_OFF_MORE)); break; }
             char t[8];
-            hhmm(g.s.bed10, t); cat(v, t); cat(v, " - "); hhmm(g.s.wake10, t); cat(v, t); cat(v, " >");
+            hhmm(g.clock_min(T_BED), t); cat(v, t); cat(v, " - "); hhmm(g.clock_min(T_WAKE), t); cat(v, t); cat(v, " >");
             break;
         }
         case SET_CLOCK: {                  // "31.10.2026 14:05 >" or a nudge to set it (and WiFi, behind it)
@@ -1786,8 +2041,11 @@ static void scene_settings(const Game& g) {
             break;
         }
         }
-        settings_row(g, i, T(names[i]), v, i == SET_EXIT || (i == SET_CLOCK && !g.today().known));
+        bool clock_row = i == SET_CLOCK && (!g.today().known || g.update_waiting());   // the update lives behind it
+        settings_row(g, i, T(names[i]), v, i == SET_EXIT || clock_row);
+        if (i == SET_CLOCK) update_dot(g, i, T(names[i]), v);
     }
+    settings_pager(g);
     char line[64];
     if (g.batt_known) { fmt(line, S_BATTERY, g.battery); cat(line, "%"); }
     else { fmt(line, S_BATTERY, 0); for (int k = 0; line[k]; k++) if (line[k] == '0') { line[k] = '?'; break; } }
@@ -1884,17 +2142,17 @@ static void scene_game(const Game& g) {
         const Target& t = g.tgt[i];
         int ty = t.y + ahead(t.vy, g), tx = t.x + wave(now(g) + i * 300, 1600, 3);   // drifting up
         if (!t.alive || ty > SCREEN_H + 30) continue;
-        if (i == g.sel) rrect(tx - 34, ty - 32, tx + 34, ty + 32, 14, BLACK, LILAC, 2);   // buttons
-        icon(IC_STAR, 6, tx - UP_ICON_W * 3, ty - UP_ICON_H * 3);
+        if (i == g.sel) rrect(tx - 40, ty - 37, tx + 40, ty + 37, 16, BLACK, LILAC, 2);   // buttons
+        icon(IC_STAR, 7, tx - UP_ICON_W * 7 / 2, ty - UP_ICON_H * 7 / 2);
     }
+    house_button();                        // the way home, as in every other mode
     particles(g);
 }
 
 // Each crack stage runs the break line further out from the middle, with a small fork or two.
-static void cracks(int x0, int y0, int scale, int stage) {
+static void cracks(int x0, int y0, int scale, int stage, u16 ink) {
     static const signed char REACH[4] = {2, 5, 8, 10};          // columns either side of the middle
     int r = REACH[(stage > 4 ? 4 : stage) - 1];
-    u16 ink = rgb(0x7A, 0x4E, 0x9E);
     auto dot = [&](int x, int y) {
         if (x < 1 || x >= UP_EGG_W - 1 || !UP_EGG[y * UP_EGG_W + x - 1] || !UP_EGG[y * UP_EGG_W + x + 1]) return;
         fill(x0 + x * scale, y0 + y * scale, x0 + (x + 1) * scale, y0 + (y + 1) * scale, ink);
@@ -1944,7 +2202,8 @@ static void scene_hatch(const Game& g) {
         egg_draw(g.s.character, x0 - lift / 2, y0 - up, 8, 0, EGG_TOP);
         static const signed char SHARD[3][3] = {{3, -3, -7}, {10, 1, -9}, {17, 4, -5}};
         static const char* const CHIP[3][2] = {{"ss.", ".sd"}, {"s..", "ssd"}, {".s", "sd"}};   // sliver, wedge, bit
-        u16 bits[2] = {PAL[UP_EGG[12 * UP_EGG_W + 8]], PAL[UP_EGG[3 * UP_EGG_W + 12]]};
+        const u8* shell = UP_EGG + g.s.character * UP_EGG_W * UP_EGG_H;
+        u16 bits[2] = {PAL[shell[12 * UP_EGG_W + 8]], PAL[shell[3 * UP_EGG_W + 12]]};
         for (int k = 0; k < 3; k++) {      // chips of shell from the break, falling away
             int sx = x0 + SHARD[k][0] * 8 + SHARD[k][1] * (int)t / 40;
             int sy = y0 + EGG_CUT[SHARD[k][0]] * 8 + SHARD[k][2] * (int)t / 40 + (int)(t * t / 6000);
@@ -2011,7 +2270,7 @@ static void scene_album(const Game& g) {
         cat(title, " ");
         cat(title, n);
     }
-    text(title, 32, 30 + (text_w(title, 2) > 252 ? 4 : 0), text_w(title, 2) > 252 ? 1 : 2, YELLOW, 0);   // clear of the house
+    text(title, 32, 30 + (text_w(title, 2) > 248 ? 4 : 0), text_w(title, 2) > 248 ? 1 : 2, YELLOW, 0);   // clear of the house
     house_button();
     int n = g.album();
     u16 edge = g.book ? RAINBOW[g.book % 7] : PAL[UP_ACCENT[g.s.character]];
@@ -2047,10 +2306,6 @@ static void scene_info(const Game& g) {
     static const short says[] = {S_SAY_FINE, S_SAY_HAPPY, S_SAY_HUNGRY, S_SAY_SLEEPY, S_SAY_HUG};
     static const int icons[NSTATS] = {IC_APPLE, IC_HEART, IC_STAR, IC_BUBBLE};
     Mood m = g.mood();
-    // sound on/off toggle (hit box SOUND_X0 / SOUND_Y1 in unicorn.h), clear of the rounded corner
-    bool off = g.volume() == VOL_OFF;
-    rrect(SOUND_X0 + 8, 14, SCREEN_W - 30, 40, 10, SEL, off ? TRACK : PAL[UP_ACCENT[g.s.character]], 2);
-    text(off ? T(S_SOUND_OFF) : T(S_SOUND_ON), (SOUND_X0 + 8 + SCREEN_W - 30) / 2, 23, 1, off ? DIM : INK);
     int lift = g.album_unseen && !g.calm() ? wave(now(g), 900, 3) : 0;   // something new inside
     book(36, 14 + lift, g.album_unseen ? YELLOW : TRACK);
     if (g.album_unseen && g.scene_ms > 1500) hand_hint(g, 84, 54);
@@ -2104,6 +2359,7 @@ void render(const Game& g, u16* fb) {
     case SC_RETURN: walker(g, T(S_BACK_HOME), g.vel_x ? (const char*)0 : T(S_IM_BACK)); break;
     case SC_AWAY:  scene_away(g); break;
     case SC_REFUSE: scene_refuse(g); break;
+    case SC_ASK:   scene_ask(g); break;
     default:       scene_home(g); break;
     }
 }

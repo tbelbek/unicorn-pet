@@ -165,15 +165,13 @@ test("shake plays, and wakes a sleeping unicorn", () => {
   assert.equal(w.up_scene(), SC.HOME);
 });
 
-test("mute toggle on the info screen", () => {
+test("the info screen has no mute switch: sound is the parent's volume", () => {
   hatch();
   w.up_input(IN.TOUCH, 184, 60);
-  w.up_input(IN.TOUCH, 300, 26);
-  assert.equal(w.up_muted(), 1);
-  w.up_input(IN.TOUCH, 184, 300);
-  tapMenu(0);
-  w.up_input(IN.TOUCH, 61, 200);
-  assert.equal(w.up_tick(0) & 8, 0, "no sound while muted");
+  w.up_input(IN.TOUCH, 300, 26);                     // where the old switch was: just closes the info screen
+  assert.equal(w.up_scene(), SC.HOME);
+  assert.equal(w.up_muted(), 0);
+  assert.equal(w.up_volume(), 0);
 });
 
 test("RTC: the break also passes while powered off", () => {
@@ -204,9 +202,11 @@ test("parent settings from the BOOT gesture (three presses, the last held)", () 
   for (let t = 0; t < 3100; t += 10) { w.up_set_boot(1); w.up_tick(10); }
   w.up_set_boot(0);
   assert.equal(w.up_scene(), SC.SETTINGS, "the gesture opens the settings");
-  w.up_input(IN.TOUCH, 184, 64 + 0 * 34 + 17);        // volume: normal -> low
+  const row = (slot) => 56 + slot * 48 + 24;          // SET_Y0, SET_ROW_H
+  w.up_input(IN.TOUCH, 184, row(0));                  // volume: normal -> low
   assert.equal(w.up_volume(), 1);
-  w.up_input(IN.TOUCH, 184, 64 + 3 * 34 + 17);        // brightness steps
+  w.up_input(IN.TOUCH, 184, row(5));                  // the "more" arrow: the second half of the list
+  w.up_input(IN.TOUCH, 184, row(2));                  // brightness steps
   assert.notEqual(w.up_brightness(), 180);
 });
 
@@ -233,6 +233,108 @@ test("toy box: music, tilt-a-cloud and the mirror", () => {
   assert.equal(w.up_scene(), SC.DRESS);
   w.up_input(IN.TOUCH, 24 + 3 * 86 + 39, 390);
   assert.equal(w.up_accessory(), 3, "wearing the tiara");
+});
+
+test("firmware update: check, the battery rule, install, restart keeping the save (the emulator's mock)", () => {
+  const UST = { IDLE: 0, CHECKING: 1, AVAILABLE: 3, DOWNLOADING: 4, RESTARTING: 6 }, F_UPDATE = 64;
+  const row = (slot) => 56 + slot * 48 + 24, button = (right) => w.up_input(IN.TOUCH, right ? 280 : 90, 412);
+  const take = () => { const f = w.up_tick(0); const r = f & F_UPDATE ? w.up_update_req() : 0; w.up_update_take(); return r; };
+  hatch();
+  w.up_set_fw_version(1);
+  w.up_set_stat(ST.HAPPY, 4321);
+  w.up_input(5, 0, 0);                                // the grown-up gesture
+  w.up_input(IN.TOUCH, 184, row(4));                  // SAAT: the clock, WiFi and update hub
+  w.up_input(IN.TOUCH, 184, row(2));                  // GÜNCELLEME
+  assert.equal(w.up_update_view(), UST.IDLE);
+  button(1);                                          // KONTROL
+  assert.equal(take(), 1, "a check request");
+  assert.equal(w.up_update_stage(), UST.CHECKING);
+  w.up_update_status(2, 0, 2);                        // the mock manifest: version 2 ("yeni sürüm var")
+  assert.equal(w.up_update_view(), UST.AVAILABLE);
+  w.up_set_battery(20); w.up_set_plugged(0); w.up_set_plugged(0);
+  button(1);
+  assert.equal(take(), 0, "20 % and no cable: no install");
+  w.up_set_plugged(1); w.up_set_plugged(1);
+  button(1);                                          // YÜKLE
+  assert.equal(take(), 2, "an install request");
+  w.up_update_status(UST.DOWNLOADING, 55, 0);
+  assert.equal(w.up_update_stage(), UST.DOWNLOADING);
+  w.up_update_status(UST.RESTARTING, 100, 0);
+  const n = w.up_save();                              // the restart: saved, then the new firmware boots
+  const blob = new Uint8Array(w.memory.buffer, w.up_save_buf(), n).slice();
+  w.up_init(9);
+  w.up_set_fw_version(2);
+  new Uint8Array(w.memory.buffer, w.up_save_buf(), n).set(blob);
+  assert.equal(w.up_load(n), 1, "the save survives the update");
+  assert.equal(w.up_stat(ST.HAPPY), 4321);
+  assert.equal(w.up_scene(), SC.HOME);
+  assert.equal(w.up_update_view(), UST.IDLE, "nothing waiting on the new version");
+});
+
+
+// local seconds since 2000 (what the board's RTC gives the core)
+const at = (y, mo, d, h, mi) => (Date.UTC(y, mo - 1, d, h, mi) - Date.UTC(2000, 0, 1)) / 1000;
+const F_LISTEN = 128, ANS = { YES: 1, NO: 2, TAP_YES: 6, NO_LISTENER: 8 }, LK = { YESNO: 0, LEVEL: 2, TV: 3 };
+const ASK = 22;
+
+test("daily routine: she asks, nobody can understand her, the child taps the tick, a star", () => {
+  hatch();
+  w.up_set_packs(1, 0);                               // as if routines_tr.bin were on the card
+  w.up_set_wall(at(2026, 11, 3, 17, 59), 1, 0); run(1000);
+  w.up_set_wall(at(2026, 11, 3, 18, 0), 1, 0);        // dinner time on a Tuesday
+  const f = w.up_tick(100);
+  assert.equal(w.up_scene(), ASK, "her question");
+  assert.ok(f & F_LISTEN, "the platform is asked to listen");
+  assert.equal(w.up_listen_req(), 1); assert.equal(w.up_listen_kind(), LK.YESNO);
+  const key = new TextDecoder().decode(new Uint8Array(w.memory.buffer, w.up_q_key(w.up_listen_q()), 6));
+  assert.equal(key, "DINNER");
+  w.up_take_sfx(); assert.ok(w.up_taken_clip() >= 0, "a clip from routines_tr.bin");
+  assert.equal(w.up_link(0), 1, "the radio comes up while she asks");
+  w.up_listen_take(); w.up_listen_started(); w.up_listen_result(ANS.NO_LISTENER);
+  assert.equal(w.up_r_stage(), 2, "the buttons");
+  w.up_input(IN.TOUCH, 90, 400);                      // the big tick
+  assert.equal(w.up_stars_today(), 1);
+  assert.equal(w.up_r_ans(8) >> 11, ANS.TAP_YES);
+  run(5200);
+  assert.equal(w.up_scene(), SC.HOME, "back home");
+});
+
+test("settings sync: a page config applies, the toy's own change wins its key", () => {
+  hatch();
+  const K = w.up_settings_count(), buf = () => new Uint16Array(w.memory.buffer, w.up_settings_buf(), K + 8);
+  w.up_get_settings();
+  assert.equal(buf()[2], 7 * 60, "weekday wake-up 07:00");
+  buf()[8] = 4; buf()[5] = 1;                          // the page: German, holiday mode
+  w.up_apply_settings(3, 1 << 8 | 1 << 5);
+  assert.equal(w.up_lang(), 4); assert.equal(w.up_cfg_rev(), 3);
+  w.up_input(5, 0, 0);                                // on the toy: the volume
+  w.up_input(IN.TOUCH, 184, 56 + 24);
+  assert.ok(w.up_cfg_dirty() & 1 << 9, "marked for the next sync");
+  w.up_get_settings(); buf()[9] = 2; buf()[8] = 3;    // the page changed the volume and the language too
+  w.up_apply_settings(4, 1 << 9 | 1 << 8);
+  assert.equal(w.up_volume(), 1, "the toy's change wins"); assert.equal(w.up_lang(), 3, "the page's other change applies");
+  w.up_sync_mark(); w.up_input(IN.TOUCH, 184, 56 + 24);   // a sync goes out; the volume changes again meanwhile
+  w.up_settings_synced(); assert.ok(w.up_cfg_dirty() & 1 << 9, "an edit made while it was out stays to be told");
+  w.up_sync_mark(); w.up_settings_synced(); assert.equal(w.up_cfg_dirty(), 0);
+});
+
+test("TV test mode: a level check a minute, a sample only for lasting sound", () => {
+  hatch();
+  w.up_set_wall(at(2026, 11, 3, 10, 0), 1, 0);
+  w.up_input(5, 0, 0);
+  const row = (slot) => 56 + slot * 48 + 24;
+  w.up_input(IN.TOUCH, 184, row(5)); w.up_input(IN.TOUCH, 184, row(5));   // second half: GÜNLÜK RUTİN
+  w.up_input(IN.TOUCH, 184, row(2));                  // TV TESTİ on
+  assert.ok(w.up_tv_day() > 0);
+  w.up_input(IN.TOUCH, 184, row(4)); w.up_input(IN.TOUCH, 184, row(6));   // GERİ, ÇIKIŞ
+  let levels = 0, samples = 0;
+  for (let i = 0; i < 6 * 600; i++) {                 // six minutes, the TV on
+    if (!(w.up_tick(100) & F_LISTEN)) continue;
+    const kind = w.up_listen_kind(); w.up_listen_take();
+    if (kind === LK.LEVEL) { levels++; w.up_level_result(-30, 90); } else if (kind === LK.TV) samples++;
+  }
+  assert.ok(levels >= 5 && levels <= 7, `a check a minute (${levels})`);
+  assert.equal(samples, 1, "one sample: the same sound going on is not sampled again");
 });
 
 console.log(`\n${passed} wasm tests passed`);

@@ -103,35 +103,30 @@ def sky(d, w, h, seed=7):
     d.ellipse([mx + 14, my - 6, mx + 56, my + 36], fill=BG)
 
 
-def egg(scale, crack=True, wobble=0):
-    """Unicorn egg: cream shell, rainbow spots, a crack showing it's about to hatch."""
+def egg(scale, crack=True, wobble=0, key="pamuk"):
+    """Her egg, one per character: shell in her coat colours with her own pattern (pamuk rainbow
+    stripes, gece stars on violet, seker candy dots, deniz waves). The shells are pixel art drawn from
+    AI references (assets/eggs.png, interiors only); outline and rim shade come from her palette."""
     w, h = 20, 24
-    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    cells = {}
-    for y in range(h):
-        for x in range(w):
-            # egg = narrower on top
-            ry = 10.5
-            rx = 7.5 if y > 11 else 7.5 - (11 - y) * .18
-            if ((x + .5 - 10) / rx) ** 2 + ((y + .5 - 12.5) / ry) ** 2 <= 1:
-                cells[(x, y)] = "#FFF4E2" if (x + y) % 9 else "#FFF9EF"
-    for (x, y) in list(cells):                      # shade lower-right rim
-        if (x + 1, y) not in cells or (x, y + 1) not in cells:
-            cells[(x, y)] = "#F2D7C2"
-    for (cx, cy), col in [((7, 8), "#FF5C8A"), ((12, 12), "#4CC9F0"), ((8, 16), "#FFE066"),
-                          ((13, 18), "#9B6BFF"), ((11, 5), "#5EE07A")]:
-        for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1)):
-            cells[(cx + dx, cy + dy)] = col
+    p = S.PALETTES[key]
+    src = Image.open(ROOT / "assets/eggs.png").convert("RGBA")
+    i = ["pamuk", "gece", "seker", "deniz"].index(key)   # column order in assets/eggs.png
+    cells = {(x, y): "#%02X%02X%02X" % src.getpixel((i * w + x, y))[:3]
+             for y in range(h) for x in range(w) if src.getpixel((i * w + x, y))[3]}
+    for (x, y) in list(cells):                      # shade the lower-right rim of the plain shell
+        if ((x + 1, y) not in cells or (x, y + 1) not in cells) and cells[(x, y)] == p["body"]:
+            cells[(x, y)] = p["shade"]
     if crack:
         for x, y in [(5, 10), (6, 11), (7, 10), (8, 11), (9, 10), (10, 11)]:   # crack
-            cells[(x, y)] = "#7A4E9E"
+            cells[(x, y)] = p["outline"]
     if wobble:
         cells = {(x + wobble, y): col for (x, y), col in cells.items() if 0 <= x + wobble < w}
     for (x, y) in list(cells):
         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
             n = (x + dx, y + dy)
             if n not in cells and 0 <= n[0] < w and 0 <= n[1] < h:
-                cells[n] = "#5B2A86"
+                cells[n] = p["outline"]
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     for (x, y), c in cells.items():
         img.putpixel((x, y), ImageColor.getrgb(c) + (255,))
     return img.resize((w * scale, h * scale), Image.NEAREST)

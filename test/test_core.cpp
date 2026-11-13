@@ -42,6 +42,12 @@ static Game hatched(u32 seed = 42) {
 }
 
 static void tap_menu(Game& g, int item) { g.input(IN_TOUCH, 46 + item * MENU_STEP, 400); }
+static void tap_set(Game& g, int x, int row) {   // a settings row, turning to its half of a long list first
+    int n = g.set_rows();
+    if (row != n - 1 && set_half(n, row) != set_half(n, g.set_row))
+        g.input(IN_TOUCH, x, SET_Y0 + (set_half(n, row) ? SET_SPLIT : 0) * SET_ROW_H + 18);
+    g.input(IN_TOUCH, x, SET_Y0 + set_row_slot(n, row) * SET_ROW_H + 18);
+}
 // Oyna opens the toy box; the stars card is top left
 static void play_stars(Game& g) { tap_menu(g, MENU_PLAY); g.input(IN_TOUCH, 116, 148); }
 // feeding is two taps now: the menu, then one of three big snacks
@@ -243,8 +249,10 @@ TEST(event_play_minigame_by_touch) {
     EQ(g.score, 1);
     EQ(cue_after(g), SFX_POP);
     CHECK(g.particles() > 0);
-    g.input(IN_TOUCH, 2, 2);               // a miss changes nothing
+    g.input(IN_TOUCH, 2, 2);               // a miss scores nothing, but still answers
     EQ(g.score, 1);
+    EQ(cue_after(g), SFX_TAP);
+    CHECK(g.particles() > 0);
     int happy = g.stat(HAPPY);
     run(g, GAME_MS);
     EQ(g.scene, SC_PLAY);                  // celebration
@@ -358,7 +366,7 @@ TEST(event_wash_dissolves_messes) {
     run(g, 600);
     CHECK(g.particles() > 0);              // bubbles
     shot(g, "09_wash");
-    run(g, ACTION_MS - 800);
+    run(g, WASH_MS - 800);
     EQ(g.celebrated, 1);                   // sparkle burst near the end
     run(g, 400);
     EQ(g.scene, SC_HOME);
@@ -478,12 +486,19 @@ TEST(screen_turns_off_and_first_touch_only_wakes) {
     CHECK(f & F_REDRAW);
 }
 
-TEST(menu_gutter_touches_are_ignored) {
+TEST(menu_strip_takes_the_nearest_button) {
+    static const int X[] = {0, 91, 92, 183, 185, 275, 277, SCREEN_W - 1};
+    for (int x : X)
+        for (int y : {(int)MENU_Y0, 400, SCREEN_H - 1}) {   // gutters and the strip below the buttons too
+            Game g = hatched();
+            g.set_stat(ENERGY, 9000);
+            g.input(IN_TOUCH, x, y);
+            EQ(g.menu, x / MENU_STEP);
+            CHECK(g.scene != SC_HOME);
+        }
     Game g = hatched();
-    g.input(IN_TOUCH, 3, 400);             // left of the first button
-    EQ(g.scene, SC_HOME);
-    g.input(IN_TOUCH, SCREEN_W - 3, 400);  // right of the last one
-    EQ(g.scene, SC_HOME);
+    g.input(IN_TOUCH, 184, MENU_Y0 - 1);    // above the strip: not the menu
+    EQ(g.menu, 0); EQ(g.scene, SC_HOME);
 }
 
 TEST(save_load_roundtrip_and_corruption) {
@@ -552,7 +567,7 @@ TEST(sound_cue_for_every_event) {
     g.input(IN_TOUCH, 61, 200); EQ(cue_after(g), SFX_EAT); run(g, ACTION_MS);
     play_stars(g);  EQ(cue_after(g), SFX_PLAY);
     run(g, GAME_MS);         EQ(g.take_sfx(), SFX_CHEER); run(g, CELEBRATE_MS);
-    tap_menu(g, MENU_WASH);  EQ(cue_after(g), SFX_WASH);  run(g, ACTION_MS);
+    tap_menu(g, MENU_WASH);  EQ(cue_after(g), SFX_WASH);  run(g, WASH_MS);
     g.set_stat(ENERGY, 100);
     play_stars(g);  EQ(cue_after(g), SFX_REFUSE); run(g, REFUSE_MS);
     tap_pet(g);              EQ(cue_after(g), SFX_PET);
@@ -564,33 +579,36 @@ TEST(sound_cue_for_every_event) {
     tap_menu(g, MENU_SLEEP); cue_after(g);
     int guard = 0;
     while (g.scene == SC_SLEEP && guard++ < 300) g.tick(60000);
-    EQ(g.take_sfx(), SFX_WAKE);                           // woke up by herself
+    EQ(g.take_sfx(), SFX_NONE);                           // woke up by herself, in the dark: not a sound
     g.input(IN_SELECT, 0, 0);                             // wake screen (went dark while asleep)
     tap_header(g);
     EQ(cue_after(g), SFX_INFO);
     EQ(cue_after(g), SFX_NONE);                           // a cue is delivered once
 }
 
-TEST(sound_toggle_on_info_screen) {
+TEST(the_child_cannot_mute_and_old_mutes_become_volume_off) {
     Game g = hatched();
-    EQ(g.s.muted, 0);
     tap_header(g);
     g.tick(0); g.take_sfx();
-    g.input(IN_TOUCH, 320, 26);                           // tap "SES ACIK"
-    EQ(g.s.muted, 1);
-    EQ(g.scene, SC_INFO);                                 // stays on the info screen
-    u32 f = g.tick(0);
-    CHECK(f & F_SAVE);
-    CHECK(!(f & F_SOUND));                                // muted: even the toggle is silent
-    shot(g, "15_info_muted");
-    g.input(IN_TOUCH, 184, 300);                          // close
-    tap_menu(g, MENU_FEED);
-    f = g.tick(0);
-    CHECK(!(f & F_SOUND));
-    EQ(g.take_sfx(), SFX_NONE);
-    u8 buf[SAVE_SIZE]; g.save(buf);                        // survives a power cut
+    g.input(IN_TOUCH, 320, 26);                           // where the old "SES ACIK" switch was
+    EQ(g.scene, SC_HOME);                                 // just closes the info screen
+    EQ(g.volume(), VOL_NORMAL);
+    shot(g, "15_info");
+    Game m = hatched();                                   // a save muted by the old switch...
+    m.s.muted = 1;
+    u8 buf[SAVE_SIZE]; m.save(buf);
     Game h; h.init(1); CHECK(h.load(buf, sizeof buf));
-    EQ(h.s.muted, 1);
+    EQ(h.s.muted, 0);                                     // ...loads as the parent's "off"
+    EQ(h.volume(), VOL_OFF);
+    h.input(IN_PARENT, 0, 0);
+    tap_set(h, 184, SET_EXIT);
+    tap_menu(h, MENU_FEED);
+    CHECK(!(h.tick(0) & F_SOUND));                        // and stays silent
+    EQ(h.take_sfx(), SFX_NONE);
+    Game k; k.init(1); CHECK(k.load(buf, sizeof buf));
+    k.input(IN_PARENT, 0, 0);
+    tap_set(k, 184, SET_VOLUME);                          // which a grown-up can turn back on
+    EQ(k.volume(), VOL_NORMAL);
 }
 
 TEST(event_shake) {
@@ -803,7 +821,7 @@ TEST(away_freezes_needs_and_keeps_the_screen_short) {
     run(g, AWAY_SCREEN_OFF_MS - 300);
     CHECK(g.screen_on);
     g.input(IN_TOUCH, 184, 200);                         // knock knock
-    EQ(cue_after(g), SFX_NONE);                          // nothing to win by knocking
+    EQ(cue_after(g), SFX_KNOCK);                         // heard, but nothing to win by knocking
     CHECK(g.wobbling);
     run(g, 200);
     shot(g, "18_door_knock");
@@ -1049,18 +1067,18 @@ TEST(parent_settings) {
     EQ(g.scene, SC_SETTINGS);
     g.tick(100);
     shot(g, "20_settings");
-    g.input(IN_TOUCH, 184, SET_Y0 + SET_LIMIT * SET_ROW_H + 18);   // session: 10 -> 15 min
+    tap_set(g, 184, SET_LIMIT);   // session: 10 -> 15 min
     EQ(g.play_limit_ms(), 15u * 60000);
-    g.input(IN_TOUCH, 184, SET_Y0 + SET_SHAKE * SET_ROW_H + 18);   // shake off
-    g.input(IN_TOUCH, 184, SET_Y0 + SET_CALM * SET_ROW_H + 18);    // calm motion on
-    g.input(IN_TOUCH, 184, SET_Y0 + SET_VOLUME * SET_ROW_H + 18);  // volume: low
+    tap_set(g, 184, SET_SHAKE);   // shake off
+    tap_set(g, 184, SET_CALM);    // calm motion on
+    tap_set(g, 184, SET_VOLUME);  // volume: low
     EQ(g.volume(), VOL_LOW);
     u32 f = g.tick(0);
     CHECK(f & F_SAVE);
     u32 p0 = g.play_ms;
     play_for(g, 11 * 60000);                 // in settings: not counted as play
     EQ(g.play_ms, p0);
-    g.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    tap_set(g, 184, SET_EXIT);
     EQ(g.scene, SC_HOME);
     g.input(IN_SHAKE, 0, 0);
     EQ(g.scene, SC_HOME);                    // shake ignored
@@ -1121,18 +1139,38 @@ TEST(version_3_saves_still_load) {
     EQ(k.break_ms(), AWAY_MS);
 }
 
-TEST(sound_toggle_overrides_parent_off) {
+TEST(parent_volume_off_stays_off) {
     Game g = hatched();
     g.input(IN_PARENT, 0, 0);
-    g.input(IN_TOUCH, 184, SET_Y0 + SET_VOLUME * SET_ROW_H + 18);   // normal -> low
-    g.input(IN_TOUCH, 184, SET_Y0 + SET_VOLUME * SET_ROW_H + 18);   // low -> off
+    tap_set(g, 184, SET_VOLUME);   // normal -> low
+    tap_set(g, 184, SET_VOLUME);   // low -> off
     EQ(g.volume(), VOL_OFF);
-    g.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    tap_set(g, 184, SET_EXIT);
     tap_header(g);
-    g.input(IN_TOUCH, 320, 26);                         // the info screen's "SES KAPALI" button
-    EQ(g.volume(), VOL_NORMAL);                         // really on again
-    g.input(IN_TOUCH, 320, 26);
+    g.input(IN_TOUCH, 320, 26);                         // nothing on the info screen turns it back on
     EQ(g.volume(), VOL_OFF);
+    tap_menu(g, MENU_FEED);
+    EQ(cue_after(g), SFX_NONE);
+}
+
+TEST(long_settings_lists_turn_pages) {
+    Game g = hatched();
+    g.input(IN_PARENT, 0, 0);
+    shot(g, "20b_settings_half1");
+    g.input(IN_TOUCH, 184, SET_Y0 + SET_SPLIT * SET_ROW_H + 18);   // the "more" arrow
+    EQ(g.set_row, SET_SPLIT); EQ(g.set_page, PG_MAIN);
+    shot(g, "20c_settings_half2");
+    int calm = g.calm();
+    g.input(IN_TOUCH, 184, SET_Y0 + set_row_slot(SET_ROWS, SET_CALM) * SET_ROW_H + 18);
+    CHECK(g.calm() != calm);                            // a row on the second half
+    g.input(IN_TOUCH, 184, SET_Y0 + 18);                // the "up" arrow
+    EQ(g.set_row, 0);
+    g.input(IN_TOUCH, 184, SET_Y0 + (SET_SLOTS - 1) * SET_ROW_H + 18);   // ÇIKIŞ, on both halves
+    EQ(g.scene, SC_HOME);
+    g.input(IN_PARENT, 0, 0);                           // BOOT walks every row, across the halves
+    for (int i = 0; i < SET_ROWS; i++) { EQ(g.set_row, i % SET_ROWS); g.input(IN_NEXT, 0, 0); }
+    EQ(g.set_row, 0);
+    for (int i = 0; i < SET_SLOTS; i++) CHECK(SET_Y0 + (i + 1) * SET_ROW_H <= SCREEN_H);
 }
 
 // ---- feature round (specs by Codex) -----------------------------------------------------------
@@ -1203,7 +1241,7 @@ TEST(foam_puffs_pop_once) {
     g.input(IN_SELECT, 0, 0);              // PWR pops the selected one
     g.input(IN_SHAKE, 0, 0);               // shake the last
     EQ(g.foam_mask, 7);
-    run(g, ACTION_MS);
+    run(g, WASH_MS);
     EQ(g.scene, SC_HOME);
 }
 
@@ -1264,6 +1302,11 @@ TEST(toy_box_routes) {
     g.input(IN_TOUCH, 116, 264); EQ(g.scene, SC_CLOUD); g.input(IN_TOUCH, 320, 40);
     tap_menu(g, MENU_PLAY);
     g.input(IN_TOUCH, 252, 264); EQ(g.scene, SC_DRESS); g.input(IN_TOUCH, 320, 40);
+    tap_menu(g, MENU_PLAY);
+    g.input(IN_TOUCH, 252, 148);           // the house answers in the whole top-right corner
+    g.input(IN_TOUCH, HOUSE_X0 - 1, 40); EQ(g.scene, SC_MUSIC);
+    g.input(IN_TOUCH, 320, HOUSE_Y1 + 1); EQ(g.scene, SC_MUSIC);
+    g.input(IN_TOUCH, HOUSE_X0, HOUSE_Y1); EQ(g.scene, SC_HOME);
     tap_menu(g, MENU_PLAY);
     g.input(IN_TOUCH, SCREEN_W / 2, 380); EQ(g.scene, SC_HOME);   // the house card
     tap_menu(g, MENU_PLAY);
@@ -1513,7 +1556,7 @@ TEST(album_fills_one_picture_per_cared_day) {
     g.set_wall(at(2026, 11, 2, 9, 0));
     run(g, 800); g.input(IN_TOUCH, 184 + g.pet_x, 200);   // first care of the day
     EQ(g.s.care_days, 1); CHECK(g.memory_new); CHECK(g.album_unseen);
-    tap_menu(g, MENU_WASH); run(g, ACTION_MS + 200);
+    tap_menu(g, MENU_WASH); run(g, WASH_MS + 200);
     tap_menu(g, MENU_FEED); g.input(IN_TOUCH, 60, 200); run(g, ACTION_MS + 200);
     EQ(g.s.care_days, 1);                      // the same day counts once
     run(g, MEMORY_SHOW_MS + 200); CHECK(!g.memory_new);
@@ -1522,12 +1565,12 @@ TEST(album_fills_one_picture_per_cared_day) {
     EQ(g.s.care_days, 2);
     g.set_wall(at(2026, 11, 9, 9, 0), false);  // an untrusted clock awards nothing
     g.s.memory_day = 0;
-    tap_menu(g, MENU_WASH); run(g, ACTION_MS + 200);
+    tap_menu(g, MENU_WASH); run(g, WASH_MS + 200);
     EQ(g.s.care_days, 2);
     g.set_wall(at(2026, 11, 9, 9, 0));
     g.s.memory_day = (u16)(at(2026, 11, 9, 9, 0) / 86400);
     g.set_wall(at(2026, 5, 1, 9, 0));          // the clock went back: restart from today, no punishment
-    tap_menu(g, MENU_WASH); run(g, ACTION_MS + 200);
+    tap_menu(g, MENU_WASH); run(g, WASH_MS + 200);
     EQ(g.s.memory_day, at(2026, 5, 1, 9, 0) / 86400); EQ(g.s.care_days, 2);
     g.set_wall(at(2026, 5, 2, 9, 0));
     tap_menu(g, MENU_SLEEP);                   // bedtime is care too
@@ -1724,11 +1767,13 @@ TEST(warm_reunion_after_a_long_gap) {
 }
 
 TEST(save_layout_v6) {
-    EQ(SAVE_SIZE, 56);
+    EQ(SAVE_SIZE, 128);
     Save s;
     EQ((int)((u8*)&s.memory_day - (u8*)&s), 36);   // older fields keep their place
     EQ((int)((u8*)&s.bed10 - (u8*)&s), 47);        // v7's bedtime sits in v6's (zero) pad byte
-    EQ((int)((u8*)&s.check - (u8*)&s), 52);
+    EQ((int)((u8*)&s.wake_we10 - (u8*)&s), 51);    // v8's weekend wake-up sits in v7's (zero) spare byte
+    EQ((int)((u8*)&s.r_day - (u8*)&s), 52);        // and the rest comes after v7's checksum
+    EQ((int)((u8*)&s.check - (u8*)&s), 124);
     Game g = hatched();                            // a v6 save (52 bytes) loads with the defaults
     g.s.care_days = 20; g.s.party_year = 26;
     u8 buf[SAVE_SIZE];
@@ -1837,17 +1882,17 @@ TEST(tricks_learned_over_the_days) {
 static void open_clock_page(Game& g) {
     g.input(IN_PARENT, 0, 0);
     EQ(g.scene, SC_SETTINGS);
-    g.input(IN_TOUCH, 300, SET_Y0 + SET_CLOCK * SET_ROW_H + 18);   // SAAT: the clock & WiFi hub
+    tap_set(g, 300, SET_CLOCK);   // SAAT: the clock & WiFi hub
     EQ(g.set_page, PG_HUB);
-    g.input(IN_TOUCH, 300, SET_Y0 + HUB_CLOCK * SET_ROW_H + 18);
+    tap_set(g, 300, HUB_CLOCK);
     EQ(g.set_page, PG_CLOCK);
 }
 static void leave_settings(Game& g) {      // from the hub (after KAYDET/GERİ) out of the settings
-    if (g.set_page == PG_HUB) g.input(IN_TOUCH, 184, SET_Y0 + HUB_BACK * SET_ROW_H + 18);
-    g.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    if (g.set_page == PG_HUB) tap_set(g, 184, HUB_BACK);
+    tap_set(g, 184, SET_EXIT);
 }
 static void tap_clock(Game& g, int row, int dir, int times = 1) {
-    for (int i = 0; i < times; i++) g.input(IN_TOUCH, dir < 0 ? 60 : 300, SET_Y0 + row * SET_ROW_H + 18);
+    for (int i = 0; i < times; i++) tap_set(g, dir < 0 ? 60 : 300, row);
 }
 
 TEST(parent_sets_the_clock) {
@@ -1926,8 +1971,8 @@ TEST(parent_sets_the_birthday) {
     tap_clock(f, CLK_SAVE, +1);
     Cal h = calendar(f.s.hatch_day * 86400u);
     EQ(h.month, 2); EQ(h.mday, 29); EQ(h.year, 2024);   // born on a real 29 February (a leap year)
-    f.input(IN_TOUCH, 184, SET_Y0 + HUB_BACK * SET_ROW_H + 18);
-    f.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    tap_set(f, 184, HUB_BACK);
+    tap_set(f, 184, SET_EXIT);
     f.tick(0);                                 // the platform takes F_CLOCK and writes its RTC
     f.set_wall(at(2028, 2, 29, 10, 0)); run(f, 400);
     EQ(f.party, PARTY_REUNION);                // months later: first the welcome...
@@ -2128,21 +2173,21 @@ TEST(bedtime_edges) {
     at_time(w, 9, 0); run(w, 300); EQ(w.scene, SC_HOME);
     Game s = hatched();                        // the parent page: on/off, -10/+10 minutes
     s.input(IN_PARENT, 0, 0);
-    s.input(IN_TOUCH, 300, SET_Y0 + SET_SLEEP * SET_ROW_H + 18);
+    tap_set(s, 300, SET_SLEEP);
     EQ(s.set_page, 2);
-    s.input(IN_TOUCH, 60, SET_Y0 + BEDR_BED * SET_ROW_H + 18);     // 19:30 -> 19:20
-    s.input(IN_TOUCH, 300, SET_Y0 + BEDR_WAKE * SET_ROW_H + 18);   // 07:00 -> 07:10
+    tap_set(s, 60, BEDR_BED);     // 19:30 -> 19:20
+    tap_set(s, 300, BEDR_WAKE);   // 07:00 -> 07:10
     EQ(s.s.bed10, BED_DEFAULT10 - 1); EQ(s.s.wake10, WAKE_DEFAULT10 + 1);
-    s.input(IN_TOUCH, 300, SET_Y0 + BEDR_ON * SET_ROW_H + 18);
+    tap_set(s, 300, BEDR_ON);
     CHECK(s.s.opts & OPT_NO_BEDTIME);
     render(s, fb); CHECK(lit_pixels(0, 0, SCREEN_W, SCREEN_H) > 2000);
-    s.input(IN_TOUCH, 300, SET_Y0 + BEDR_BACK * SET_ROW_H + 18);
+    tap_set(s, 300, BEDR_BACK);
     EQ(s.set_page, 0); EQ(s.set_row, SET_SLEEP);
     Game p = hatched();                        // a grown-up opens the settings while she sleeps at night
     at_time(p, 22, 0); p.tick(100); run(p, 300);
     EQ(p.scene, SC_SLEEP);
     p.input(IN_PARENT, 0, 0); EQ(p.scene, SC_SETTINGS);
-    p.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    tap_set(p, 184, SET_EXIT);
     EQ(p.scene, SC_SLEEP); EQ(p.standing, 0);  // and closes them: she is still asleep, lying down
     Game z = hatched();                        // the settings do not restart a sleep (no second nap bonus)
     z.set_stat(ENERGY, 1000);
@@ -2151,7 +2196,7 @@ TEST(bedtime_edges) {
     EQ(z.stat(ENERGY), 1000 + NAP_BONUS + SLEEP_ENERGY_GAIN);
     for (int i = 0; i < 3; i++) {
         z.input(IN_SELECT, 0, 0); z.input(IN_PARENT, 0, 0); EQ(z.scene, SC_SETTINGS);
-        z.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18); EQ(z.scene, SC_SLEEP);
+        tap_set(z, 184, SET_EXIT); EQ(z.scene, SC_SLEEP);
         run(z, NAP_MS + 200);
     }
     CHECK(z.stat(ENERGY) <= 1000 + NAP_BONUS + 5 * SLEEP_ENERGY_GAIN);
@@ -2162,7 +2207,7 @@ TEST(bedtime_edges) {
     n.input(IN_PARENT, 0, 0); EQ(n.scene, SC_SETTINGS);
     at_time(n, 22, 0); n.tick(100);
     at_time(n, 7, 30); n.set_wall(at(2026, 11, 4, 7, 30)); n.tick(100);
-    n.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    tap_set(n, 184, SET_EXIT);
     EQ(n.scene, SC_HOME);                      // the night passed: good morning, not a nap until noon
 }
 
@@ -2190,6 +2235,152 @@ TEST(fifth_pass_fixes) {
     m.screen_on = 0;
     at_time(m, 7, 30); m.set_wall(at(2026, 11, 4, 7, 30)); m.tick(100);
     EQ(m.scene, SC_LOUNGE);                    // morning: onto the lounger, still charging
+}
+
+TEST(no_sound_at_bedtime) {
+    Game g = hatched();
+    at_time(g, 12, 0); g.tick(100); g.take_sfx();
+    tap_menu(g, MENU_FEED);
+    CHECK(g.take_sfx() != SFX_NONE);           // by day she makes her sounds
+    Game n = hatched();
+    at_time(n, 19, 45); n.tick(100); n.take_sfx();   // drowsy hour: already bedtime
+    tap_menu(n, MENU_FEED);
+    EQ(n.take_sfx(), SFX_NONE);
+    CHECK(!(n.tick(100) & F_SOUND));
+    at_time(n, 23, 0); n.tick(100); n.input(IN_SHAKE, 0, 0);
+    EQ(n.take_sfx(), SFX_NONE);                // nor in the night
+    Game o = hatched();                        // a parent who turned the bedtime off hears everything
+    o.s.opts |= OPT_NO_BEDTIME; at_time(o, 23, 0); o.tick(100); o.take_sfx();
+    tap_menu(o, MENU_FEED);
+    CHECK(o.take_sfx() != SFX_NONE);
+}
+
+TEST(she_speaks_her_lines) {
+    Game g = hatched();
+    at_time(g, 12, 0); g.tick(100); g.take_sfx();
+    int line = -1;
+    tap_menu(g, MENU_FEED);
+    g.take_sfx(&line);
+    CHECK(line == V_NONE || line == V_YUM);     // the picker first, or straight to her snack
+    run(g, 6000);
+    g.take_sfx();
+    int giggles = 0;                           // petting again and again: one giggle, not a chorus
+    for (int i = 0; i < 20; i++) {
+        tap_pet(g); g.tick(100);
+        g.take_sfx(&line);
+        giggles += line == V_GIGGLE;
+        run(g, 300);
+    }
+    EQ(giggles, 1);
+    run(g, 9000); g.take_sfx();                // one line between two of another: still not again within 8 s
+    tap_pet(g); g.tick(100); g.take_sfx(&line); EQ(line, V_GIGGLE);
+    run(g, 2000); g.take_sfx();
+    g.voice_at = 0;                            // as if a different line had been said in between
+    tap_pet(g); g.tick(100); g.take_sfx(&line);
+    CHECK(line != V_GIGGLE);
+    Game n = hatched();                        // at bedtime: not a word
+    at_time(n, 19, 45); n.tick(100); n.take_sfx();
+    tap_menu(n, MENU_FEED); run(n, 300);
+    EQ(n.take_sfx(&line), SFX_NONE); EQ(line, V_NONE);
+    Game m = hatched();                        // muted: not a word either
+    at_time(m, 12, 0); m.tick(100); m.take_sfx();
+    m.s.muted = 1;
+    tap_menu(m, MENU_FEED);
+    m.take_sfx(&line); EQ(line, V_NONE);
+}
+
+// every clip of a pack: found, checked, and its Opus packets add up to its length (20 ms each)
+static int pack_clips(const u8* bin, u32 len, int langs, int per, bool strict = true) {
+    int ok = 0;
+    for (int lang = 0; lang < langs; lang++)
+        for (int i = 0; i < per; i++) {
+            Clip c;
+            if (!pack_clip(bin, len, lang, i, &c)) continue;
+            const u8* p;
+            int n, packets = 0;
+            while ((n = ogg_packet(&c, &p)) > 0) {
+                CHECK(p >= c.data && p + n <= c.data + c.len);   // always: even a damaged pack stays inside
+                if (strict) CHECK(n < 400);                       // 16 kbps, 20 ms: about 40 bytes
+                packets++;
+            }
+            if (strict) {                  // a quarter to eight seconds, and the packets add up to that
+                CHECK(c.samples > VOICE_RATE / 4 && c.samples < VOICE_RATE * 8);
+                CHECK((u32)packets * 320 >= c.samples && (u32)packets * 320 < c.samples + 640 + c.pre_skip);
+            }
+            ok++;
+        }
+    return ok;
+}
+
+static u32 read_file(const char* path, u8* buf, u32 cap) {
+    FILE* f = std::fopen(path, "rb");
+    if (!f) return 0;
+    u32 len = (u32)std::fread(buf, 1, cap, f);
+    std::fclose(f);
+    return len;
+}
+
+TEST(her_voice_file_decodes) {                // fw/data/voice.bin: every line in every language
+    static u8 bin[4 << 20];
+    u32 len = read_file("../fw/data/voice.bin", bin, sizeof bin);
+    CHECK(len > 1000 && len < sizeof bin);
+    EQ(bin[4] | bin[5] << 8, LANG_COUNT * (V_COUNT - 1)); EQ(bin[6] | bin[7] << 8, V_COUNT - 1);
+    EQ(pack_clips(bin, len, LANG_COUNT, V_COUNT - 1), LANG_COUNT * (V_COUNT - 1));
+    Clip c;
+    CHECK(!pack_clip(bin, len, LANG_COUNT, 0, &c));    // out of range: nothing
+    CHECK(!pack_clip(bin, len, 0, V_COUNT - 1, &c));
+    CHECK(!pack_clip(bin, len, -1, 0, &c) && !pack_clip(bin, len, 0, -1, &c));
+    CHECK(!pack_clip(bin, 100, 0, 0, &c));             // a cut-short file: nothing
+    CHECK(!pack_clip(0, len, 0, 0, &c));
+    // the private packs, when they are there (gitignored): the same checks
+    static u8 priv[4 << 20];
+    if (u32 n = read_file("../fw/personal/voice_name.bin", priv, sizeof priv)) EQ(pack_clips(priv, n, 1, NL_COUNT), NL_COUNT);
+    if (u32 n = read_file("../fw/personal/routines_tr.bin", priv, sizeof priv)) EQ(pack_clips(priv, n, 1, R_CLIPS), R_CLIPS);
+}
+
+// A pack from a swapped SD card can hold anything: no damage may read outside it (ASan watches).
+TEST(damaged_packs_never_read_outside) {
+    static u8 bin[4 << 20];
+    u32 len = read_file("../fw/data/voice.bin", bin, sizeof bin);
+    if (!len) return;
+    u32 cut = 8 + 8 * 4 + 3000;                          // a pack cut short: in the table, in a clip, mid-page
+    for (u32 n = 0; n < cut && n < len; n += n < 64 ? 1 : 97) {
+        u8* copy = (u8*)std::malloc(n ? n : 1);          // exactly n bytes: one past is an ASan error
+        std::memcpy(copy, bin, n);
+        pack_clips(copy, n, 1, 4, false);
+        std::free(copy);
+    }
+    u32 rng = 12345;
+    u8* copy = (u8*)std::malloc(len);
+    for (int round = 0; round < 300; round++) {          // random bytes flipped in the table and the first clips
+        std::memcpy(copy, bin, len);
+        for (int k = 0; k < 8; k++) {
+            rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+            u32 at = rng % (round < 100 ? 64 : 12000);
+            copy[at] = (u8)(rng >> 8);
+        }
+        pack_clips(copy, len, 2, V_COUNT - 1, false);
+    }
+    std::free(copy);
+    u8 bad[40] = {'U', 'P', 'O', '1', 1, 0, 1, 0, 16, 0, 0, 0, 0xF0, 0xFF, 0xFF, 0xFF};   // a clip size that wraps
+    Clip c;
+    CHECK(!pack_clip(bad, sizeof bad, 0, 0, &c));
+}
+
+TEST(the_screen_dims_at_night) {
+    Game g = hatched();
+    at_time(g, 12, 0); g.tick(100);
+    EQ(g.screen_brightness(), g.brightness());       // by day: the parent's level
+    at_time(g, 19, 45); g.tick(100);
+    CHECK(g.screen_brightness() <= g.brightness() / 5 + 1);   // bedtime: a glow
+    CHECK(g.screen_brightness() >= 12);
+    at_time(g, 23, 0); g.tick(100);
+    CHECK(g.screen_brightness() < g.brightness());
+    g.input(IN_PARENT, 0, 0); EQ(g.scene, SC_SETTINGS);
+    EQ(g.screen_brightness(), g.brightness());       // a parent at night still reads the settings
+    Game o = hatched();                              // bedtime switched off: it still dims after dark
+    o.s.opts |= OPT_NO_BEDTIME; at_time(o, 23, 0); o.tick(100);
+    CHECK(o.screen_brightness() < o.brightness());
 }
 
 TEST(old_local_break_deadlines_are_not_read_as_utc) {
@@ -2252,7 +2443,7 @@ TEST(boot_taps_and_the_grown_up_gesture) {
     EQ(d.scene, SC_RETURN);
 }
 
-static void tap_row(Game& g, int row) { g.input(IN_TOUCH, 300, SET_Y0 + row * SET_ROW_H + 18); }
+static void tap_row(Game& g, int row) { tap_set(g, 300, row); }
 static void tap_button(Game& g, int right) { g.input(IN_TOUCH, right ? 280 : 90, (WBTN_Y0 + WBTN_Y1) / 2); }
 static int take_wifi(Game& g) {            // what the platform does with F_WIFI
     u32 f = g.tick(0);
@@ -2314,12 +2505,87 @@ TEST(wifi_setup_from_the_toy) {
     EQ(g.set_page, PG_WLIST);
     for (int st = WST_OFF; st <= WST_TIMEOUT; st++) {   // every screen draws inside the frame
         g.set_page = PG_WSESSION; g.wifi_stage = (u8)st; render(g, fb);
-        for (int p = PG_HUB; p <= PG_WFORGET; p++) { g.set_page = (u8)p; render(g, fb); }
+        for (int p = PG_HUB; p <= PG_UPDATE; p++) { g.set_page = (u8)p; render(g, fb); }
     }
     Game q;                                            // the QR's text is escaped
     q.init(1);
     q.wifi_session("A;B", "p:w\\\"x");
     CHECK(q.qr_side > 0);
+}
+
+static int take_update(Game& g) {          // what the platform does with F_UPDATE
+    u32 f = g.tick(0);
+    if (!(f & F_UPDATE)) return UREQ_NONE;
+    int r = g.update_req;
+    g.update_req = UREQ_NONE;
+    return r;
+}
+static u32 row_hash(Game& g, int row);
+
+TEST(firmware_update_page) {
+    Game g = hatched();
+    g.fw_version = 3; g.set_battery(80);
+    g.input(IN_PARENT, 0, 0);
+    tap_row(g, SET_CLOCK); EQ(g.set_page, PG_HUB);
+    u32 plain = row_hash(g, HUB_UPDATE);
+    tap_row(g, HUB_UPDATE); EQ(g.set_page, PG_UPDATE); EQ(g.update_view(), UST_IDLE);
+    shot(g, "update_idle");
+    tap_button(g, 1);                                   // KONTROL ET
+    EQ(g.update_stage, UST_CHECKING); EQ(take_update(g), UREQ_CHECK); EQ(take_update(g), UREQ_NONE);
+    shot(g, "update_checking");
+    run(g, SCREEN_OFF_MS + 2000); CHECK(g.screen_on);   // lit while it checks
+    tap_button(g, 1); EQ(take_update(g), UREQ_NONE);    // nothing more to ask meanwhile
+    g.update_status(UST_LATEST, 0, 3); EQ(g.update_view(), UST_LATEST); CHECK(!g.update_waiting());
+    shot(g, "update_latest");
+    tap_button(g, 1); EQ(take_update(g), UREQ_CHECK);   // check again
+    g.update_status(UST_AVAILABLE, 0, 4); EQ(g.update_view(), UST_AVAILABLE); CHECK(g.update_waiting());
+    shot(g, "update_available");
+    g.set_battery(49); CHECK(!g.update_allowed());      // the battery rule: below 50 % and no cable
+    shot(g, "update_blocked");
+    tap_button(g, 1); EQ(take_update(g), UREQ_NONE); EQ(cue_after(g), SFX_REFUSE);
+    g.input(IN_NEXT, 0, 0); g.input(IN_SELECT, 0, 0);   // PWR has only GERİ left
+    EQ(g.set_page, PG_HUB); EQ(take_update(g), UREQ_NONE);
+    g.set_row = HUB_CLOCK;                              // the same highlight as before
+    CHECK(row_hash(g, HUB_UPDATE) != plain);            // the hub marks the waiting version
+    g.set_battery(-1); CHECK(!g.update_allowed());      // unknown battery, no cable: no
+    g.set_battery(50); CHECK(g.update_allowed());
+    g.set_battery(10); g.set_plugged(true); g.set_plugged(true); CHECK(g.update_allowed());   // the cable: yes
+    tap_row(g, HUB_UPDATE); EQ(g.update_view(), UST_AVAILABLE);   // a known newer version is offered at once
+    tap_button(g, 1);                                   // YÜKLE
+    EQ(take_update(g), UREQ_INSTALL); EQ(g.update_stage, UST_DOWNLOADING);
+    g.update_status(UST_DOWNLOADING, 42, 0); EQ(g.update_ver, 4); EQ(g.update_pct, 42);
+    shot(g, "update_download");
+    g.input(IN_TOUCH, 90, (WBTN_Y0 + WBTN_Y1) / 2); g.input(IN_SELECT, 0, 0); g.input(IN_NEXT, 0, 0);
+    EQ(g.set_page, PG_UPDATE); EQ(g.scene, SC_SETTINGS); EQ(take_update(g), UREQ_NONE);   // no way out mid-way
+    g.tick(0);
+    CHECK(!(g.tick(100) & F_REDRAW));                   // a still page while flash is written...
+    g.update_status(UST_DOWNLOADING, 43, 0);
+    CHECK(g.tick(0) & F_REDRAW);                        // ...redrawn when the bar moves
+    run(g, SCREEN_OFF_MS + 2000); CHECK(g.screen_on);
+    g.update_status(UST_VERIFYING, 100, 0); shot(g, "update_verify");
+    g.update_status(UST_RESTARTING, 100, 0); shot(g, "update_restart");
+    g.update_stage = UST_IDLE;
+    const int errs[] = {UST_NO_WIFI, UST_FAILED, UST_BAD_SIG};
+    for (int st : errs) {                               // each error offers TEKRAR: a fresh check
+        g.update_status(st, 0, 0); EQ(g.update_view(), st);
+        tap_button(g, 1); EQ(take_update(g), UREQ_CHECK); EQ(g.update_stage, UST_CHECKING);
+    }
+    shot(g, "update_checking2");
+    g.update_status(UST_BAD_SIG, 0, 0); shot(g, "update_bad_sig");
+    tap_button(g, 0); EQ(g.set_page, PG_HUB);           // GERİ; opened again, the stale error is gone
+    tap_row(g, HUB_UPDATE); EQ(g.update_view(), UST_AVAILABLE);
+    tap_button(g, 1); take_update(g);                   // a check under way when the grown-up leaves...
+    g.update_stage = UST_CHECKING;
+    tap_button(g, 0); tap_row(g, HUB_BACK); tap_set(g, 184, SET_EXIT);
+    EQ(g.scene, SC_HOME);
+    g.input(IN_PARENT, 0, 0); EQ(g.set_page, PG_UPDATE);   // ...the gesture goes straight back to it
+    Game m = hatched();                                 // the main list marks its SAAT row too
+    m.set_wall(at(2026, 11, 3, 11, 0)); m.fw_version = 1;
+    m.input(IN_PARENT, 0, 0);
+    u32 before = row_hash(m, SET_CLOCK);
+    m.update_ver = 2;
+    CHECK(row_hash(m, SET_CLOCK) != before);
+    EQ(text_overflows(), 0);
 }
 
 static void copy_name_test(Game& g) {
@@ -2331,6 +2597,12 @@ static u32 region_hash(int x0, int y0, int x1, int y1) {
     u32 h = 2166136261u;
     for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) h = (h ^ fb[y * SCREEN_W + x]) * 16777619u;
     return h;
+}
+
+static u32 row_hash(Game& g, int row) {   // the pixels of one settings row as it is drawn
+    render(g, fb);
+    int y = SET_Y0 + set_row_slot(g.set_rows(), row) * SET_ROW_H;
+    return region_hash(16, y, SCREEN_W - 16, y + SET_ROW_H);
 }
 
 TEST(text_edge_cases) {
@@ -2383,7 +2655,7 @@ static int overflow_scan(int lang, char* where, int where_n) {
     g.set_wall(at(2026, 11, 3, 19, 45)); check(g, "drowsy");
     g.scene = SC_SLEEP; g.standing = 1; check(g, "standing"); g.standing = 0;
     g.scene = SC_SETTINGS;
-    for (int pg = PG_MAIN; pg <= PG_WFORGET; pg++)
+    for (int pg = PG_MAIN; pg <= PG_UPDATE; pg++)
         for (int st = WST_OFF; st <= WST_TIMEOUT; st++) {
             g.set_page = (u8)pg; g.wifi_stage = (u8)st; g.wifi_arg = 1;
             copy_name_test(g);
@@ -2391,10 +2663,35 @@ static int overflow_scan(int lang, char* where, int where_n) {
             std::snprintf(what, sizeof what, "settings page %d stage %d", pg, st);
             check(g, what);
         }
+    g.set_page = PG_UPDATE; g.wifi_stage = WST_OFF;  // every update stage, battery rule both ways, a long version
+    g.fw_version = 1234; g.update_ver = 9999;
+    for (int st = UST_IDLE; st <= UST_BAD_SIG; st++)
+        for (int ok = 0; ok < 2; ok++) {
+            g.update_stage = (u8)st; g.update_pct = 57; g.plugged = (u8)ok;
+            char what[32];
+            std::snprintf(what, sizeof what, "update stage %d plugged %d", st, ok);
+            check(g, what);
+            g.set_page = PG_HUB; check(g, "hub with an update"); g.set_page = PG_MAIN; check(g, "main with an update");
+            g.set_page = PG_UPDATE;
+        }
+    g.update_ver = 0; g.update_stage = UST_IDLE;
+    for (int pg = PG_ROUTINE; pg <= PG_HABITS; pg++)   // the daily routine pages, with and without the pack
+        for (int has = 0; has < 2; has++) {
+            g.set_page = (u8)pg; g.has_routines = (u8)has; g.s.week[g.today().day % 7] = 0x7FF; g.s.r_day = g.today().day;
+            check(g, "routine page");
+        }
+    g.scene = SC_ASK;                          // every question card, every stage, a yes and a no
+    for (int q = 0; q < Q_COUNT; q++)
+        for (int st = RS_ASK; st <= RS_REPLY; st++)
+            for (int a = ANS_YES; a <= ANS_NO; a++) {
+                g.r_q = (u8)q; g.r_stage = (u8)st; g.s.r_ans[q] = (u16)(a << 11);
+                check(g, "question card");
+            }
+    g.scene = SC_SETTINGS;
     Game e = picked(7);                        // an egg: its own words on the clock page ("after hatching")
     e.s.lang = (u8)lang;
     e.input(IN_PARENT, 0, 0);
-    for (int pg = PG_MAIN; pg <= PG_WFORGET; pg++) { e.set_page = (u8)pg; e.wifi_stage = WST_WAIT; copy_name_test(e); check(e, "egg settings"); }
+    for (int pg = PG_MAIN; pg <= PG_HABITS; pg++) { e.set_page = (u8)pg; e.wifi_stage = WST_WAIT; copy_name_test(e); check(e, "egg settings"); }
     return total;
 }
 
@@ -2501,7 +2798,7 @@ TEST(review_fixes_third_pass) {
     m.set_wall(at(2026, 11, 4, 6, 59)); run(m, 300);
     m.input(IN_SELECT, 0, 0); m.input(IN_PARENT, 0, 0); EQ(m.scene, SC_SETTINGS);
     m.set_wall(at(2026, 11, 4, 7, 5)); run(m, 300);
-    m.input(IN_TOUCH, 184, SET_Y0 + SET_EXIT * SET_ROW_H + 18);
+    tap_set(m, 184, SET_EXIT);
     run(m, 300);
     EQ(m.scene, SC_HOME);                      // up for the day, not stuck asleep
     Game r = hatched();                        // a long album title stays clear of the house button
@@ -2512,6 +2809,48 @@ TEST(review_fixes_third_pass) {
 }
 
 // ---- rendering --------------------------------------------------------------------------------
+
+// Found by the monkey test (monkey.cpp): a grown-up who opens the settings and walks away left the toy
+// in them for good, and the child woke it into the parent settings. They now close once the screen is
+// dark (not while the radio is in use), and a sleep that ended meanwhile ends quietly in the dark.
+TEST(settings_close_when_the_grown_up_walks_away) {
+    Game g = hatched(61);
+    g.set_plugged(false);                      // the first sample only says how things are
+    g.input(IN_PARENT, 0, 0);
+    EQ(g.scene, SC_SETTINGS);
+    run(g, SCREEN_OFF_MS + 200);
+    CHECK(!g.screen_on); EQ(g.scene, SC_HOME);
+    g.input(IN_TOUCH, 300, SET_Y0 + 18);       // the child's first touch only wakes the screen: at home
+    CHECK(g.screen_on); EQ(g.scene, SC_HOME); EQ(g.s.volume, VOL_NORMAL);
+    g.wifi_session("Unicorn-AB12", "pw123456");   // a WiFi setup under way keeps them open (and lit)
+    g.input(IN_PARENT, 0, 0);
+    EQ(g.set_page, PG_WSESSION);
+    run(g, SCREEN_OFF_MS + 5000);
+    CHECK(g.screen_on); EQ(g.scene, SC_SETTINGS);
+    g.wifi_status(WST_TIMEOUT, 0);             // the radio gave up (fw: SESSION_MS); nobody reads the result
+    run(g, SCREEN_OFF_MS + 200);
+    CHECK(!g.screen_on); EQ(g.scene, SC_HOME);
+    EQ(g.wifi_stage, WST_OFF); EQ(g.wifi_req, WREQ_STOP);   // closed as if TAMAM was tapped
+    g.wifi_req = WREQ_NONE;
+    plug(g, true);                             // opened from the lounger and closed in the dark: back on it
+    run(g, LOUNGE_IDLE_MS + 200);
+    EQ(g.scene, SC_LOUNGE);
+    g.input(IN_PARENT, 0, 0);
+    run(g, SCREEN_OFF_MS + 200);
+    EQ(g.scene, SC_LOUNGE);
+
+    Game h = hatched(62);                      // opened from her night sleep; morning comes meanwhile
+    h.set_wall(at(2026, 11, 3, 21, 0));
+    run(h, 200);
+    EQ(h.scene, SC_SLEEP);
+    h.input(IN_PARENT, 0, 0);
+    EQ(h.scene, SC_SETTINGS);
+    h.set_wall(at(2026, 11, 4, 7, 5));
+    h.take_sfx();
+    run(h, SCREEN_OFF_MS + 200);
+    EQ(h.scene, SC_HOME); CHECK(!h.screen_on);
+    EQ(h.take_sfx(), SFX_NONE);                // no wake-up tune in a dark room
+}
 
 TEST(every_scene_renders_for_every_character) {
     for (u32 seed = 1; seed < 40; seed++) {
@@ -2539,6 +2878,463 @@ TEST(every_scene_renders_for_every_character) {
     }
 }
 
+
+// ---- her daily routine ----------------------------------------------------------------------------
+struct Asked { int q, minute, clip; };
+static Game routine_game(u32 seed = 42) {
+    Game g = hatched(seed);
+    g.has_routines = 1;
+    g.hint_pet = 0;
+    return g;
+}
+// The platform's half: when she asks, it listens and reports `ans` (ANS_NONE: it never answers).
+// Runs the toy second by second over [from, to) of the wall clock; returns the questions asked.
+static int live(Game& g, u32 from, u32 to, int ans, Asked* log = 0, int max = 0, int* clips = 0) {
+    int n = 0;
+    for (u32 t = from; t < to; t += 60) {
+        g.set_wall(t);
+        for (int sec = 0; sec < 60; sec++) {
+            u32 f = g.tick(1000);
+            int line, clip;
+            if (f & F_SOUND) { g.take_sfx(&line, &clip); if (clip >= 0 && clips) clips[clip]++; }
+            if ((f & F_LISTEN) && g.listen_req == LREQ_LISTEN && g.listen_kind <= LK_OPEN) {
+                g.listen_req = LREQ_NONE;
+                if (log && n < max) log[n] = {g.r_q, (int)(t % 86400 / 60), 0};
+                n++;
+                if (ans) { g.listen_started(); g.listen_result(ans); }
+            } else if (f & F_LISTEN) g.listen_req = LREQ_NONE;
+        }
+    }
+    return n;
+}
+static int gaps_ok(const Asked* a, int n) {   // every question at least Q_GAP_MIN after the previous
+    for (int i = 1; i < n; i++) if (a[i].minute - a[i - 1].minute < Q_GAP_MIN) return 0;
+    return 1;
+}
+
+TEST(routine_school_morning) {
+    Game g = routine_game();                   // Tuesday 3 November 2026, wake-up at 07:00
+    Asked a[32];
+    int clips[R_CLIPS] = {0};
+    int n = live(g, at(2026, 11, 3, 6, 30), at(2026, 11, 3, 9, 0), ANS_YES, a, 32, clips);
+    EQ(n, 6);                                  // teeth, dress, school clothes, hair, vitamin, breakfast
+    u16 want = 1 << Q_TEETH_AM | 1 << Q_DRESS | 1 << Q_SCHOOL_CLOTHES | 1 << Q_HAIR | 1 << Q_VITAMIN | 1 << Q_BREAKFAST;
+    EQ(g.s.r_asked, want);
+    for (int i = 0; i < n; i++) CHECK(a[i].minute >= 7 * 60 + 3 && a[i].minute < 8 * 60);   // in her first hour
+    CHECK(gaps_ok(a, n));
+    EQ(g.stars_today(), 6);
+    int greet = 0;
+    for (int i = 0; i < R_VARIANTS; i++) greet += clips[R_GREET + i];
+    EQ(greet, 1);                              // good morning, once
+    for (int q = 0; q < Q_YESNO; q++) {
+        int asks = 0, yes = 0;
+        for (int i = 0; i < R_VARIANTS; i++) { asks += clips[Q_ASK[q] + i]; yes += clips[Q_YES[q] + i]; }
+        bool expected = want >> q & 1;
+        EQ(asks, expected ? 1 : 0); if (q != Q_TEETH_PM) EQ(yes, expected ? 1 : 0);
+    }
+    Game b = routine_game(43);                 // another day, another order and other moments
+    Asked a2[32];
+    live(b, at(2026, 11, 4, 6, 30), at(2026, 11, 4, 9, 0), ANS_YES, a2, 32);
+    bool differs = false;
+    for (int i = 0; i < 6; i++) differs |= a[i].q != a2[i].q || a[i].minute != a2[i].minute;
+    CHECK(differs);
+}
+
+TEST(routine_weekend_and_holidays) {
+    Game g = routine_game();                   // Saturday 7 November: she sleeps till 08:00
+    Asked a[32];
+    int n = live(g, at(2026, 11, 7, 6, 30), at(2026, 11, 7, 9, 30), ANS_YES, a, 32);
+    EQ(n, 5);                                  // no school clothes
+    CHECK(!(g.s.r_asked & 1 << Q_SCHOOL_CLOTHES));
+    for (int i = 0; i < n; i++) CHECK(a[i].minute >= 8 * 60 + 3 && a[i].minute < 9 * 60);
+    at_time(g, 7, 30); g.set_wall(at(2026, 11, 7, 7, 30)); EQ(g.bedtime(), BED_SLEEP);   // still her night at 07:30
+    n = live(g, at(2026, 11, 7, 15, 0), at(2026, 11, 7, 16, 30), ANS_YES, a, 32);
+    EQ(n, 1); EQ(a[0].q, Q_WATER); CHECK(a[0].minute >= 15 * 60 + 30 && a[0].minute < 16 * 60);
+    Game h = routine_game();                   // holiday mode on a Wednesday: like a weekend day
+    h.s.opts |= OPT_HOLIDAY;
+    n = live(h, at(2026, 11, 4, 7, 30), at(2026, 11, 4, 16, 0), ANS_YES, a, 32);
+    EQ(n, 6); CHECK(h.s.r_asked & 1 << Q_WATER); CHECK(!(h.s.r_asked & 1 << Q_SCHOOL_CLOTHES));
+    Game r = routine_game();                   // a holiday range from the parent page
+    r.s.hol[1][0] = (u16)(at(2026, 11, 2, 0, 0) / 86400); r.s.hol[1][1] = (u16)(at(2026, 11, 6, 0, 0) / 86400);
+    r.set_wall(at(2026, 11, 4, 12, 0)); CHECK(r.holiday()); EQ(r.wake_min(), WAKE_WE_DEFAULT10 * 10);
+    r.set_wall(at(2026, 11, 9, 12, 0)); CHECK(!r.holiday()); EQ(r.wake_min(), WAKE_DEFAULT10 * 10);
+}
+
+TEST(routine_evening) {
+    Game g = routine_game();                   // bedtime 19:30: evening questions 18:00-19:00, then the happy one
+    Asked a[32];
+    int clips[R_CLIPS] = {0};
+    int n = live(g, at(2026, 11, 3, 16, 0), at(2026, 11, 3, 19, 40), ANS_YES, a, 32, clips);
+    EQ(n, 5);                                  // dinner, teeth, toys, toilet, what made you happy
+    CHECK(gaps_ok(a, n));
+    int toilet = -1, happy = -1, dinner = -1;
+    for (int i = 0; i < n; i++) {
+        if (a[i].q == Q_TOILET) toilet = i;
+        if (a[i].q == Q_HAPPY) happy = i;
+        if (a[i].q == Q_DINNER) dinner = i;
+        if (a[i].q == Q_TEETH_PM || a[i].q == Q_TOYS || a[i].q == Q_TOILET) CHECK(a[i].minute >= 18 * 60 && a[i].minute < 19 * 60);
+    }
+    CHECK(dinner >= 0 && a[dinner].minute >= 18 * 60 && a[dinner].minute < 18 * 60 + 30);
+    EQ(toilet, 3);                             // the last of the evening, after dinner, teeth and toys
+    EQ(happy, 4); CHECK(a[happy].minute >= 19 * 60 && a[happy].minute < 19 * 60 + 25);
+    int reply = 0;                             // "yes" to the open question is a happy reply, not a star
+    for (int i = 0; i < R_VARIANTS; i++) reply += clips[R_HAPPY_REPLY + i];
+    EQ(reply, 1); EQ(g.stars_today(), 4);
+    Game s = routine_game();                   // silence: a kind good night, and no second try
+    live(s, at(2026, 11, 3, 18, 55), at(2026, 11, 3, 19, 40), ANS_SILENT, a, 32);
+    CHECK(s.s.r_done & 1 << Q_HAPPY); EQ(s.s.r_ans[Q_HAPPY] >> 11, ANS_SILENT);
+}
+
+TEST(routine_asks_again_once) {
+    Game g = routine_game();
+    g.s.q_off = (u16)~(1 << Q_DINNER) & ((1 << Q_COUNT) - 1);   // only dinner
+    Asked a[8];
+    int n = live(g, at(2026, 11, 3, 17, 50), at(2026, 11, 3, 19, 0), ANS_UNCLEAR, a, 8);
+    EQ(n, 2);                                  // unclear: once more, ten minutes later, then never again
+    CHECK(a[1].minute - a[0].minute >= Q_REASK_MIN);
+    CHECK(g.s.r_done & 1 << Q_DINNER); EQ(g.stars_today(), 0);
+    Game y = routine_game();
+    y.s.q_off = g.s.q_off;
+    n = live(y, at(2026, 11, 3, 17, 50), at(2026, 11, 3, 19, 0), ANS_NO, a, 8);
+    EQ(n, 1);                                  // a clear no is an answer
+    EQ(y.s.r_ans[Q_DINNER] >> 11, ANS_NO);
+    Game p = routine_game();                   // a power cut right after the question: not asked again
+    p.s.q_off = g.s.q_off;
+    n = live(p, at(2026, 11, 3, 17, 50), at(2026, 11, 3, 18, 15), ANS_YES, a, 8);
+    EQ(n, 1);
+    u8 buf[SAVE_SIZE]; p.save(buf);
+    Game q; q.init(9); q.set_wall(at(2026, 11, 3, 18, 15)); CHECK(q.load(buf, SAVE_SIZE)); q.has_routines = 1;
+    EQ(live(q, at(2026, 11, 3, 18, 15), at(2026, 11, 3, 19, 0), ANS_YES, a, 8), 0);
+    EQ(q.stars_today(), 1);
+    EQ(live(q, at(2026, 11, 4, 17, 50), at(2026, 11, 4, 19, 0), ANS_YES, a, 8), 1);   // the next day: again
+    EQ(q.stars_today(), 1);
+}
+
+TEST(routine_stays_quiet) {
+    Asked a[32];
+    u32 from = at(2026, 11, 3, 5, 0), to = at(2026, 11, 3, 22, 0);
+    Game m = routine_game(); m.s.volume = VOL_OFF;                 // volume off
+    EQ(live(m, from, to, ANS_YES, a, 32), 0);
+    Game u = routine_game();                                       // an untrusted clock
+    int n = 0;
+    for (u32 t = from; t < to; t += 600) { u.set_wall(t, false); for (int k = 0; k < 600; k++) n += (u.tick(1000) & F_LISTEN) != 0; }
+    EQ(n, 0); EQ(u.s.r_asked, 0);
+    Game o = routine_game(); o.s.opts |= OPT_NO_ROUTINES;          // switched off
+    EQ(live(o, from, to, ANS_YES, a, 32), 0);
+    Game x = routine_game(); x.has_routines = 0;                   // no routines_tr.bin: the game as before
+    EQ(live(x, from, to, ANS_YES, a, 32), 0);
+    Game b = routine_game(); b.s.bed10 = 108;                      // bedtime 18:00: nothing at bedtime
+    n = live(b, from, to, ANS_YES, a, 32);
+    for (int i = 0; i < n; i++) CHECK(a[i].minute < 18 * 60 && a[i].minute >= 7 * 60);
+    Game w = routine_game();                   // busy: she waits for the bath and the stars to end
+    w.s.q_off = (u16)~(1 << Q_DINNER) & ((1 << Q_COUNT) - 1);
+    w.set_wall(at(2026, 11, 3, 17, 59)); run(w, 1000);
+    tap_menu(w, MENU_WASH);
+    w.set_wall(at(2026, 11, 3, 18, 0)); run(w, 1000);
+    EQ(w.scene, SC_WASH); EQ(w.s.r_asked, 0);
+    run(w, WASH_MS + MEMORY_SHOW_MS + 500);    // (the day's first care puts a picture in the album first)
+    EQ(w.scene, SC_ASK);                       // right after
+    Game d = routine_game();                   // the screen was dark: lit for her question, dark again soon
+    d.s.q_off = w.s.q_off;
+    d.set_wall(at(2026, 11, 3, 17, 50)); run(d, SCREEN_OFF_MS + 1000); CHECK(!d.screen_on);
+    d.set_wall(at(2026, 11, 3, 18, 0)); d.tick(1000);
+    EQ(d.scene, SC_ASK); CHECK(d.screen_on);
+    d.listen_started(); d.listen_result(ANS_YES); run(d, R_REPLY_MS + 200);
+    EQ(d.scene, SC_HOME); run(d, R_DARK_LINGER_MS + 300); CHECK(!d.screen_on);
+}
+
+TEST(routine_question_flow) {
+    Game g = routine_game();
+    g.s.q_off = (u16)~(1 << Q_DINNER) & ((1 << Q_COUNT) - 1);
+    g.set_wall(at(2026, 11, 3, 18, 0));
+    u32 f = g.tick(100);
+    EQ(g.scene, SC_ASK); EQ(g.r_q, Q_DINNER); EQ(g.r_stage, RS_ASK);
+    CHECK(f & F_LISTEN); EQ(g.listen_req, LREQ_LISTEN); EQ(g.listen_kind, LK_YESNO); EQ(g.listen_q, Q_DINNER);
+    int line, clip;
+    g.take_sfx(&line, &clip);
+    CHECK(clip >= Q_ASK[Q_DINNER] && clip < Q_ASK[Q_DINNER] + R_VARIANTS);
+    EQ(g.link(), LINK_NOW);                    // the join starts while she is still asking
+    g.listen_req = LREQ_NONE;
+    g.listen_started(); EQ(g.r_stage, RS_LISTEN);
+    shot(g, "29_question");
+    g.input(IN_TOUCH, 90, 400);                // the buttons are not there yet: nothing
+    EQ(g.r_stage, RS_LISTEN);
+    g.listen_result(ANS_NO_LISTENER);          // nobody to understand her: the child answers
+    EQ(g.r_stage, RS_BUTTONS);
+    shot(g, "30_question_buttons");
+    g.input(IN_NEXT, 0, 0); EQ(g.r_sel, 1); g.input(IN_NEXT, 0, 0);
+    g.input(IN_TOUCH, 90, 400);                // the tick
+    EQ(g.r_stage, RS_REPLY); EQ(g.s.r_ans[Q_DINNER] >> 11, ANS_TAP_YES); EQ(g.stars_today(), 1);
+    g.take_sfx(&line, &clip);
+    CHECK(clip >= Q_YES[Q_DINNER] && clip < Q_YES[Q_DINNER] + R_VARIANTS);
+    shot(g, "31_question_star");
+    run(g, R_REPLY_MS + 200); EQ(g.scene, SC_HOME);
+    Game t = routine_game();                   // no answer at all: the buttons after a while, then "silent"
+    t.s.q_off = g.s.q_off;
+    t.set_wall(at(2026, 11, 3, 18, 0)); t.tick(100); t.listen_req = LREQ_NONE;
+    run(t, R_LISTEN_MS + 200);
+    EQ(t.r_stage, RS_BUTTONS); EQ(t.listen_req, LREQ_CANCEL);   // the platform stops listening
+    run(t, R_BUTTONS_MS + 200);
+    EQ(t.r_stage, RS_REPLY); EQ(t.s.r_ans[Q_DINNER] >> 11, ANS_SILENT);
+    CHECK(!(t.s.r_done & 1 << Q_DINNER));      // asked once more later
+    run(t, R_REPLY_MS + 200); EQ(t.scene, SC_HOME);
+    Game z = routine_game();                   // a late answer after the reply is ignored
+    z.s.q_off = g.s.q_off;
+    z.set_wall(at(2026, 11, 3, 18, 0)); z.tick(100);
+    z.listen_result(ANS_NO); z.listen_result(ANS_YES);
+    EQ(z.s.r_ans[Q_DINNER] >> 11, ANS_NO); EQ(z.stars_today(), 0);
+    z.listen_result(99);                       // and nonsense from the platform does nothing
+    EQ(z.r_stage, RS_REPLY);
+}
+
+TEST(routine_variants_never_repeat_early) {
+    Game g = routine_game();
+    g.s.q_off = (u16)~(1 << Q_DINNER) & ((1 << Q_COUNT) - 1);
+    int order[30], n = 0;
+    for (int d = 0; d < 30; d++) {
+        int clips[R_CLIPS] = {0};
+        live(g, at(2026, 11, 1, 17, 59) + d * 86400u, at(2026, 11, 1, 18, 5) + d * 86400u, ANS_YES, 0, 0, clips);
+        for (int i = 0; i < R_VARIANTS; i++) if (clips[Q_ASK[Q_DINNER] + i]) order[n++] = i;
+    }
+    EQ(n, 30);
+    for (int r = 0; r < 3; r++) {              // every round of ten: all ten, each once
+        int seen = 0;
+        for (int i = 0; i < 10; i++) seen |= 1 << order[r * 10 + i];
+        EQ(seen, 0x3FF);
+    }
+    for (int i = 1; i < n; i++) CHECK(order[i] != order[i - 1]);   // never twice in a row, across rounds too
+}
+
+TEST(save_v7_loads_as_v8) {
+    Game g = hatched();
+    g.s.care_days = 33; g.s.bed10 = 120; g.s.lang = LANG_SV;
+    u8 buf[SAVE_SIZE];
+    g.save(buf);
+    buf[0] = 7;
+    buf[51] = 0;                               // v7's spare byte
+    u32 c = 2166136261u;
+    for (int i = 0; i < SAVE_V7_SIZE - 4; i++) c = (c ^ buf[i]) * 16777619u;
+    std::memcpy(buf + SAVE_V7_SIZE - 4, &c, 4);
+    Game h; h.init(5);
+    CHECK(h.load(buf, SAVE_V7_SIZE));
+    EQ(h.s.version, 8); EQ(h.s.care_days, 33); EQ(h.s.bed10, 120); EQ(h.s.lang, LANG_SV);
+    EQ(h.s.wake_we10, WAKE_WE_DEFAULT10); EQ(h.s.r_asked, 0); EQ(h.s.cfg_rev, 0u); EQ(h.s.q_off, 0);
+    Game r = routine_game();                   // v8 keeps everything the routine writes
+    r.s.q_off = (u16)~(1 << Q_DINNER) & ((1 << Q_COUNT) - 1);
+    Asked a[4];
+    live(r, at(2026, 11, 3, 17, 59), at(2026, 11, 3, 18, 10), ANS_YES, a, 4);
+    r.s.hol[0][0] = 9800; r.s.hol[0][1] = 9810; r.s.cfg_rev = 77; r.s.cfg_dirty = 5;
+    r.save(buf);
+    Game k; k.init(6); CHECK(k.load(buf, SAVE_SIZE));
+    EQ(k.s.r_ans[Q_DINNER], r.s.r_ans[Q_DINNER]); EQ(k.s.week[k.s.r_day % 7], 1 << Q_DINNER);
+    EQ(k.s.hol[0][1], 9810); EQ(k.s.cfg_rev, 77u); EQ(k.s.cfg_dirty, 5);
+    buf[96 + 2 * Q_DINNER + 1] = 0xF8;         // an answer code past the last one: refused
+    c = 2166136261u;
+    for (int i = 0; i < SAVE_SIZE - 4; i++) c = (c ^ buf[i]) * 16777619u;
+    std::memcpy(buf + SAVE_SIZE - 4, &c, 4);
+    CHECK(!k.load(buf, SAVE_SIZE));
+    Game wk = routine_game();                  // the week moves along: an old star is gone after 7 days
+    wk.s.week[0] = 0x7FF; wk.s.week[3] = 3; wk.s.r_day = (u16)(at(2026, 11, 3, 0, 0) / 86400);
+    wk.set_wall(at(2026, 11, 5, 6, 0)); wk.tick(100);   // two days on: the two slots between are cleared
+    EQ(wk.s.r_day, at(2026, 11, 5, 0, 0) / 86400);
+    int kept = 0;
+    for (int i = 0; i < 7; i++) kept += wk.s.week[i] != 0;
+    EQ(kept, 1 + (wk.s.week[3] != 0));
+    wk.set_wall(at(2026, 11, 30, 6, 0)); wk.tick(100);   // weeks later: nothing old survives
+    for (int i = 0; i < 7; i++) EQ(wk.s.week[i], 0);
+}
+
+TEST(settings_sync_with_the_parent_page) {
+    Game g = hatched();
+    g.set_wall(at(2026, 11, 3, 12, 0));
+    Settings mine = g.settings();
+    EQ(mine.v[K_WAKE_WEEKDAY], 7 * 60); EQ(mine.v[K_WAKE_WEEKEND], 8 * 60); EQ(mine.v[K_BEDTIME], 19 * 60 + 30);
+    EQ(mine.v[K_ROUTINES], 1); EQ(mine.v[K_QUESTIONS], (1 << Q_COUNT) - 1); EQ(mine.v[K_BRIGHTNESS], 180);
+    EQ(mine.v[K_PLAY_MIN], 10); EQ(mine.v[K_BREAK_MIN], 30); EQ(mine.v[K_SHAKE], 1);
+    Settings page = mine;
+    page.v[K_LANG] = LANG_DE; page.v[K_VOLUME] = VOL_LOW; page.v[K_WAKE_WEEKEND] = 9 * 60; page.v[K_TV_TEST] = 1;
+    page.v[K_QUESTIONS] = (u16)(mine.v[K_QUESTIONS] & ~(1 << Q_WATER));
+    page.v[K_HOLIDAY_RANGES] = 1; page.hol[0][0] = 9800; page.hol[0][1] = 9805;
+    g.apply_settings(5, page, (1 << K_COUNT) - 1);
+    EQ(g.s.lang, LANG_DE); EQ(g.volume(), VOL_LOW); EQ(g.s.wake_we10, 54); CHECK(g.tv_on());
+    EQ(g.s.tv_day, at(2026, 11, 3, 0, 0) / 86400); CHECK(g.s.q_off & 1 << Q_WATER); EQ(g.s.hol[0][1], 9805);
+    EQ(g.s.cfg_rev, 5u); EQ(g.s.cfg_dirty, 0);
+    page.v[K_LANG] = LANG_FR;
+    g.apply_settings(5, page, (1 << K_COUNT) - 1);   // the same revision again: nothing new
+    EQ(g.s.lang, LANG_DE);
+    g.input(IN_PARENT, 0, 0);                  // on the toy: volume and bedtime, by the parent holding it
+    tap_set(g, 300, SET_VOLUME); EQ(g.volume(), VOL_OFF);
+    CHECK(g.s.cfg_dirty & 1 << K_VOLUME);
+    page.v[K_VOLUME] = VOL_NORMAL; page.v[K_LANG] = LANG_FR;   // the page changed both meanwhile
+    g.apply_settings(6, page, (1 << K_COUNT) - 1);
+    EQ(g.volume(), VOL_OFF);                   // the toy's own change wins its key...
+    EQ(g.s.lang, LANG_FR);                     // ...the page wins the others
+    CHECK(g.s.cfg_dirty & 1 << K_VOLUME);      // and the toy's change is still to be told
+    g.settings_synced(g.sync_mark()); EQ(g.s.cfg_dirty, 0);
+    page.v[K_BRIGHTNESS] = 0; page.v[K_LANG] = 99; page.v[K_PLAY_MIN] = 500;   // out of range: ignored
+    page.v[K_HOLIDAY_RANGES] = 2; page.hol[1][0] = 9900; page.hol[1][1] = 9890;    // backwards: ignored
+    g.apply_settings(7, page, (1 << K_COUNT) - 1);
+    EQ(g.brightness(), 180); EQ(g.s.lang, LANG_FR); EQ(g.play_limit_ms(), 10 * 60000u); EQ(g.s.hol[1][0], 0);
+    Settings few = page;                       // only the keys a page sends are touched
+    few.v[K_CALM] = 1; few.v[K_LANG] = LANG_IT;
+    g.apply_settings(8, few, 1 << K_CALM);
+    CHECK(g.calm()); EQ(g.s.lang, LANG_FR);
+    Settings m = merge_settings(mine, 1 << K_LANG, few, 1 << K_LANG | 1 << K_CALM);   // the pure merge
+    EQ(m.v[K_LANG], mine.v[K_LANG]); EQ(m.v[K_CALM], 1);
+}
+
+TEST(tv_test_mode_listens_only_to_lasting_sound) {
+    Game g = hatched();
+    g.set_wall(at(2026, 11, 3, 10, 0));
+    g.input(IN_PARENT, 0, 0); g.set_page = PG_ROUTINE;
+    tap_set(g, 300, RT_TV);
+    CHECK(g.tv_on()); EQ(g.s.tv_day, at(2026, 11, 3, 0, 0) / 86400);
+    tap_set(g, 300, RT_BACK); tap_set(g, 300, SET_EXIT); EQ(g.scene, SC_HOME);
+    auto check_due = [&]() {                   // the next once-a-minute level check
+        for (int i = 0; i < 700; i++) {
+            u32 f = g.tick(100);
+            if ((f & F_LISTEN) && g.listen_req == LREQ_LISTEN) { int k = g.listen_kind; g.listen_req = LREQ_NONE; return k; }
+        }
+        return -1;
+    };
+    int sampled = 0, minute = 0, when[200];
+    auto level = [&](int db, int pct) {
+        EQ(check_due(), LK_LEVEL);
+        minute++;
+        g.level_result(db, pct);
+        if (g.listen_req == LREQ_LISTEN && g.listen_kind == LK_TV) { when[sampled++ % 200] = minute; g.listen_req = LREQ_NONE; }
+    };
+    level(-60, 0); level(-30, 90); EQ(sampled, 0);   // one loud minute: maybe a door
+    level(-30, 20); level(-30, 20); EQ(sampled, 0);   // loud but not sustained: a slam, a shout
+    level(-30, 90); EQ(sampled, 0);
+    level(-30, 90); EQ(sampled, 1);            // two in a row: a sample
+    for (int i = 0; i < 8; i++) level(-31, 90);
+    EQ(sampled, 1);                            // the same sound going on: not again for ten minutes
+    level(-15, 90); EQ(sampled, 2);            // it changed (much louder): a new sample
+    level(-60, 0); level(-30, 90); level(-30, 90); EQ(sampled, 3);   // quiet, then sound again
+    for (int i = 0; i < 40; i++) { level(-60, 0); level(-30 + (i % 2) * 20, 90); level(-30 + (i % 2) * 20, 90); }
+    CHECK(sampled > TV_PER_HOUR);              // a changing sound keeps being sampled...
+    for (int i = 0; i + TV_PER_HOUR < sampled && i + TV_PER_HOUR < 200; i++)
+        CHECK(when[i + TV_PER_HOUR] - when[i] >= 60);   // ...but never more than six in any hour
+    g.set_wall(at(2026, 11, 3, 21, 0));        // not at night
+    for (int i = 0; i < 1200; i++) { u32 f = g.tick(100); CHECK(!(f & F_LISTEN)); }
+    g.set_wall(at(2026, 11, 10, 10, 0)); g.tick(100);   // seven days on: it switched itself off
+    CHECK(!g.tv_on()); CHECK(g.s.cfg_dirty & 1 << K_TV_TEST);
+}
+
+TEST(radio_link_policy) {
+    Game g = routine_game();
+    g.set_wall(at(2026, 11, 3, 12, 0)); g.tick(100);
+    EQ(g.link(), LINK_OFF);                    // radio off by default
+    EQ(g.link(true), LINK_NOW);                // a TV sample waiting to go out
+    plug(g, true); EQ(g.link(), LINK_STAY);    // on USB power: kept up
+    g.wifi_stage = WST_WAIT; EQ(g.link(), LINK_OFF);   // the WiFi setup owns the radio
+    g.wifi_stage = WST_OFF; plug(g, false); EQ(g.link(), LINK_OFF);
+    EQ(name_line(SFX_WAKE, V_AWAKE), NL_AWAKE); EQ(name_line(SFX_HELLO, V_HELLO), NL_BACK);
+    EQ(name_line(SFX_HATCH, V_HELLO), NL_HELLO); EQ(name_line(SFX_EAT, V_YUM), -1);
+}
+
+// Codex review of the daily routine (hunt 13): sync acknowledgements, minute precision, clock trust, TV timing.
+TEST(review_fixes_routine_pass) {
+    {   // an edit made while a sync was out is not cleared by its acknowledgement
+        Game g = hatched();
+        g.set_wall(at(2026, 11, 3, 12, 0));
+        g.input(IN_PARENT, 0, 0);
+        tap_set(g, 300, SET_VOLUME);           // normal -> low, dirty
+        Settings server = g.settings();        // what the sync sends (and the page then keeps)
+        SyncMark sent = g.sync_mark();
+        tap_set(g, 300, SET_VOLUME);           // low -> off while the request is out
+        int mine = g.volume();
+        g.settings_synced(sent);
+        CHECK(g.s.cfg_dirty & 1 << K_VOLUME);  // still to be told
+        server.v[K_CALM] = 1;                  // the page changes something else; its config has the old volume
+        g.apply_settings(9, server, (1 << K_COUNT) - 1);
+        EQ(g.volume(), mine); CHECK(g.calm());
+        g.settings_synced(g.sync_mark()); EQ(g.s.cfg_dirty, 0);
+    }
+    {   // the page's 07:35 and 19:39 are kept to the minute: the window, the settings it reports, the save
+        Game g = hatched();
+        Settings page = g.settings();
+        page.v[K_WAKE_WEEKDAY] = 7 * 60 + 35; page.v[K_BEDTIME] = 19 * 60 + 39; page.v[K_WAKE_WEEKEND] = 8 * 60 + 5;
+        g.apply_settings(3, page, (1 << K_COUNT) - 1);
+        Settings back = g.settings();
+        EQ(back.v[K_WAKE_WEEKDAY], 7 * 60 + 35); EQ(back.v[K_BEDTIME], 19 * 60 + 39); EQ(back.v[K_WAKE_WEEKEND], 8 * 60 + 5);
+        g.set_wall(at(2026, 11, 3, 19, 38)); EQ(g.bedtime(), BED_NONE);   // Tuesday
+        g.set_wall(at(2026, 11, 3, 19, 39)); EQ(g.bedtime(), BED_DROWSY);
+        g.set_wall(at(2026, 11, 4, 7, 34)); CHECK(g.bedtime() != BED_NONE);
+        g.set_wall(at(2026, 11, 4, 7, 35)); EQ(g.bedtime(), BED_NONE);
+        u8 buf[SAVE_SIZE]; g.save(buf);
+        Game h; h.init(3); CHECK(h.load(buf, SAVE_SIZE));
+        EQ(h.clock_min(T_BED), 19 * 60 + 39); EQ(h.clock_min(T_WAKE), 7 * 60 + 35); EQ(h.clock_min(T_WAKE_WE), 8 * 60 + 5);
+        Save* raw = (Save*)buf;                // a minute past the ten that cannot be: refused
+        raw->min_ones = (u16)(raw->min_ones | 10 << 4);
+        u32 c = 2166136261u;
+        for (u32 i = 0; i < SAVE_SIZE - 4; i++) c = (c ^ buf[i]) * 16777619u;
+        raw->check = c;
+        CHECK(!h.load(buf, SAVE_SIZE));
+    }
+    {   // the clock stops being trusted mid-question: she ends it silently, and a late answer says nothing
+        Game g = routine_game();
+        g.s.q_off = (u16)~(1 << Q_DINNER) & ((1 << Q_COUNT) - 1);
+        g.set_wall(at(2026, 11, 3, 18, 0)); g.tick(100);
+        EQ(g.scene, SC_ASK);
+        g.listen_req = LREQ_NONE; g.listen_started();
+        g.set_wall(at(2026, 11, 3, 18, 0), false);
+        CHECK(g.scene != SC_ASK); EQ(g.listen_req, LREQ_CANCEL);
+        int line, clip;
+        g.take_sfx(&line, &clip); EQ(clip, -1);
+        g.listen_result(ANS_YES);
+        g.take_sfx(&line, &clip); EQ(clip, -1); EQ(g.stars_today(), 0);
+    }
+    {   // a level result that comes back after 17:00 (or with an untrusted clock) starts no recording
+        for (int late = 0; late < 3; late++) {
+            Game g = hatched();
+            g.set_wall(at(2026, 11, 3, 16, 59));
+            g.s.opts |= OPT_TV_TEST; g.s.tv_day = (u16)(at(2026, 11, 3, 0, 0) / 86400);
+            g.listen_req = LREQ_NONE;
+            g.level_result(-30, 90);
+            if (late == 1) g.set_wall(at(2026, 11, 3, 17, 0));
+            if (late == 2) g.set_wall(at(2026, 11, 3, 16, 59), false);
+            g.level_result(-30, 90);
+            bool sample = g.listen_req == LREQ_LISTEN && g.listen_kind == LK_TV;
+            EQ(sample, late == 0);
+        }
+    }
+    {   // TV test switched on on the page on 1 November counts from then, however late the toy hears of it
+        Game g = hatched();
+        u16 nov1 = (u16)(at(2026, 11, 1, 0, 0) / 86400);
+        Settings page = g.settings();
+        page.v[K_TV_TEST] = 1; page.tv_day = nov1;
+        g.set_wall(at(2026, 11, 3, 10, 0));
+        g.apply_settings(4, page, 1 << K_TV_TEST);
+        CHECK(g.tv_on()); EQ(g.s.tv_day, nov1); EQ(g.settings().tv_day, nov1);
+        Game late = hatched();
+        late.set_wall(at(2026, 11, 8, 10, 0));
+        late.apply_settings(4, page, 1 << K_TV_TEST);
+        late.tick(100);
+        CHECK(!late.tv_on());                  // its seven days were over before it arrived
+        Game future = hatched();               // a date ahead of the toy's clock: from today
+        future.set_wall(at(2026, 11, 3, 10, 0));
+        page.tv_day = (u16)(nov1 + 400);
+        future.apply_settings(4, page, 1 << K_TV_TEST);
+        EQ(future.s.tv_day, at(2026, 11, 3, 0, 0) / 86400);
+    }
+    {   // toilet stays last: it waits for teeth's second try, even when that comes after its own window
+        Game g = routine_game();
+        g.s.q_off = (u16)~(1 << Q_TEETH_PM | 1 << Q_TOILET) & ((1 << Q_COUNT) - 1);
+        g.s.volume = VOL_OFF;                  // busy (quiet) until 18:51
+        Asked a[8];
+        live(g, at(2026, 11, 3, 17, 50), at(2026, 11, 3, 18, 51), ANS_YES, a, 8);
+        EQ(g.s.r_asked, 0);
+        g.s.volume = VOL_NORMAL;
+        EQ(live(g, at(2026, 11, 3, 18, 51), at(2026, 11, 3, 18, 52), ANS_UNCLEAR, a, 8), 1);
+        EQ(a[0].q, Q_TEETH_PM);
+        int n = live(g, at(2026, 11, 3, 18, 52), at(2026, 11, 3, 19, 40), ANS_YES, a, 8);
+        EQ(n, 2); EQ(a[0].q, Q_TEETH_PM); EQ(a[1].q, Q_TOILET);
+        CHECK(a[1].minute < 19 * 60 + 30 && a[1].minute - a[0].minute >= Q_GAP_MIN);
+    }
+}
+
 int main() {
     struct { const char* name; void (*fn)(); } tests[] = {
 #define T(n) {#n, n}
@@ -2553,9 +3349,9 @@ int main() {
         T(event_pet_hearts_and_rationed_happiness), T(event_info_from_the_header),
         T(idle_life_blinks_walks_and_hit_box_follows), T(needy_unicorn_stays_put),
         T(cosmetics_pause_while_the_screen_is_dark),
-        T(screen_turns_off_and_first_touch_only_wakes), T(menu_gutter_touches_are_ignored),
+        T(screen_turns_off_and_first_touch_only_wakes), T(menu_strip_takes_the_nearest_button),
         T(save_load_roundtrip_and_corruption), T(power_off_freezes_time), T(autosave_every_five_minutes),
-        T(moods_follow_needs), T(sound_cue_for_every_event), T(sound_toggle_on_info_screen), T(event_shake),
+        T(moods_follow_needs), T(sound_cue_for_every_event), T(the_child_cannot_mute_and_old_mutes_become_volume_off), T(event_shake),
         T(melodies_are_short_and_audible), T(any_tick_partition_gives_the_same_world),
         T(big_tick_does_not_strand_a_hatching_egg), T(only_visible_stars_can_be_popped),
         T(hatching_in_the_dark_turns_the_screen_on), T(clock_wrap_keeps_petting_and_idle_alive),
@@ -2567,7 +3363,7 @@ int main() {
         T(rtc_that_lost_power_is_not_trusted), T(no_rtc_counts_powered_time_only),
         T(version_2_saves_still_load), T(time_is_up_means_no_new_activities), T(tired_pillow_puts_her_to_sleep),
         T(a_one_minute_nap_is_enough_to_play), T(parent_settings), T(hints_for_pre_readers),
-        T(stars_hit_where_they_are_drawn), T(version_3_saves_still_load), T(sound_toggle_overrides_parent_off),
+        T(stars_hit_where_they_are_drawn), T(version_3_saves_still_load), T(parent_volume_off_stays_off), T(long_settings_lists_turn_pages),
         T(egg_choice_persists), T(picker_does_not_age), T(legacy_egg_keeps_identity), T(foam_puffs_pop_once),
         T(wash_without_help_ends_the_same), T(butterfly_visits_quietly), T(toy_box_routes),
         T(music_garden_echoes_the_tune_once), T(dress_up_roundtrip), T(accessory_follows_every_pose),
@@ -2581,9 +3377,13 @@ int main() {
         T(charging_on_the_sun_lounger), T(charging_at_night_and_elsewhere),
         T(bedtime_sways_then_sleeps_on_her_feet), T(put_to_bed_stays_asleep_till_morning), T(bedtime_edges),
         T(bedtime_is_tick_size_independent), T(boot_taps_and_the_grown_up_gesture),
-        T(wifi_setup_from_the_toy), T(text_edge_cases), T(every_language_fits_the_screen),
-        T(review_fixes_bug_hunt), T(review_fixes_third_pass), T(old_local_break_deadlines_are_not_read_as_utc), T(fifth_pass_fixes), T(album_opens_from_the_info_screen),
-        T(every_scene_renders_for_every_character),
+        T(wifi_setup_from_the_toy), T(firmware_update_page), T(text_edge_cases), T(every_language_fits_the_screen),
+        T(review_fixes_bug_hunt), T(review_fixes_third_pass), T(old_local_break_deadlines_are_not_read_as_utc), T(no_sound_at_bedtime), T(she_speaks_her_lines), T(her_voice_file_decodes), T(damaged_packs_never_read_outside), T(the_screen_dims_at_night), T(fifth_pass_fixes), T(album_opens_from_the_info_screen),
+        T(settings_close_when_the_grown_up_walks_away), T(every_scene_renders_for_every_character),
+        T(routine_school_morning), T(routine_weekend_and_holidays), T(routine_evening), T(routine_asks_again_once),
+        T(routine_stays_quiet), T(routine_question_flow), T(routine_variants_never_repeat_early), T(save_v7_loads_as_v8),
+        T(settings_sync_with_the_parent_page), T(tv_test_mode_listens_only_to_lasting_sound), T(radio_link_policy),
+        T(review_fixes_routine_pass),
     };
     for (auto& t : tests) {
         int before = failures;

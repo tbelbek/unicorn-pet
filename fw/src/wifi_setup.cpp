@@ -9,6 +9,7 @@
 #include <esp_random.h>
 #include "wifi_setup.h"
 #include "clock.h"
+#include "ota.h"
 #include "portal.gen.h"
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -55,10 +56,63 @@ int wifi_known(WifiNet* out, int max) {
     return n;
 }
 
+// One station link, shared: the clock sync, the update and the listener (net.cpp) each join and leave, and
+// the radio goes off when the last one leaves. Joining while another holds the link costs nothing.
+// radio_mx is held for a whole join, so the setup cannot start mid-join; while the setup owns the radio
+// (setup_owns), nobody joins.
+static SemaphoreHandle_t radio_mx;
+static volatile int radio_users;
+static volatile bool setup_owns;
+
+// Each known network in turn, newest first. Not WiFiMulti: its addAP() refuses a 32-byte SSID,
+// which the setup portal (and WiFi itself) allows.
+bool wifi_join(const WifiNet* nets, int n) {
+    if (!radio_mx) return false;
+    xSemaphoreTake(radio_mx, portMAX_DELAY);
+    if (setup_owns) { xSemaphoreGive(radio_mx); return false; }   // the parent's WiFi setup has the radio
+    bool ok = radio_users > 0 && WiFi.status() == WL_CONNECTED;
+    if (!ok) {
+        WiFi.mode(WIFI_STA);
+        for (int i = 0; i < n && !ok; i++) {
+            WiFi.begin(nets[i].ssid, nets[i].pass);
+            uint32_t t0 = millis();
+            while (WiFi.status() != WL_CONNECTED && millis() - t0 < 8000) delay(200);
+            ok = WiFi.status() == WL_CONNECTED;
+            if (!ok) WiFi.disconnect(false);
+        }
+        if (ok) WiFi.setSleep(WIFI_PS_MIN_MODEM);   // modem sleep keeps the association (no light sleep then)
+        else if (!radio_users) WiFi.mode(WIFI_OFF);
+    }
+    if (ok) radio_users++;
+    xSemaphoreGive(radio_mx);
+    return ok;
+}
+
+void wifi_leave() {
+    if (!radio_mx) return;
+    xSemaphoreTake(radio_mx, portMAX_DELAY);
+    if (radio_users > 0) radio_users--;
+    if (!radio_users) {
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);               // the radio is off again until it is needed
+    }
+    xSemaphoreGive(radio_mx);
+}
+
+// The setup takes the radio for itself, only when nobody holds or is joining it (never blocks the main loop).
+static bool reserve_for_setup() {
+    if (!radio_mx || xSemaphoreTake(radio_mx, 0) != pdTRUE) return false;   // a join is under way
+    bool ok = radio_users == 0;
+    if (ok) setup_owns = true;
+    xSemaphoreGive(radio_mx);
+    return ok;
+}
+
 void wifi_setup_begin(Game& g) {
     // Passwords live only in our own list (and secrets.h): the WiFi driver must not keep a copy of
     // its own in NVS, or "forget" would leave one behind. Applies to the clock sync's joins too.
     WiFi.persistent(false);
+    if (!radio_mx) radio_mx = xSemaphoreCreateMutex();
     store.begin("wifi", false);
     if (store.getBytesLength("list") != sizeof saved || store.getBytes("list", &saved, sizeof saved) != sizeof saved ||
         saved.n > WIFI_SAVED_MAX)
@@ -246,6 +300,8 @@ static void stop_all(Game& g, int stage) {
     WiFi.softAPdisconnect(true);
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
+    WiFi.setAutoReconnect(true);           // start_join() turned it off for the parent's tries
+    setup_owns = false;                    // the radio is everyone's again
     phase = IDLE;
     g.wifi_status(stage, nullptr);
 }
@@ -283,13 +339,13 @@ void wifi_setup_poll(Game& g, uint32_t now, uint32_t flags) {
     if (flags & F_WIFI) {
         int req = g.wifi_req, arg = g.wifi_arg;
         g.wifi_req = WREQ_NONE;
-        if (req == WREQ_START && phase == IDLE && !clock_busy() && !web_task) {
+        if (req == WREQ_START && phase == IDLE && !clock_busy() && !ota_busy() && !web_task && reserve_for_setup()) {
             WiFi.mode(WIFI_STA);
             WiFi.scanNetworks(true);       // async: the list is ready before any phone joins
             phase = SCANNING;
             started = now;
         } else if (req == WREQ_START && phase == IDLE) {
-            g.wifi_req = WREQ_START;       // a clock sync (or the last session's server) still busy: soon
+            g.wifi_req = WREQ_START;       // a clock sync, an update, the listener link (or the last session's server): soon
         } else if (req == WREQ_STOP && phase != IDLE) {
             stop_all(g, WST_OFF);
         } else if (req == WREQ_RETRY && phase == DONE && !expired()) {   // late: the timeout follows

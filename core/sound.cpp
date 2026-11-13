@@ -56,4 +56,72 @@ const Note* melody(int sfx, int* count) {
     return TUNES[sfx].notes;
 }
 
+// ---- her voice packs (format: tools/voice.py) ----------------------------------------------------
+static u32 le32(const u8* p) { return p[0] | p[1] << 8 | p[2] << 16 | (u32)p[3] << 24; }
+static u32 le16(const u8* p) { return p[0] | p[1] << 8; }
+
+// Clip `index` of language `lang`. The packs come off an SD card too, so everything is checked before a
+// single byte is played: the table, every Ogg page header and segment table against the clip's end, a mono
+// OpusHead first, and no packet running on into a next page (tools/voice.py never writes one).
+bool pack_clip(const u8* bin, u32 len, int lang, int index, Clip* c) {
+    if (!bin || len < 8 || bin[0] != 'U' || bin[1] != 'P' || bin[2] != 'O' || bin[3] != '1') return false;
+    u32 n = le16(bin + 4), per = le16(bin + 6);
+    if (lang < 0 || index < 0 || (u32)index >= per) return false;
+    unsigned long long e = (unsigned long long)lang * per + (u32)index;
+    if (e >= n || 8 + (e + 1) * 8 > len) return false;
+    u32 off = le32(bin + 8 + e * 8), size = le32(bin + 12 + e * 8);
+    if ((unsigned long long)off + size > len || size < 27) return false;
+    const u8* d = bin + off;
+    u32 at = 0, pages = 0, start = 0, gran = 0;
+    u16 pre = 0;
+    while (at < size) {
+        if (size - at < 27) return false;
+        const u8* p = d + at;
+        if (p[0] != 'O' || p[1] != 'g' || p[2] != 'g' || p[3] != 'S' || p[4] != 0) return false;
+        u32 nseg = p[26], body = 0;
+        if (!nseg || size - at - 27 < nseg) return false;
+        for (u32 k = 0; k < nseg; k++) body += p[27 + k];
+        if (p[27 + nseg - 1] == 255 || size - at - 27 - nseg < body) return false;
+        const u8* b = p + 27 + nseg;
+        if (pages == 0) {
+            if (body < 19 || b[0] != 'O' || b[1] != 'p' || b[2] != 'u' || b[3] != 's' || b[4] != 'H' || b[8] != 1 || b[9] != 1)
+                return false;              // OpusHead, version 1, one channel
+            pre = (u16)le16(b + 10);
+        }
+        if (pages == 2) start = at;
+        gran = le32(p + 6);                // (the high half is 0 for any clip shorter than a day)
+        at += 27 + nseg + body;
+        pages++;
+    }
+    if (pages < 3) return false;
+    c->data = d;
+    c->len = size;
+    c->page = start;
+    c->body = start + 27 + d[start + 26];
+    c->seg = 0;
+    c->pre_skip = pre;
+    c->samples = gran > pre ? (gran - pre) / 3 : 0;   // the stream counts at 48 kHz
+    return true;
+}
+
+int ogg_packet(Clip* c, const u8** packet) {
+    while (c->page < c->len) {
+        const u8* p = c->data + c->page;
+        int nseg = p[26];
+        if (c->seg >= nseg) {              // on to the next page (pack_clip checked them all)
+            c->page = c->body;
+            c->seg = 0;
+            if (c->page < c->len) c->body = c->page + 27 + c->data[c->page + 26];
+            continue;
+        }
+        u32 n = 0;
+        u8 v;
+        do { v = p[27 + c->seg++]; n += v; } while (v == 255 && c->seg < nseg);
+        *packet = c->data + c->body;
+        c->body += n;
+        if (n) return (int)n;              // (an empty packet: nothing to decode)
+    }
+    return 0;
+}
+
 }  // namespace up

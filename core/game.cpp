@@ -35,6 +35,7 @@ void Game::init(u32 seed) {
     for (int i = 0; i < NSTATS; i++) s.stat[i] = 8000;
     s.bed10 = BED_DEFAULT10;
     s.wake10 = WAKE_DEFAULT10;
+    s.wake_we10 = WAKE_WE_DEFAULT10;
     scene = SC_EGG_PICK;                   // first: choose one of four eggs
     screen_on = 1;
     dirty = 1;
@@ -47,7 +48,7 @@ bool Game::load(const u8* data, u32 len) {
     if (!data || len < 1) return false;
     u32 size = data[0] == 1 ? SAVE_V1_SIZE : data[0] == 2 ? SAVE_V2_SIZE : data[0] == 3 ? SAVE_V3_SIZE
              : data[0] == 4 ? SAVE_V4_SIZE : data[0] == 5 ? SAVE_V5_SIZE : data[0] == 6 ? SAVE_V6_SIZE
-             : data[0] == SAVE_VERSION ? SAVE_SIZE : 0;
+             : data[0] == 7 ? SAVE_V7_SIZE : data[0] == SAVE_VERSION ? SAVE_SIZE : 0;
     if (!size || len < size) return false;
     u32 check;
     copy((u8*)&check, data + size - 4, 4);
@@ -57,13 +58,20 @@ bool Game::load(const u8* data, u32 len) {
     copy((u8*)&tmp, data, size - 4);
     if (data[0] < 5) { tmp.birth_flags = BIRTH_CHOSEN; tmp.accessory = ACC_NONE; tmp.last_treat = 0; }
     if (data[0] < 7) { tmp.bed10 = BED_DEFAULT10; tmp.wake10 = WAKE_DEFAULT10; tmp.tricks_seen = 0; }
+    if (data[0] < 8) tmp.wake_we10 = WAKE_WE_DEFAULT10;   // v7's spare byte was 0; the routine starts afresh
     if (!(tmp.life_flags & LIFE_UTC_AWAY)) tmp.away_until = 0;   // a local-time deadline: count powered time
     tmp.version = SAVE_VERSION;
     if (tmp.accessory >= ACC_COUNT || (tmp.birth_flags & ~BIRTH_CHOSEN) || tmp.last_treat > TREAT_COUNT)
         return false;
     if (tmp.character > 3 || tmp.care_days > CARE_DAYS_MAX || tmp.milestones >> MILESTONES) return false;
     if (tmp.volume > VOL_OFF) return false;   // indexes the settings' volume names
+    if (tmp.muted) { tmp.volume = VOL_OFF; tmp.muted = 0; }   // the old child mute is now the parent's "off"
     if (tmp.bed10 >= 144 || tmp.wake10 >= 144 || tmp.tricks_seen > TRICKS || tmp.lang >= LANG_COUNT) return false;
+    for (int t = 0; t < 3; t++) if ((tmp.min_ones >> 4 * t & 15) > 9) return false;
+    if (tmp.min_ones >> 12 || tmp.wake_we10 >= 144 || tmp.r_asked >> Q_COUNT || tmp.r_done >> (Q_COUNT + 1) || tmp.q_off >> Q_COUNT ||
+        tmp.cfg_dirty >> K_COUNT) return false;
+    for (int i = 0; i < Q_COUNT; i++) if (tmp.r_ans[i] >> 11 > ANS_TAP_NO || (tmp.r_ans[i] & 2047) >= 1440) return false;
+    for (int i = 0; i < HOL_MAX; i++) if (tmp.hol[i][0] > tmp.hol[i][1]) return false;
     for (int i = 0; i < NSTATS; i++) if (tmp.stat[i] > MAX_STAT) return false;
     s = tmp;
     play_ms = (u32)s.play_s * 1000;
@@ -74,6 +82,8 @@ bool Game::load(const u8* data, u32 len) {
     treat = (u8)(s.last_treat ? s.last_treat - 1 : 0);   // the snack picker starts on her last one
     sync_away();                           // with an RTC, the time she was off counts too
     if (scene == SC_HOME) greet();         // switched on: hello again
+    Cal c = today();                       // a question asked just before a power cut: the gap still holds
+    if (c.known) r_last = c.day * 1440u + c.minute;
     return true;
 }
 
@@ -104,6 +114,7 @@ void Game::set_wall(u32 local_s, bool calendar, u32 utc) {
     if (now && utc_s && now < utc_s) s.away_until = 0;   // the clock went back: count the break's own time
     utc_s = now;
     cal_ok = calendar;
+    if (!calendar) routine_cancel();       // her questions need a trusted clock
     sync_away();
 }
 
@@ -133,9 +144,30 @@ void Game::set_stat(int i, int v) {
     if (i >= 0 && i < NSTATS) { s.stat[i] = (u16)clamp(v); dirty = 1; }
 }
 
-int Game::take_sfx() {
-    int id = s.muted ? (int)SFX_NONE : (int)sfx;
-    sfx = SFX_NONE;
+// What she says with each sound (V_NONE: just the tune). Some calls pass their own line.
+static const u8 VOICE_OF[SFX_COUNT] = {
+    V_NONE, V_NONE, V_HELLO, V_YUM, V_PLAY, V_BATH, V_SLEEPY, V_AWAKE, V_TIRED,   // NONE TAP HATCH .. REFUSE
+    V_NONE, V_GIGGLE, V_NONE, V_YAY, V_BYE, V_NONE, V_HELLO,                      // INFO PET POP CHEER BYE KNOCK HELLO
+    V_NONE, V_NONE, V_NONE, V_NONE, V_NONE, V_PRETTY, V_NONE, V_REST};             // NOTE1-3 CHOOSE LAND DRESS ECHO CHARGE
+enum { VOICE_GAP_MS = 1500, VOICE_REPEAT_MS = 8000 };   // never over each other; the same line not again soon
+
+void Game::cue(int id, int line) {
+    sfx = (u8)id;
+    int v = line >= 0 ? line : VOICE_OF[id];
+    if (v == V_NONE) return;
+    u32 ago = voice_at ? since(voice_at) : 0xFFFFFFFFu, same = voice_line_at[v] ? since(voice_line_at[v]) : 0xFFFFFFFFu;
+    if (ago < VOICE_GAP_MS || same < VOICE_REPEAT_MS) return;   // a tickle is not a speech
+    voice = (u8)v;
+    voice_at = voice_line_at[v] = stamp();
+}
+
+int Game::take_sfx(int* line, int* clip) {
+    bool q = quiet();
+    int id = q ? (int)SFX_NONE : (int)sfx;
+    if (line) *line = q ? (int)V_NONE : (int)voice;
+    if (clip) *clip = q || !rclip ? -1 : rclip - 1;
+    sfx = voice = 0;
+    rclip = 0;
     return id;
 }
 
@@ -290,7 +322,8 @@ void Game::check_life() {
     party_end = clock_ms + (kind == PARTY_MILESTONE ? MILESTONE_MS : PARTY_MS);
     idle_act = IDLE_NONE;
     want_save = 1;
-    cue(kind == PARTY_REUNION ? SFX_HELLO : SFX_CHEER);
+    cue(kind == PARTY_REUNION ? SFX_HELLO : SFX_CHEER,
+        kind == PARTY_REUNION ? V_MISSED : kind == PARTY_BIRTHDAY ? V_BIRTHDAY : V_GREW);
     burst(kind == PARTY_BIRTHDAY ? P_CONFETTI : kind == PARTY_REUNION ? P_HEART : P_STAR,
           SCREEN_W / 2 + pet_x, 150, 6);
 }
@@ -348,7 +381,7 @@ void Game::come_back() {                   // she walks in from the left
 void Game::wake() {
     if (scene == SC_SLEEP && bed_locked()) return;   // the night belongs to sleep: only morning wakes her
     go(plugged && !screen_on ? SC_LOUNGE : SC_HOME);   // dark, on the charger: straight back to the lounger
-    cue(SFX_WAKE);
+    if (screen_on) cue(SFX_WAKE);          // waking by herself in the dark wakes nobody else
 }
 
 // Rested enough to get up by herself: never during the night window.
@@ -358,8 +391,8 @@ bool Game::rested() const {
 
 int Game::bedtime() const {
     Cal c = today();
-    if (!c.known || (s.opts & OPT_NO_BEDTIME) || s.bed10 == s.wake10) return BED_NONE;
-    int bed = s.bed10 * 10, up = s.wake10 * 10, m = c.minute;
+    int bed = clock_min(T_BED), up = wake_min(), m = c.minute;   // later wake-up at weekends and on holidays
+    if (!c.known || (s.opts & OPT_NO_BEDTIME) || bed == up) return BED_NONE;
     bool night = bed < up ? m >= bed && m < up : m >= bed || m < up;
     if (!night) return BED_NONE;
     return (m - bed + 1440) % 1440 < DROWSY_MIN ? BED_DROWSY : BED_SLEEP;
@@ -387,7 +420,7 @@ void Game::check_bedtime() {
     if (scene == SC_SLEEP && night_sleep && b == BED_NONE && today().known) {   // good morning
         night_sleep = 0;
         go(plugged && !screen_on ? SC_LOUNGE : SC_HOME);   // dark, on the charger: onto the lounger
-        if (screen_on) { cue(SFX_WAKE); greet(); }
+        if (screen_on) { if (!routines_on()) cue(SFX_WAKE, V_MORNING); greet(); }   // (the routine says hello)
         return;
     }
     if (scene == SC_SETTINGS && back_scene == SC_SLEEP && b != BED_NONE) back_night = 1;   // night fell meanwhile
@@ -543,12 +576,12 @@ void Game::eat(int t) {                    // the chosen snack: all three nouris
 void Game::settings_input(int type, int x, int y) {
     if (set_page == PG_CLOCK) { clock_input(type, x, y); return; }
     if (set_page == PG_BED) { bed_input(type, x, y); return; }
+    if (set_page == PG_UPDATE) { update_input(type, x, y); return; }
+    if (set_page == PG_ROUTINE || set_page == PG_HABITS) { routine_page_input(type, x, y); return; }
     if (set_page >= PG_HUB) { wifi_input(type, x, y); return; }
     int row = set_row;
     if (type == IN_TOUCH) {
-        if (y < SET_Y0) return;
-        row = (y - SET_Y0) / SET_ROW_H;
-        if (row >= SET_ROWS) return;
+        if ((row = set_touch(y)) < 0) return;
         set_row = (u8)row;
     } else if (type == IN_NEXT) {
         set_row = (u8)((set_row + 1) % SET_ROWS);
@@ -558,8 +591,11 @@ void Game::settings_input(int type, int x, int y) {
         return;
     }
     static const u8 LIMITS[] = {5, 10, 15, 20}, BREAKS[] = {15, 30, 45, 60}, BRIGHT[] = {60, 120, 180, 255};
+    static const i8 KEY_OF[SET_ROWS] = {K_VOLUME, K_PLAY_MIN, K_BREAK_MIN, K_LANG, -1, -1, K_BRIGHTNESS, K_CALM,
+                                        K_SHAKE, -1, -1};   // what the parent page learns at the next sync
+    if (row < SET_ROWS && KEY_OF[row] >= 0) touched(KEY_OF[row]);
     switch (row) {
-    case SET_VOLUME: s.volume = (u8)((s.volume + 1) % 3); s.muted = 0; break;
+    case SET_VOLUME: s.volume = (u8)((s.volume + 1) % 3); break;
     case SET_LIMIT: {
         int cur = s.limit_min ? s.limit_min : 10, i = 0;
         while (i < 4 && LIMITS[i] != cur) i++;
@@ -581,7 +617,8 @@ void Game::settings_input(int type, int x, int y) {
     case SET_CALM:  s.opts ^= OPT_CALM; break;
     case SET_SHAKE: s.opts ^= OPT_NO_SHAKE; break;
     case SET_CLOCK: set_page = PG_HUB; set_row = 0; cue(SFX_TAP); dirty = 1; return;   // the clock & WiFi hub
-    case SET_SLEEP: set_page = 2; set_row = 0; cue(SFX_TAP); dirty = 1; return;
+    case SET_SLEEP: set_page = PG_BED; set_row = 0; cue(SFX_TAP); dirty = 1; return;
+    case SET_ROUTINE: set_page = PG_ROUTINE; set_row = 0; cue(SFX_TAP); dirty = 1; return;
     case SET_LANG:  s.lang = (u8)((s.lang + 1) % LANG_COUNT); break;   // every tap: the next language
     case SET_EXIT:
         leave_settings();
@@ -590,6 +627,31 @@ void Game::settings_input(int type, int x, int y) {
     want_save = 1;
     dirty = 1;
     cue(SFX_TAP);
+}
+
+int Game::set_rows() const {
+    switch (set_page) {
+    case PG_MAIN:  return SET_ROWS;
+    case PG_CLOCK: return CLK_ROWS;
+    case PG_BED:   return BEDR_ROWS;
+    case PG_ROUTINE: return RT_ROWS;
+    case PG_HUB:   return HUB_ROWS;
+    case PG_WIFI:  return WF_ROWS;
+    case PG_WLIST: return wifi_count + 1;
+    default:       return 0;
+    }
+}
+
+int Game::set_touch(int y) {
+    int n = set_rows(), slot = (y - SET_Y0) / SET_ROW_H;
+    if (y < SET_Y0 || slot >= SET_SLOTS) return -1;
+    int r = set_slot_row(n, set_half(n, set_row), slot);
+    if (r == SLOT_MORE || r == SLOT_UP) {  // the other half of a long list
+        set_row = (u8)(r == SLOT_MORE ? SET_SPLIT : 0);
+        dirty = 1;
+        cue(SFX_TAP);
+    }
+    return r < 0 ? -1 : r;
 }
 
 static bool leap(int y) { return y % 4 == 0 && (y % 100 || y % 400 == 0); }
@@ -618,9 +680,7 @@ void Game::open_clock() {                  // start from what the clock says (or
 void Game::bed_input(int type, int x, int y) {   // bedtime page: changes apply at once
     int row = set_row, step = 1;
     if (type == IN_TOUCH) {
-        if (y < SET_Y0) return;
-        row = (y - SET_Y0) / SET_ROW_H;
-        if (row >= BEDR_ROWS) return;
+        if ((row = set_touch(y)) < 0) return;
         set_row = (u8)row;
         step = x < SCREEN_W / 2 ? -1 : 1;
     } else if (type == IN_NEXT) {
@@ -632,8 +692,9 @@ void Game::bed_input(int type, int x, int y) {   // bedtime page: changes apply 
     }
     switch (row) {
     case BEDR_ON:   s.opts ^= OPT_NO_BEDTIME; break;
-    case BEDR_BED:  s.bed10 = (u8)((s.bed10 + 144 + step) % 144); break;
-    case BEDR_WAKE: s.wake10 = (u8)((s.wake10 + 144 + step) % 144); break;
+    case BEDR_BED:  set_clock_min(T_BED, (clock_min(T_BED) + 1440 + step * 10) % 1440); touched(K_BEDTIME); break;
+    case BEDR_WAKE: set_clock_min(T_WAKE, (clock_min(T_WAKE) + 1440 + step * 10) % 1440); touched(K_WAKE_WEEKDAY); break;
+    case BEDR_WAKE_WE: set_clock_min(T_WAKE_WE, (clock_min(T_WAKE_WE) + 1440 + step * 10) % 1440); touched(K_WAKE_WEEKEND); break;
     case BEDR_BACK: set_page = 0; set_row = SET_SLEEP; break;
     }
     want_save = 1;
@@ -644,9 +705,7 @@ void Game::bed_input(int type, int x, int y) {   // bedtime page: changes apply 
 void Game::clock_input(int type, int x, int y) {
     int row = set_row, step = 1;
     if (type == IN_TOUCH) {
-        if (y < SET_Y0) return;
-        row = (y - SET_Y0) / SET_ROW_H;
-        if (row >= CLK_ROWS) return;
+        if ((row = set_touch(y)) < 0) return;
         set_row = (u8)row;
         step = x < SCREEN_W / 2 ? -1 : 1;
     } else if (type == IN_NEXT) {
@@ -763,14 +822,13 @@ static int wifi_button(int x, int y) {
 }
 
 void Game::wifi_input(int type, int x, int y) {
-    int row = set_row, rows = set_page == PG_HUB ? HUB_ROWS : set_page == PG_WIFI ? WF_ROWS
-                               : set_page == PG_WLIST ? wifi_count + 1 : 0;
+    int row = set_row, rows = set_rows();
     int btn = -1;
     if (rows) {                            // list pages: BOOT moves, PWR or a tap picks
         if (type == IN_NEXT) { set_row = (u8)((set_row + 1) % rows); dirty = 1; return; }
         if (type == IN_TOUCH) {
-            if (y < SET_Y0 || (y - SET_Y0) / SET_ROW_H >= rows) return;
-            row = set_row = (u8)((y - SET_Y0) / SET_ROW_H);
+            if ((row = set_touch(y)) < 0) return;
+            set_row = (u8)row;
         } else if (type != IN_SELECT) return;
     } else {                               // button pages: BOOT switches, PWR or a tap presses
         if (type == IN_NEXT) { wifi_sel ^= 1; dirty = 1; return; }
@@ -782,6 +840,11 @@ void Game::wifi_input(int type, int x, int y) {
     case PG_HUB:
         if (row == HUB_CLOCK) { open_clock(); break; }
         if (row == HUB_WIFI) { set_page = PG_WIFI; set_row = 0; break; }
+        if (row == HUB_UPDATE) {           // a stale result is not shown again; a known newer version is
+            if (!update_busy()) update_stage = UST_IDLE;
+            set_page = PG_UPDATE; wifi_sel = 1;
+            break;
+        }
         set_page = PG_MAIN; set_row = SET_CLOCK;
         break;
     case PG_WIFI:
@@ -808,7 +871,7 @@ void Game::wifi_input(int type, int x, int y) {
         break;
     case PG_WLIST:
         if (row >= wifi_count) { set_page = PG_WIFI; set_row = WF_LIST; break; }
-        if (wifi_fixed & (1 << row)) { cue(SFX_REFUSE); return; }   // built into the firmware
+        if (wifi_fixed & (1 << row)) { cue(SFX_REFUSE, V_NONE); return; }   // built into the firmware
         set_page = PG_WFORGET; wifi_sel = 0; wifi_arg = (u8)row;
         break;
     case PG_WFORGET:                       // GERİ | UNUT
@@ -820,20 +883,52 @@ void Game::wifi_input(int type, int x, int y) {
     cue(SFX_TAP);
 }
 
+// ---- firmware update page (the platform checks, downloads and verifies; see fw/src/ota.cpp) --------
+
+void Game::update_status(int stage, int percent, int version) {
+    update_stage = (u8)stage;
+    update_pct = (u8)(percent < 0 ? 0 : percent > 100 ? 100 : percent);
+    if (version > 0) update_ver = (u16)version;
+    dirty = 1;
+}
+
+int Game::update_view() const {
+    bool rest = update_stage == UST_IDLE || update_stage == UST_LATEST || update_stage == UST_AVAILABLE;
+    if (rest && update_waiting()) return UST_AVAILABLE;
+    return update_stage == UST_AVAILABLE ? UST_LATEST : update_stage;   // AVAILABLE needs a newer version
+}
+
+// GERİ | the action: KONTROL ET, YÜKLE (only on USB power or >= 50 % battery) or TEKRAR (a new check).
+// While it downloads, verifies and restarts there is nothing to press: the page stays until the restart.
+void Game::update_input(int type, int x, int y) {
+    int v = update_view();
+    if (v >= UST_DOWNLOADING && v <= UST_RESTARTING) return;
+    bool action = v != UST_CHECKING && (v != UST_AVAILABLE || update_allowed());
+    int btn = -1;
+    if (type == IN_NEXT) { if (action) wifi_sel ^= 1; dirty = 1; return; }
+    if (type == IN_TOUCH) btn = wifi_button(x, y); else if (type == IN_SELECT) btn = action ? wifi_sel : 0;
+    if (btn < 0) return;
+    if (btn == 1 && !action) { if (v == UST_AVAILABLE) cue(SFX_REFUSE, V_NONE); return; }   // the battery rule
+    if (btn == 0) { set_page = PG_HUB; set_row = HUB_UPDATE; }
+    else if (v == UST_AVAILABLE) { update_req = UREQ_INSTALL; update_stage = UST_DOWNLOADING; update_pct = 0; }
+    else { update_req = UREQ_CHECK; update_stage = UST_CHECKING; }
+    dirty = 1;
+    cue(SFX_TAP);
+}
+
 // Out of the settings, back to where the grown-up found her: an egg stays an egg, a sleeper sleeps.
 void Game::leave_settings() {
     if (!s.hatched) go((s.birth_flags & BIRTH_CHOSEN) ? SC_EGG : SC_EGG_PICK);
     else if (back_scene == SC_SLEEP && back_night && !bedtime() && today().known) {   // morning came meanwhile
-        go(SC_HOME);
-        cue(SFX_WAKE);
-        greet();
+        go(plugged && !screen_on ? SC_LOUNGE : SC_HOME);   // closed in the dark: up quietly, as at check_bedtime
+        if (screen_on) { cue(SFX_WAKE, V_MORNING); greet(); }
     } else if (back_scene == SC_SLEEP) {   // the same sleep goes on: no new nap bonus, no new dreams
         go(SC_SLEEP);
         scene_ms = back_ms;
         standing = back_standing;
         night_sleep = back_night || bedtime() != BED_NONE;
     }
-    else go(SC_HOME);
+    else go(plugged && !screen_on ? SC_LOUNGE : SC_HOME);   // closed in the dark on the charger: the lounger
 }
 
 void Game::choose_egg() {                  // this one is mine: her colours are set for life
@@ -944,7 +1039,7 @@ void Game::set_plugged(bool usb) {
     facing = 1;
     if (phase() == PH_NIGHT && s.stat[ENERGY] < NEED_LOW) { act(MENU_SLEEP); return; }   // tired: to bed
     go(SC_LOUNGE);                         // otherwise: a lie-down on the lounger (sun by day, a mask at night)
-    if (!quiet) cue(SFX_CHARGE);
+    if (!quiet && screen_on) cue(SFX_CHARGE);   // the room stays quiet when the screen does
 }
 
 // BOOT, sampled every loop. Taps are counted and turned into IN_NEXT only when the sequence is
@@ -981,7 +1076,7 @@ void Game::set_tilt(int v) {
 }
 
 void Game::mode_input(int type, int x, int y) {
-    if (type == IN_TOUCH && x >= 292 && y <= 72) { go(SC_HOME); cue(SFX_TAP); return; }   // house
+    if (type == IN_TOUCH && x >= HOUSE_X0 && y <= HOUSE_Y1) { go(SC_HOME); cue(SFX_TAP); return; }   // house
     switch (scene) {
     case SC_TOYS:
         if (type == IN_TOUCH) {
@@ -1085,7 +1180,8 @@ void Game::input(int type, int x, int y) {
             back_standing = standing;
             back_night = night_sleep;
             set_row = 0;
-            set_page = wifi_busy() ? PG_WSESSION : PG_MAIN;   // a WiFi setup under way: straight back to it
+            // a WiFi setup or an update under way: straight back to it
+            set_page = wifi_busy() ? PG_WSESSION : update_busy() ? PG_UPDATE : PG_MAIN;
             wifi_sel = 1;
             go(SC_SETTINGS);
         }
@@ -1116,9 +1212,13 @@ void Game::input(int type, int x, int y) {
         wobble_end = clock_ms + WOBBLE_MS;  // the sign sways a little; nothing to win by knocking
         wobbling = 1;
         dirty = 1;
+        if (type == IN_TOUCH) cue(SFX_KNOCK);   // but a knock is heard
         break;
     case SC_SETTINGS:
         settings_input(type, x, y);
+        break;
+    case SC_ASK:
+        routine_input(type, x, y);
         break;
     case SC_TOYS: case SC_MUSIC: case SC_CLOUD: case SC_DRESS:
         mode_input(type, x, y);
@@ -1204,10 +1304,10 @@ void Game::input(int type, int x, int y) {
             press(menu);
             act(menu);
         } else if (type == IN_TOUCH) {
-            if (y >= MENU_Y0 && y <= MENU_Y1) {
-                int item = (x - MENU_X0) / MENU_STEP;
-                // only the drawn buttons count, not the gutters between and around them
-                if (x < MENU_X0 || item >= MENU_COUNT || x > MENU_X0 + item * MENU_STEP + MENU_BTN_W) break;
+            if (y >= MENU_Y0) {            // the whole bottom strip: the nearest button, gutters too
+                int item = x / MENU_STEP;
+                if (item < 0) item = 0;
+                if (item >= MENU_COUNT) item = MENU_COUNT - 1;
                 menu = (u8)item;
                 press(item);
                 act(item);
@@ -1220,6 +1320,7 @@ void Game::input(int type, int x, int y) {
         }
         break;
     case SC_GAME:
+        if (type == IN_TOUCH && x >= HOUSE_X0 && y <= HOUSE_Y1) { go(SC_HOME); cue(SFX_TAP); break; }   // house
         if (type == IN_TOUCH) {
             int best = -1, bestd = 1 << 30;
             for (int i = 0; i < GAME_TARGETS; i++) {   // where the star is drawn right now
@@ -1230,7 +1331,8 @@ void Game::input(int type, int x, int y) {
                     bestd = dx + dy;
                 }
             }
-            pop(best);
+            if (best >= 0) pop(best);
+            else { burst(P_SPARKLE, x, y, 2); cue(SFX_TAP); }   // a miss still answers
         } else if (type == IN_NEXT) {
             sel = (u8)((sel + 1) % GAME_TARGETS);
             dirty = 1;
@@ -1249,7 +1351,7 @@ void Game::input(int type, int x, int y) {
             if (b >= 0 && b < books()) { book = (u16)b; cue(SFX_TAP); dirty = 1; }
             break;
         }
-        if (type != IN_TOUCH || (x >= 292 && y <= 72)) { go(SC_HOME); break; }
+        if (type != IN_TOUCH || (x >= HOUSE_X0 && y <= HOUSE_Y1)) { go(SC_HOME); break; }
         if (y >= 82 && y < 82 + 3 * 76 && x >= 12 && x < 12 + 4 * 86) {   // a picture twinkles when touched
             int i = (y - 82) / 76 * 4 + (x - 12) / 86;
             if (i < album()) { burst(P_SPARKLE, 12 + (i % 4) * 86 + 40, 82 + (i / 4) * 76 + 34, 3); cue(SFX_TAP); }
@@ -1263,20 +1365,7 @@ void Game::input(int type, int x, int y) {
             cue(SFX_INFO);
             break;
         }
-        if (type == IN_TOUCH && x >= SOUND_X0 && y <= SOUND_Y1) {   // sound on/off
-            if (volume() == VOL_OFF) {     // on again, even if a grown-up had set "off"
-                s.muted = 0;
-                if (s.volume == VOL_OFF) s.volume = VOL_NORMAL;
-            } else {
-                s.muted = 1;
-            }
-            want_save = 1;
-            dirty = 1;
-            scene_ms = 0;                  // keep the info screen up a little longer
-            cue(SFX_TAP);
-            break;
-        }
-        go(SC_HOME);
+        go(SC_HOME);                       // sound is the parent's setting (volume), not a button here
         break;
     case SC_SLEEP:                         // first the blanket, then waking her up early is allowed
         if (!tucked_in()) {
@@ -1485,7 +1574,7 @@ void Game::step() {
         break;
     case SC_WASH:
         if ((scene_ms / STEP_MS) % 2 == 0) burst(P_BUBBLE, 110 + (int)(crandom() % 150), 300, 1);
-        if (!celebrated && scene_ms + 700 >= ACTION_MS) {   // squeaky clean
+        if (!celebrated && scene_ms + 700 >= WASH_MS) {   // squeaky clean
             burst(P_SPARKLE, SCREEN_W / 2, 220, 5);
             celebrated = 1;
         }
@@ -1505,7 +1594,7 @@ void Game::step() {
 // Life time: whatever is left after the egg hatches counts as the unicorn's life.
 bool Game::counts_as_play() const {
     return s.hatched && scene != SC_EGG && scene != SC_HATCH && scene != SC_LEAVE && scene != SC_AWAY &&
-           scene != SC_RETURN && scene != SC_SETTINGS;
+           scene != SC_RETURN && scene != SC_SETTINGS && scene != SC_ASK;   // her question is not play
 }
 
 void Game::advance(u32 ms) {
@@ -1556,7 +1645,7 @@ void Game::advance(u32 ms) {
 void Game::scene_timers() {
     switch (scene) {
     case SC_EAT: case SC_WASH:
-        if (scene_ms >= ACTION_MS) go(SC_HOME);
+        if (scene_ms >= (scene == SC_WASH ? WASH_MS : ACTION_MS)) go(SC_HOME);
         break;
     case SC_GAME:
         if (scene_ms >= GAME_MS) {         // joy does not depend on the score: stars are just counted
@@ -1606,7 +1695,21 @@ void Game::scene_timers() {
             go(SC_HOME);
         }
         break;
+    case SC_SETTINGS: {                     // a grown-up walked away: closed once the screen is dark, so the
+        bool setup = wifi_stage > WST_OFF && wifi_stage < WST_OK;   // child never wakes into them (not while
+        if (screen_on || setup || update_busy()) break;             // a WiFi setup or an update is under way)
+        if (wifi_stage >= WST_OK) wifi_request(WREQ_STOP);          // a result nobody read: as if TAMAM
+        leave_settings();
+        break;
+    }
     case SC_REFUSE: if (scene_ms >= REFUSE_MS) go(SC_HOME); break;
+    case SC_ASK:                            // nobody answered in time: the buttons; nobody pressed: as if silent
+        if (r_stage <= RS_LISTEN && since(r_at) >= R_LISTEN_MS) {
+            listen_req = LREQ_CANCEL;
+            r_stage = RS_BUTTONS; r_at = stamp(); r_sel = 0; dirty = 1;
+        } else if (r_stage == RS_BUTTONS && since(r_at) >= R_BUTTONS_MS) listen_result(ANS_SILENT);
+        else if (r_stage == RS_REPLY && since(r_at) >= R_REPLY_MS) routine_done();
+        break;
     case SC_ALBUM:  if (idle_ms >= ALBUM_IDLE_MS || play_ms >= play_limit_ms()) go(SC_HOME); break;
     case SC_HATCH:  if (scene_ms >= HATCH_MS) go(SC_HOME); break;
     case SC_INFO:   if (scene_ms >= INFO_MS) go(SC_HOME); break;
@@ -1625,7 +1728,7 @@ u32 Game::tick(u32 dt) {
     left -= d;
     acc_ms += d;
     while (acc_ms >= STEP_MS) {
-        if (s.hatched) check_bedtime();    // every step (dark fast-forward too): tick-size independent
+        if (s.hatched) { check_bedtime(); check_routine(); check_tv(); }   // every step (dark fast-forward too)
         if (!screen_on && s.hatched && (scene == SC_HOME || scene == SC_SLEEP || scene == SC_AWAY ||
                                         scene == SC_LOUNGE)) {
             u32 n = acc_ms - acc_ms % STEP_MS;
@@ -1640,9 +1743,10 @@ u32 Game::tick(u32 dt) {
         scene_timers();
         if (screen_on) step();             // cosmetics only run while someone can see them
         bool busy = scene == SC_EAT || scene == SC_PLAY || scene == SC_WASH || scene == SC_HATCH ||
-                    scene == SC_GAME || scene == SC_LEAVE || scene == SC_RETURN ||
+                    scene == SC_GAME || scene == SC_LEAVE || scene == SC_RETURN || scene == SC_ASK ||
                     (scene == SC_SETTINGS && set_page == PG_WSESSION && wifi_stage > WST_OFF &&
-                     wifi_stage < WST_OK);        // QR up or joining: stay lit; a result may go dark
+                     wifi_stage < WST_OK) ||      // QR up or joining: stay lit; a result may go dark
+                    (scene == SC_SETTINGS && set_page == PG_UPDATE && update_busy());   // checking, downloading
         u32 off = scene == SC_AWAY ? AWAY_SCREEN_OFF_MS : SCREEN_OFF_MS;
         if (screen_on && !busy && idle_ms >= off) { screen_on = 0; visitor = 0; visit_due = 0; }
     }
@@ -1663,16 +1767,472 @@ u32 Game::tick(u32 dt) {
     if (want_save) { flags |= F_SAVE; want_save = 0; }
     if (want_clock) { flags |= F_CLOCK; want_clock = 0; }
     if (wifi_req) flags |= F_WIFI;         // the platform clears wifi_req once it has taken it
-    if (sfx && s.muted) sfx = SFX_NONE;
-    if (sfx) flags |= F_SOUND;
+    if (update_req) flags |= F_UPDATE;     // the same for update_req
+    if (listen_req) flags |= F_LISTEN;     // the platform clears listen_req once it has taken it
+    if (quiet()) { sfx = voice = 0; rclip = 0; }   // muted, or her bedtime (bed time to wake-up): silent
+    if (sfx || voice || rclip) flags |= F_SOUND;
     if (screen_on) {
         flags |= F_SCREEN_ON;
         // render() interpolates between steps (acc_ms), so anything that moves wants a fresh
         // frame on every call; the info screen and the door are still pictures
-        bool still = scene == SC_INFO || (scene == SC_AWAY && !wobbling);
+        // the update page while flash is written: only when the progress moves (writes stall PSRAM)
+        bool still = scene == SC_INFO || (scene == SC_AWAY && !wobbling) ||
+                     (scene == SC_SETTINGS && set_page == PG_UPDATE && update_stage >= UST_DOWNLOADING &&
+                      update_stage <= UST_RESTARTING);
         if (dirty || !still) { flags |= F_REDRAW; dirty = 0; }
     }
     return flags;
+}
+
+
+// ---- her daily routine ----------------------------------------------------------------------------
+// tools/routines.py SCHEDULE: the hour after waking, 90 to 30 minutes before bedtime, set times, and the
+// open question late in the evening. Each question once a day (asked = saved at once, so a power cut does
+// not ask again), one more try 10 minutes later if the answer was unclear or silent; at random moments at
+// least Q_GAP_MIN apart; only at home or on the lounger, never at bedtime, muted, or with an untrusted clock.
+
+static u32 mix(u32 x) { x ^= x >> 16; x *= 0x7FEB352Du; x ^= x >> 15; x *= 0x846CA68Bu; x ^= x >> 16; return x; }
+static int bits(u32 v) { int n = 0; for (; v; v &= v - 1) n++; return n; }
+enum { BAG_YES = Q_COUNT, BAG_NO = 2 * Q_COUNT, BAG_UNCLEAR = 3 * Q_COUNT, BAG_REPLY, BAG_SILENT, BAG_GREET, BAGS };
+static_assert(BAGS <= (int)(sizeof(((Game*)0)->bag) / sizeof(u16)), "a shuffle bag per list");
+enum { GREET_BIT = 1 << Q_COUNT };         // r_done: the morning hello is done
+
+bool Game::holiday() const {
+    if (s.opts & OPT_HOLIDAY) return true;
+    Cal c = today();
+    for (int i = 0; c.known && i < HOL_MAX; i++)
+        if (s.hol[i][0] && c.day >= s.hol[i][0] && c.day <= s.hol[i][1]) return true;
+    return false;
+}
+bool Game::free_day() const { Cal c = today(); return (c.known && c.wday >= 5) || holiday(); }
+int Game::wake_min() const { return clock_min(free_day() ? T_WAKE_WE : T_WAKE); }
+int Game::clock_min(int t) const {
+    int tens = t == T_BED ? s.bed10 : t == T_WAKE ? s.wake10 : s.wake_we10;
+    return tens * 10 + (s.min_ones >> 4 * t & 15);
+}
+void Game::set_clock_min(int t, int m) {
+    u8 tens = (u8)(m / 10);
+    if (t == T_BED) s.bed10 = tens; else if (t == T_WAKE) s.wake10 = tens; else s.wake_we10 = tens;
+    s.min_ones = (u16)((s.min_ones & ~(15 << 4 * t)) | (m % 10) << 4 * t);
+}
+int Game::stars_today() const { return today().known && today().day == s.r_day ? bits(s.week[s.r_day % 7]) : 0; }
+
+// When question q may be asked today, [from, to) in minutes of the day; false if not today.
+static bool q_window(const Game& g, int q, int* from, int* to) {
+    int wake = g.wake_min(), bed = g.clock_min(T_BED);
+    switch (Q_WHEN[q]) {
+    case QW_AM: *from = wake; *to = wake + 60; break;
+    case QW_PM: case QW_PM_LAST: *from = bed - 90; *to = bed - 30; break;
+    case QW_AT: *from = Q_AT[q]; *to = Q_AT[q] + Q_AT_WINDOW_MIN; break;
+    default: *from = bed - 30 > 19 * 60 ? bed - 30 : 19 * 60; *to = bed - 5; break;   // what made you happy
+    }
+    bool school = !g.free_day();
+    if ((Q_DAYS[q] == QD_SCHOOL && !school) || (Q_DAYS[q] == QD_FREE && school) || (g.s.q_off & (1 << q))) return false;
+    return *from >= 0 && *to <= 1440 && *from < *to;   // a window across midnight (a very late bedtime): skipped
+}
+static int q_group(int q) { return Q_WHEN[q] == QW_PM_LAST ? QW_PM : Q_WHEN[q]; }
+
+// The minute question q is first due today: the questions of the morning (or the evening) come in an order
+// shuffled by the day, at random moments at least Q_GAP_MIN apart, the last-of-the-evening one last; the
+// others at their time. Worked out from the day alone, so a reboot gets the same plan.
+static int q_plan(const Game& g, int q, u32 day) {
+    int from, to;
+    if (!q_window(g, q, &from, &to)) return -1;
+    int grp = q_group(q);
+    if (grp == QW_AT) return from;
+    if (grp == QW_OPEN) return from + (int)(mix(day * 131u + 7) % (u32)((to - from) / 2 + 1));
+    int mem[Q_COUNT], n = 0, a, b;
+    u32 key[Q_COUNT];
+    for (int k = 0; k < Q_COUNT; k++)
+        if (q_group(k) == grp && q_window(g, k, &a, &b)) {
+            u32 kk = Q_WHEN[k] == QW_PM_LAST ? 0xFFFFFFFFu : mix(day * 977u + (u32)k) >> 1;
+            int j = n++;
+            for (; j > 0 && key[j - 1] > kk; j--) { key[j] = key[j - 1]; mem[j] = mem[j - 1]; }
+            key[j] = kk; mem[j] = k;
+        }
+    int start = from + (grp == QW_AM ? 3 : 0);   // the morning hello comes first
+    int slack = to - 1 - start - (n - 1) * Q_GAP_MIN;
+    if (slack < 0) slack = 0;
+    int off[Q_COUNT];
+    for (int i = 0; i < n; i++) {               // n sorted random offsets: random moments, the gaps kept
+        int o = (int)(mix(day * 31u + (u32)(i * 7 + grp)) % (u32)(slack + 1)), j = i;
+        for (; j > 0 && off[j - 1] > o; j--) off[j] = off[j - 1];
+        off[j] = o;
+    }
+    for (int i = 0; i < n; i++) if (mem[i] == q) return start + off[i] + i * Q_GAP_MIN;
+    return -1;
+}
+
+void Game::routine_day() {                 // a new day: fresh questions; the week's stars move along
+    Cal c = today();
+    u32 gap = s.r_day && c.day > s.r_day ? c.day - s.r_day : 7;   // the clock went back, or a first day: all
+    for (u32 k = 1; k <= gap && k <= 7; k++) s.week[(s.r_day + k) % 7] = 0;
+    s.r_day = c.day;
+    s.r_asked = s.r_done = 0;
+    for (int i = 0; i < Q_COUNT; i++) { s.r_ans[i] = 0; r_first[i] = 0; }
+    r_last = 0;
+    want_save = 1;
+}
+
+int Game::question_due(u32 now) {
+    if (r_last && now < r_last + Q_GAP_MIN) return -1;   // (a clock set back waits too: never two at once)
+    int m = (int)(now % 1440);
+    for (int q = 0; q < Q_COUNT; q++) {
+        u16 bit = (u16)(1 << q);
+        int from, to;
+        if ((s.r_done & bit) || !q_window(*this, q, &from, &to)) continue;
+        if (s.r_asked & bit) {             // one more try, ten minutes after the first
+            if (!r_first[q]) r_first[q] = now;   // asked before a reboot: ten minutes from now
+            if (now >= r_first[q] + Q_REASK_MIN && m < to + Q_REASK_MIN) return q;
+            continue;
+        }
+        int at = q_plan(*this, q, now / 1440);
+        bool last = Q_WHEN[q] == QW_PM_LAST;
+        if (m < at || m >= to + (last ? Q_REASK_MIN + Q_GAP_MIN : 0)) continue;   // (late: after the others' retries)
+        if (last) {                        // the last of the evening waits while another may still come, retries too
+            bool others = false;
+            for (int k = 0; k < Q_COUNT; k++) {
+                int a, b;
+                others |= k != q && q_group(k) == QW_PM && !(s.r_done & (1 << k)) && q_window(*this, k, &a, &b) &&
+                          m < b + ((s.r_asked >> k & 1) ? Q_REASK_MIN : 0);
+            }
+            if (others) continue;
+        }
+        return q;
+    }
+    return -1;
+}
+
+void Game::check_routine() {
+    Cal c = today();
+    if (!routines_on() || !c.known) return;
+    if (c.day != s.r_day) routine_day();
+    if ((scene != SC_HOME && scene != SC_LOUNGE) || quiet() || party || greeting || memory_new || petting) return;
+    u32 now = c.day * 1440u + c.minute;
+    int wake = wake_min();
+    if (!(s.r_done & GREET_BIT) && c.minute >= wake && c.minute < wake + 60) {   // good morning, with her name
+        s.r_done |= GREET_BIT;
+        want_save = 1;
+        if (!screen_on) { screen_on = 1; idle_ms = SCREEN_OFF_MS - R_DARK_LINGER_MS - GREET_MS; }   // briefly
+        say_clip(R_GREET, BAG_GREET);
+        if (scene == SC_HOME) greet();
+        return;
+    }
+    int q = question_due(now);
+    if (q >= 0) ask(q);
+}
+
+// One of the 10 variants of a list, never the same twice until all ten were said (a shuffle bag).
+void Game::say_clip(int first, int list) {
+    u16 used = bag[list];
+    if ((used & 0x3FF) == 0x3FF) used = 0;   // all ten said: a new round, but not the last one first
+    int pool[R_VARIANTS], n = 0;
+    for (int i = 0; i < R_VARIANTS; i++)
+        if (!(used >> i & 1) && !(used == 0 && bag_last[list] == i + 1)) pool[n++] = i;
+    int v = pool[crandom() % (u32)n];
+    bag[list] = (u16)(used | 1 << v);
+    bag_last[list] = (u8)(v + 1);
+    rclip = (u16)(first + v + 1);
+    sfx = SFX_NONE;
+    voice = V_NONE;
+    voice_at = stamp();                    // her other lines keep their distance
+}
+
+static int bag_of(const u16* firsts, int q, int base) {   // a list two questions share has one bag
+    int k = 0;
+    while (firsts[k] != firsts[q]) k++;
+    return base + k;
+}
+
+void Game::ask(int q) {
+    u16 bit = (u16)(1 << q);
+    Cal c = today();
+    u32 now = c.day * 1440u + c.minute;
+    if (s.r_asked & bit) s.r_done |= bit;  // the second try is the last
+    else { s.r_asked |= bit; r_first[q] = now; }
+    r_last = now;
+    want_save = 1;
+    r_back = scene;
+    r_was_dark = !screen_on;
+    screen_on = 1;
+    idle_ms = 0;
+    pet_x = 0;
+    facing = 1;
+    go(SC_ASK);
+    r_q = (u8)q;
+    r_stage = RS_ASK;
+    r_at = stamp();
+    r_sel = 0;
+    say_clip(Q_ASK[q], q);
+    listen_req = LREQ_LISTEN;              // the platform listens once she has finished asking
+    listen_kind = q == Q_HAPPY ? LK_OPEN : LK_YESNO;
+    listen_q = (u8)q;
+}
+
+void Game::listen_started() {
+    if (scene == SC_ASK && r_stage == RS_ASK) { r_stage = RS_LISTEN; dirty = 1; }   // (the time limit runs on)
+}
+
+void Game::listen_result(int a) {
+    if (scene != SC_ASK || r_stage == RS_REPLY) return;
+    if (!today().known) { routine_cancel(); return; }
+    if (a == ANS_NO_LISTENER) {            // nobody to understand her: the child answers with the buttons
+        if (r_stage != RS_BUTTONS) { r_stage = RS_BUTTONS; r_at = stamp(); r_sel = 0; dirty = 1; }
+        return;
+    }
+    if (a < ANS_YES || a > ANS_TAP_NO) return;
+    int q = r_q;
+    u16 bit = (u16)(1 << q);
+    Cal c = today();
+    if (c.known) s.r_ans[q] = (u16)(a << 11 | c.minute);
+    bool yes = a == ANS_YES || a == ANS_TAP_YES || (q == Q_HAPPY && a == ANS_SAID);
+    if (q == Q_HAPPY) {                    // any answer is a good one; silence gets a kind good night
+        s.r_done |= bit;
+        say_clip(yes ? R_HAPPY_REPLY : R_HAPPY_SILENT, yes ? BAG_REPLY : BAG_SILENT);
+        if (yes) burst(P_HEART, SCREEN_W / 2, 150, 4);
+    } else if (yes) {                      // a star for today
+        s.r_done |= bit;
+        s.week[s.r_day % 7] |= bit;
+        say_clip(Q_YES[q], bag_of(Q_YES, q, BAG_YES));
+        burst(P_STAR, SCREEN_W / 2, 150, 6);
+        burst(P_CONFETTI, SCREEN_W / 2, 150, 4);
+    } else if (a == ANS_NO || a == ANS_TAP_NO) {
+        s.r_done |= bit;
+        say_clip(Q_NO[q], bag_of(Q_NO, q, BAG_NO));
+    } else {
+        say_clip(R_UNCLEAR, BAG_UNCLEAR);  // she asks once more later (unless that was the second try)
+    }
+    if (r_stage <= RS_LISTEN) listen_req = LREQ_NONE;   // an answer that arrived ends any request still waiting
+    r_stage = RS_REPLY;
+    r_at = stamp();
+    want_save = 1;
+    dirty = 1;
+}
+
+// The clock stopped being trusted mid-question: she ends it without a word (the second try may still come).
+void Game::routine_cancel() {
+    if (scene != SC_ASK) return;
+    if (r_stage <= RS_LISTEN) listen_req = LREQ_CANCEL;
+    rclip = 0;
+    routine_done();
+}
+
+void Game::routine_done() {
+    go(r_back == SC_LOUNGE && plugged ? SC_LOUNGE : SC_HOME);
+    if (r_was_dark) idle_ms = SCREEN_OFF_MS - R_DARK_LINGER_MS;   // she woke the screen: dark again soon
+    idle_next = clock_ms + 3000;
+}
+
+void Game::routine_input(int type, int x, int y) {   // only the buttons answer; the question plays out
+    if (r_stage != RS_BUTTONS) return;
+    int btn = -1;
+    if (type == IN_TOUCH && y >= ASK_BTN_Y0) btn = x < SCREEN_W / 2 ? 0 : 1;
+    else if (type == IN_NEXT) { r_sel ^= 1; dirty = 1; cue(SFX_TAP); return; }
+    else if (type == IN_SELECT) btn = r_sel;
+    if (btn < 0) return;
+    r_sel = (u8)btn;
+    listen_result(btn == 0 ? ANS_TAP_YES : ANS_TAP_NO);
+}
+
+// Settings > GÜNLÜK RUTİN: the questions on/off, holiday mode, TV test mode, the week's stars.
+void Game::routine_page_input(int type, int x, int y) {
+    (void)x;
+    if (set_page == PG_HABITS) {           // the table: any press goes back
+        if (type == IN_TOUCH || type == IN_SELECT || type == IN_NEXT) { set_page = PG_ROUTINE; set_row = RT_HABITS; dirty = 1; cue(SFX_TAP); }
+        return;
+    }
+    int row = set_row;
+    if (type == IN_TOUCH) {
+        if ((row = set_touch(y)) < 0) return;
+        set_row = (u8)row;
+    } else if (type == IN_NEXT) {
+        set_row = (u8)((set_row + 1) % RT_ROWS);
+        dirty = 1;
+        return;
+    } else if (type != IN_SELECT) {
+        return;
+    }
+    switch (row) {
+    case RT_ON:      s.opts ^= OPT_NO_ROUTINES; touched(K_ROUTINES); break;
+    case RT_HOLIDAY: s.opts ^= OPT_HOLIDAY; touched(K_HOLIDAY); break;
+    case RT_TV:
+        s.opts ^= OPT_TV_TEST;
+        s.tv_day = tv_on() && today().known ? today().day : 0;   // seven days from now
+        touched(K_TV_TEST);
+        break;
+    case RT_HABITS:  set_page = PG_HABITS; break;
+    case RT_BACK:    set_page = PG_MAIN; set_row = SET_ROUTINE; break;
+    }
+    want_save = 1;
+    dirty = 1;
+    cue(SFX_TAP);
+}
+
+// TV test mode: by day, a ~1 s level check once a minute, on the toy only; a 5 s sample for the listener
+// only when the sound lasts (two loud, sustained checks in a row: not a slammed door), at most TV_PER_HOUR
+// an hour and none while the same sound simply goes on (TV_SAME_MIN, unless its level changed). It
+// switches itself off TV_DAYS after it was switched on.
+void Game::check_tv() {
+    if (!tv_on()) return;
+    Cal c = today();
+    if (c.known && !s.tv_day) { s.tv_day = c.day; want_save = 1; }
+    if (c.known && c.day >= s.tv_day + TV_DAYS) {
+        s.opts &= (u8)~OPT_TV_TEST;
+        s.tv_day = 0;
+        touched(K_TV_TEST);
+        want_save = 1;
+        return;
+    }
+    if (!tv_may_listen()) return;
+    if (tv_check_at && since(tv_check_at) < TV_CHECK_MS) return;
+    tv_check_at = stamp();
+    listen_req = LREQ_LISTEN;
+    listen_kind = LK_LEVEL;
+}
+
+// The microphone is free and it is the TV test's time: by day, never at bedtime or with an untrusted clock.
+bool Game::tv_may_listen() const {
+    return today().known && phase() == PH_DAY && !bedtime() && scene != SC_ASK && !listen_req;
+}
+
+void Game::level_result(int db, int loud_pct) {
+    if (!tv_on()) return;
+    if (!tv_may_listen()) { tv_loud = 0; return; }   // a late result: the evening (or a question) came meanwhile
+    bool loud = db >= TV_LEVEL_DB && loud_pct >= TV_SUSTAIN_PCT;
+    tv_db = (i8)(db < -127 ? -127 : db > 0 ? 0 : db);
+    if (!loud) { tv_loud = 0; tv_quiet_since = 1; return; }
+    if (++tv_loud < 2) return;             // one loud check is a door, a shout, a dropped toy
+    int n = 0, oldest = 0, newest = -1;
+    for (int i = 0; i < TV_PER_HOUR; i++) {
+        if (tv_samples[i] && since(tv_samples[i]) < 3600000u) n++;
+        if (!tv_samples[i] || (tv_samples[oldest] && since(tv_samples[i]) > since(tv_samples[oldest]))) oldest = i;
+        if (tv_samples[i] && (newest < 0 || since(tv_samples[i]) < since(tv_samples[newest]))) newest = i;
+    }
+    if (n >= TV_PER_HOUR) return;
+    bool same = newest >= 0 && since(tv_samples[newest]) < TV_SAME_MIN * 60000u && !tv_quiet_since &&
+                iabs(tv_db - tv_sample_db) < TV_CHANGE_DB;
+    if (same) return;
+    tv_samples[oldest] = stamp();
+    tv_sample_db = tv_db;
+    tv_quiet_since = 0;
+    tv_loud = 0;
+    listen_req = LREQ_LISTEN;
+    listen_kind = LK_TV;
+}
+
+// What the radio should do (fw: net.cpp). The WiFi setup owns it while it runs; on USB power the link stays
+// up (settings sync, journal, samples, answers without a join); on battery only for her question (the join
+// starts while she is still asking) or a TV sample waiting to be sent.
+int Game::link(bool sample_waiting) const {
+    if (wifi_busy()) return LINK_OFF;
+    if (plugged) return LINK_STAY;
+    if ((scene == SC_ASK && r_stage <= RS_LISTEN) || sample_waiting) return LINK_NOW;
+    return LINK_OFF;
+}
+
+// ---- settings sync with the parent page ------------------------------------------------------------
+Settings Game::settings() const {
+    Settings t;
+    for (int k = 0; k < K_COUNT; k++) t.v[k] = 0;
+    int nh = 0;
+    for (int i = 0; i < HOL_MAX; i++) {
+        t.hol[i][0] = t.hol[i][1] = 0;
+        if (s.hol[i][0]) { t.hol[nh][0] = s.hol[i][0]; t.hol[nh][1] = s.hol[i][1]; nh++; }
+    }
+    t.v[K_ROUTINES] = !(s.opts & OPT_NO_ROUTINES);
+    t.v[K_QUESTIONS] = (u16)(~s.q_off & ((1 << Q_COUNT) - 1));
+    t.v[K_WAKE_WEEKDAY] = (u16)clock_min(T_WAKE);
+    t.v[K_WAKE_WEEKEND] = (u16)clock_min(T_WAKE_WE);
+    t.v[K_BEDTIME] = (u16)clock_min(T_BED);
+    t.v[K_HOLIDAY] = (s.opts & OPT_HOLIDAY) != 0;
+    t.v[K_HOLIDAY_RANGES] = (u16)nh;
+    t.v[K_TV_TEST] = tv_on();
+    t.v[K_LANG] = s.lang;
+    t.v[K_VOLUME] = (u16)volume();
+    t.v[K_BRIGHTNESS] = (u16)brightness();
+    t.v[K_PLAY_MIN] = (u16)(play_limit_ms() / 60000);
+    t.v[K_BREAK_MIN] = (u16)(break_ms() / 60000);
+    t.v[K_CALM] = calm();
+    t.v[K_SHAKE] = !(s.opts & OPT_NO_SHAKE);
+    t.tv_day = s.tv_day;
+    return t;
+}
+
+SyncMark Game::sync_mark() const {
+    SyncMark m;
+    m.dirty = s.cfg_dirty;
+    for (int k = 0; k < K_COUNT; k++) m.gen[k] = cfg_gen[k];
+    return m;
+}
+
+void Game::settings_synced(const SyncMark& sent) {   // the page has these: clear what was not edited since
+    u16 was = s.cfg_dirty;
+    for (int k = 0; k < K_COUNT; k++)
+        if ((sent.dirty >> k & 1) && cfg_gen[k] == sent.gen[k]) s.cfg_dirty &= (u16)~(1 << k);
+    if (s.cfg_dirty != was) want_save = 1;   // (on USB power a sync comes every minute: no save for nothing)
+}
+
+Settings merge_settings(const Settings& mine, u16 dirty, const Settings& page, u16 present) {
+    static const u16 LO[K_COUNT] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0};
+    static const u16 HI[K_COUNT] = {1, (1 << Q_COUNT) - 1, 1439, 1439, 1439, 1, HOL_MAX, 1, LANG_COUNT - 1, VOL_OFF,
+                                    255, 240, 240, 1, 1};
+    Settings out = mine;
+    for (int k = 0; k < K_COUNT; k++) {
+        if (!(present >> k & 1) || (dirty >> k & 1) || page.v[k] < LO[k] || page.v[k] > HI[k]) continue;
+        if (k == K_HOLIDAY_RANGES) {
+            bool ok = true;
+            for (int i = 0; i < page.v[k]; i++) ok &= page.hol[i][0] > 0 && page.hol[i][0] <= page.hol[i][1];
+            if (!ok) continue;
+            for (int i = 0; i < HOL_MAX; i++) {
+                out.hol[i][0] = i < page.v[k] ? page.hol[i][0] : 0;
+                out.hol[i][1] = i < page.v[k] ? page.hol[i][1] : 0;
+            }
+        }
+        if (k == K_TV_TEST) out.tv_day = page.tv_day;
+        out.v[k] = page.v[k];
+    }
+    return out;
+}
+
+// A page config newer than (well, other than) the one the settings are based on: the toy's own changes
+// since the last sync keep their value (the person holding the toy is right there).
+void Game::apply_settings(u32 rev, const Settings& page, u16 present) {
+    if (rev == s.cfg_rev) return;
+    Settings m = merge_settings(settings(), s.cfg_dirty, page, present);
+    auto opt = [&](u8 bit, bool on) { s.opts = (u8)(on ? s.opts | bit : s.opts & ~bit); };
+    opt(OPT_NO_ROUTINES, !m.v[K_ROUTINES]);
+    s.q_off = (u16)(~m.v[K_QUESTIONS] & ((1 << Q_COUNT) - 1));
+    set_clock_min(T_WAKE, m.v[K_WAKE_WEEKDAY]);
+    set_clock_min(T_WAKE_WE, m.v[K_WAKE_WEEKEND]);
+    set_clock_min(T_BED, m.v[K_BEDTIME]);
+    opt(OPT_HOLIDAY, m.v[K_HOLIDAY]);
+    for (int i = 0; i < HOL_MAX; i++) { s.hol[i][0] = m.hol[i][0]; s.hol[i][1] = m.hol[i][1]; }
+    opt(OPT_TV_TEST, m.v[K_TV_TEST]);
+    // the seven days count from the day it was switched on (the page's date, even if it arrives late)
+    Cal c = today();
+    s.tv_day = !tv_on() ? 0 : m.tv_day && (!c.known || m.tv_day <= c.day) ? m.tv_day : c.known ? c.day : 0;
+    s.lang = (u8)m.v[K_LANG];
+    s.volume = (u8)m.v[K_VOLUME];
+    s.muted = 0;
+    s.bright = (u8)m.v[K_BRIGHTNESS];
+    s.limit_min = (u8)m.v[K_PLAY_MIN];
+    s.break_min = (u8)m.v[K_BREAK_MIN];
+    opt(OPT_CALM, m.v[K_CALM]);
+    opt(OPT_NO_SHAKE, !m.v[K_SHAKE]);
+    s.cfg_rev = rev;
+    want_save = 1;
+    dirty = 1;
+}
+
+// The name pack's version of a line (Turkish only, the platform checks the language and the pack).
+int name_line(int sfx, int line) {
+    switch (line) {
+    case V_AWAKE:   return NL_AWAKE;
+    case V_MORNING: return NL_MORNING;
+    case V_MISSED:  return NL_MISSED;
+    case V_HELLO:   return sfx == SFX_HELLO ? NL_BACK : NL_HELLO;   // back from her friends, or just hello
+    default:        return -1;
+    }
 }
 
 }  // namespace up

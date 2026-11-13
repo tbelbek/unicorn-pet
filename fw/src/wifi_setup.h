@@ -12,3 +12,9 @@ void wifi_setup_begin(up::Game& game);    // load the saved list and show it in 
 void wifi_setup_poll(up::Game& game, uint32_t now_ms, uint32_t flags);   // every loop, main task
 bool wifi_setup_busy();                   // the setup holds the radio (no sync, no light sleep)
 int wifi_known(WifiNet* out, int max);    // saved + built-in networks, saved first, no duplicates
+// For the background tasks (clock sync, firmware update), with a copy of wifi_known() made on the main
+// task: join the first of nets that answers (station mode, up to 15 s), and switch the radio off again.
+// The link is shared and counted: the radio goes off when the last task leaves. Refused (false) while the
+// parent's WiFi setup owns the radio; the setup starts only when nobody holds or is joining the link.
+bool wifi_join(const WifiNet* nets, int n);
+void wifi_leave();

@@ -1,5 +1,7 @@
 # Unicorn Pet
 
+![Pamuk, Gece, Şeker and Deniz](design/hero.png)
+
 A Tamagotchi-style pixel-art unicorn for the **Waveshare ESP32-S3-Touch-AMOLED-1.8**
 (368×448 AMOLED, touch, speaker, IMU, battery in the case).
 
@@ -20,7 +22,7 @@ tools/   Python asset generator (pixel art) -> core/assets.gen.h
 core/    rules (game.cpp), renderer (render.cpp), melodies (sound.cpp)
          freestanding C++: no libc, no heap, no STL
 emu/     browser emulator: the core compiled to wasm + index.html
-fw/      PlatformIO firmware: display, touch, buttons, IMU, audio, NVS, light sleep
+fw/      PlatformIO firmware: display, touch, buttons, IMU, audio, NVS, light sleep, signed OTA updates
 test/    host tests (ASan/UBSan) + the same events through the wasm build
 design/  character, pose and screen sheets
 ```
@@ -43,19 +45,19 @@ Needs Homebrew `llvm` and `lld` (`brew install llvm lld`); no emscripten.
 
 | Event | What happens |
 |---|---|
-| Egg pick | four eggs (one per character) wobble in a nest; tap one to lift it, tap it again or the heart to keep it. The choice is saved, and an old save keeps its unicorn |
+| Egg pick | four eggs, one per character, each in her colours with her own pattern (rainbow stripes, stars on violet, candy dots, waves); tap one to lift it and her face peeks out above the heart; tap it again or the heart to keep it. The choice is saved, and an old save keeps its unicorn |
 | Egg | every tap wobbles it and a crack spreads; after five taps (or shakes), or one minute, the shell splits, confetti flies and her face grows in |
 | Besle (feed) | apple, strawberry and carrot in turn, eaten from a bowl bite by bite with flying crumbs: hunger +35%, happiness +3% |
 | Oyna (play) | a toy box with four pictures and a house: stars, the music garden, the cloud and the mirror. Every mode has the house button and ends by itself (time's up, or 12 s with nobody playing) |
 | Music garden | three singing flowers (C, E, G). Tap up to six; after a short pause she sings your tune back as one melody, with notes floating up |
 | Cloud | tilt the toy (or the emulator's slider / a phone) to steer her cloud under six falling feathers for 15 s; touching the left/right third works too |
 | Mirror | try on a bow, flower or tiara; it follows her head through every pose and is saved |
-| Stars, or shake the toy | **Yıldız yakala**: 15 s of popping big rising stars (touch, PWR on the selected star, or a shake), then she jumps after a ball and the stars are counted. Happiness +30% whatever the score (stars are for fun, not a grade); energy −10%, a bit hungrier and dirtier; refuses below 15% energy |
+| Stars, or shake the toy | **Yıldız yakala** (the house button goes home early): 15 s of popping big rising stars (touch, PWR on the selected star, or a shake), then she jumps after a ball and the stars are counted. Happiness +30% whatever the score (stars are for fun, not a grade); energy −10%, a bit hungrier and dirtier; refuses below 15% energy |
 | Uyut (sleep) | lies down, the screen turns to night colours and a folded patchwork quilt waits: the first touch (or shake, or PWR) pulls it over her up to her chin, otherwise she tucks herself in after 4 s. While anyone is looking she dreams, a little animated cloud every 8 s: the first dream is something she did that day (her snack, bath bubbles, stars, songs, the cloud ride, her bow or tiara, hearts, the butterfly), the others anything from 14 dreams (a rainbow, a friend, the ball, the moon, the egg she came from, her garden...), never the same twice in a night. Energy refills in ~2 h; she wakes by herself, or on the next touch or shake |
-| Yıka (wash) | bubbles rise, the rainbow messes on the floor dissolve, a sparkle at the end: clean 100%, happiness +3%. Three foam puffs can be popped by touch; pop all three for a bubble crown (the wash ends the same either way) |
+| Yıka (wash) | bubbles rise, the rainbow messes on the floor dissolve, a sparkle at the end: clean 100%, happiness +3%. Three foam puffs can be popped by touch for 5 s (time enough for a five-year-old); pop all three for a bubble crown (the wash ends the same either way) |
 | Butterfly | now and then a butterfly visits the home screen and lands on her; purely to look at, no sound, gone when the screen sleeps |
 | Tap the unicorn | petting: hearts float up and she beams; happiness +2% at most every 2 s |
-| Tap the name/status bar | front-face info screen with all needs, and the sound on/off switch |
+| Tap the name/status bar | front-face info screen with all needs (sound is a parent setting, so a child cannot mute the toy) |
 
 ### Her day, and the days you spent together
 
@@ -109,11 +111,13 @@ night costs nothing.
   butterfly visits. Calm mode leaves out the hopping and spinning ones. What she has learned comes
   from the days together in the save, so a power cut or a new firmware does not take it away.
 - **Bedtime:** the parent sets a bedtime and a wake-up time (settings > **UYKU**, default 19:30 to
-  07:00, 10-minute steps, can be switched off). At bedtime, if she is still up, she gets drowsy:
+  07:00, 10-minute steps here, any minute on the parent page, can be switched off). At bedtime, if she is still up, she gets drowsy:
   heavy eyes, swaying on her feet, and the moon button bounces. An hour later, still up, she falls
   asleep standing. Asleep in that window, whether put to bed or not, she cannot be woken (a touch
   just gets a sleepy murmur, being rested does not count) until the wake-up time, when she gets up
-  with a stretch. If her time is up at bedtime she goes to sleep instead of out with friends.
+  with a stretch. If her time is up at bedtime she goes to sleep instead of out with friends. At weekends
+  and on holidays she sleeps until the weekend wake-up time (settings > UYKU, default 08:00). The home
+  menu is not drawn while she sleeps at bedtime, so a tap never lands on a button that does nothing.
   Switched on in the middle of the night, she is found asleep lying down. It needs a trusted clock:
   without one the rule waits (and a clock that stops being trusted lets her be woken).
 
@@ -153,8 +157,8 @@ second and the battery level every 30 s. The emulator has a battery slider and a
 After **10 minutes** of screen-on play she finishes what she is doing, says "İŞİM VAR!" and walks
 off to play with her friends. A door with a **RAHATSIZ ETMEYİN** sign stays behind for
 **30 minutes**: the screen goes dark after 5 s, knocking only rattles the sign (it does not keep
-the screen on), six stars fill up so the child can see when she is coming back, and her needs are
-frozen while she is out. The next touch after the break brings her back ("GELDİM!"). A 15-minute
+the screen on), her friends play below the door instead of a countdown to keep checking, and her needs
+are frozen while she is out. The next touch after the break brings her back ("GELDİM!"). A 15-minute
 break with the screen dark resets the counter. The state is saved the moment she leaves, so
 pulling the power is no shortcut. The break is timed by the board's **PCF85063 RTC** when it keeps
 running while the board is off, so a break that passed overnight is over in the morning; if there
@@ -187,7 +191,7 @@ of `core/unicorn.h`.
 - **Kind when tired:** "too tired to play" shows a big pillow button that puts her to sleep, and a
   one-minute nap is already enough to play again.
 - **No pressure:** the star game's score no longer changes her happiness (it is just counted);
-  the door shows friends playing instead of a countdown, and knocking does nothing.
+  the door shows friends playing instead of a countdown, and a knock is only heard (SFX_KNOCK).
 - **A warm goodbye:** a friend arrives ("HADİ!"), they hug, and walk off together.
 - **Game feel:** buttons dip and pop, she stretches on take-off and squashes on landing, popped
   stars leave an expanding ring; a new sound cuts the previous one short on both platforms.
@@ -198,7 +202,11 @@ of `core/unicorn.h`.
   (normal / low / off), session length (5/10/15/20 min), break length (15/30/45/60 min),
   brightness, calm mode (no bobbing or hops, fewer particles), shake on/off, bedtime, the
   language, the battery %, and the date and time ("AYARLA" when the clock is not trusted).
-  **SAAT** opens a small hub: DATE AND TIME and WIFI. The date page has year, month, day, hour, minute and her
+  Rows are 48 px (3.75 mm) with big text; a value that does not fit beside its name goes under it. A list
+  longer than seven rows shows in two halves (the arrow row turns the page, ÇIKIŞ / GERİ stays at the bottom):
+  bedtime, brightness, calm mode and shake are on the second half of the main list. An old save that the
+  child had muted loads with the volume set to off.
+  **SAAT** opens a small hub: DATE AND TIME, WIFI and GÜNCELLEME (firmware updates, below). The date page has year, month, day, hour, minute and her
   birthday (month and day, once she has hatched). Tap the left half of a row for -1 and the right
   half for +1, or use BOOT for the next row and PWR for +1; every value wraps around. KAYDET sets
   the clock and the birthday. A birthday set to today gets its party today, and one already past
@@ -211,17 +219,87 @@ accessibility and sound agents (Donchitos/Claude-Code-Game-Studios), and the cor
 peak-end, fairness, need-satisfaction, Zeigarnik and one-thing-to-remove audits
 (Stanestane/game-design-skills-bundle) — followed by a review of each implementation round.
 
+## Her daily routine
+
+With the private routine pack on the toy (below), she asks the child small things through the day, in
+Turkish, with the child's name: did you brush your teeth, get dressed, comb your hair, take your vitamin,
+have breakfast, drink some water, eat your dinner, tidy your toys, go to the toilet; and at the end of the
+day "what made you happy today?". The schedule is `SCHEDULE` in `tools/routines.py`:
+
+- **Morning:** the hour after the day's wake-up time (school days: the UYKU page's wake-up; weekends and
+  holidays: the weekend wake-up). She greets first ("Günaydın ...!"), then teeth, dressing, school clothes
+  (school days only: Monday to Friday unless holiday mode is on), hair, vitamin and breakfast.
+- **Day:** water at 15:30 on weekends and holidays, dinner at 18:00 every day.
+- **Evening:** from 90 to 30 minutes before bedtime: teeth, toys and, always last, the toilet. Then, between
+  19:00 and 5 minutes before bedtime, the open question.
+- Each question once a day, at a random moment in its window (a new order every day), at least 8 minutes
+  apart; asked once more 10 minutes later if the answer was unclear or silent. Never at bedtime, never with
+  an untrusted clock, never with the volume off; she waits for a meal, a bath, the hatching or a game to end,
+  and lights a dark screen just for the question (dark again 5 s after). A question asked is saved at once,
+  so a power cut does not ask it again. Ten ways to ask and ten answers for every yes and no; the same clip
+  never comes again until all ten were said.
+- **The card:** a big wordless picture (a toothbrush, a T-shirt, the school uniform, a comb, a vitamin, a
+  breakfast plate, a glass of water, a dinner plate, a toy box, a toilet, a heart for the open question), dots
+  while she asks, a listening ear while she listens. A yes is a star; the day's stars and a week table (a
+  star per question and day) are in parent settings > GÜNLÜK RUTİN > BU HAFTA.
+- **Listening:** after her question the toy records from the microphone (ES8311 ADC, 16 kHz mono) until 0.8 s
+  of silence (at most 6 s; nothing in 5 s is "silent") and sends it to the **listener** on the home Mac
+  (`server/`, `server/API.md`), which understands it with Whisper. When the listener cannot be reached (2 s
+  for /v1/ping, 6 s for the answer) she shows a big ✔ and ✖ and the child taps; the open question then gets
+  a kind reply anyway and the recording is kept (at most 7 days and 0.5 MB, on the card or LittleFS) and sent
+  to the journal the next time the toy reaches the listener.
+- **Parent settings > GÜNLÜK RUTİN:** questions on/off (PAKET YOK without the pack), holiday mode, TV test
+  mode, the week's stars. Every one of them, the wake-up times, bedtime, per-question switches, holiday date
+  ranges and the toy's own settings can also be changed on the listener's parent page: the toy fetches
+  `/v1/config` and posts `/v1/status` whenever it is connected anyway; a setting changed on the toy itself
+  since the last sync wins over the page for that key. Stored in the save (v8; a v7 save loads with the
+  routine starting fresh and the weekend wake-up at 08:00).
+- **TV test mode** (off by default, by day only, it switches itself off after 7 days): once a minute the
+  microphone is on for about a second and the toy measures the level, on the toy only. Only when two checks
+  in a row find sustained sound (`TV_LEVEL_DB`, `TV_SUSTAIN_PCT` in `core/unicorn.h`) does it record 5 s
+  for the listener (/v1/tv-sample), at most six an hour and not again within 10 minutes while the same sound
+  goes on. The toy shows and says nothing.
+- **Radio and power:** off by default. On battery the toy joins WiFi when she starts asking (so the link is
+  ready for the answer) or to send a TV sample, and leaves right after. On USB power it stays connected
+  (modem sleep, no light sleep) and syncs the parent page every minute, sends the journal at once and needs
+  no join for an answer; unplugging drops the link. The clock sync, a firmware update, the listener and a
+  parent's WiFi setup share one radio (`wifi_join`/`wifi_leave` count the users; the setup waits until
+  nobody holds it). The policy is `Game::link()`, covered by the host tests.
+- Without the packs (or with routines switched off) nothing of this happens: the game is as before.
+
+In the emulator the routine runs on emulated time: the panel's **GÜNLÜK RUTİN** box shows the question
+and the radio; with a **Dinleyici** (listener) address the browser microphone records and posts to it
+(1× speed; the listener must allow the page's origin), otherwise the ✔ / ✖ buttons answer. "Rutini dene"
+runs the routine without the private pack (pictures only), "Odada TV açık" plays the TV test's level check,
+and the parent page is mocked when no listener is set (SAYFADA DEĞİŞTİR, EŞİTLE).
+
+### The private files
+
+```sh
+uv run --with numpy python tools/voice.py --personal   # fw/personal/voice_name.bin + config.json (listener, token)
+uv run --with numpy python tools/voice.py --routines   # fw/personal/routines_tr.bin
+pio run -d fw -t uploadfs                              # fw/personal/ -> the toy's LittleFS (once; updates keep it)
+```
+
+They come from `~/.config/unicorn-pet/personal.json` (the child's name, its pronunciation, the listener's
+address and token; `python3 server/listener.py --setup` adds the last two) and are gitignored: no child's
+name is in this repository or in the public firmware. Instead of `uploadfs`, the same three files can go on a
+microSD card in a folder `unicorn/`; the card wins when both have them. With the name pack and Turkish as the
+language, her greetings carry the child's name.
+
 ## Tests
 
 ```sh
 make -C test               # host: every event, mini-game, petting, idle life, particles, sound,
-                           # screen-time limit and the door, RTC breaks, saves v1..v6->v7, calendar, album,
+                           # screen-time limit and the door, RTC breaks, saves v1..v7->v8, calendar, album,
+                           # the daily routine (schedule, re-ask, silence rules, answers, variants), the
+                           # settings sync, TV test mode, the radio policy, damaged voice packs,
                            # interpolation,
                            # save/load, screen-off, tick-size independence, a week of neglect;
                            # dumps a screenshot per event to test/out/*.png
 make -C test wasm          # the same events through emu/unicorn.wasm in Node
-make -C test all           # all of it, plus the time-zone, language, portal, sprite-header and
-                           # emulator-script checks
+make -C test all           # all of it, plus the time-zone, update-manifest, release-signing, language,
+                           # portal, sprite-header, voice-pack (ffmpeg decodes every clip) and emulator-script checks
 make -C test record        # scripted play-through from the real core -> design/gameplay.gif
 ```
 
@@ -229,11 +307,72 @@ make -C test record        # scripted play-through from the real core -> design/
 
 Her save lives in NVS (the `unicorn` namespace), which `pio run -d fw -t upload` leaves alone: a
 new firmware finds her as she was, with every day together, album page, birthday and trick. Older
-saves are migrated forward (v1 to v7). A save the firmware cannot read (a newer firmware's, or a
+saves are migrated forward (v1 to v8). A save the firmware cannot read (a newer firmware's, or a
 bad write) is copied to `save_bad` before a new egg could overwrite it. A running clock is kept
 too: a new build only resets it from its build time if the clock is behind that or had stopped.
 Things that do wipe her: "Erase Flash" in an IDE, `pio run -t erase`, or changing the partition
 table or the NVS names.
+
+## Firmware updates
+
+New firmware comes over WiFi from this repository's GitHub releases, signed, and the save is kept.
+
+**For parents:** parent settings > **SAAT** > **GÜNCELLEME** shows the running version (`V3 >`). A
+yellow dot there (and on the SAAT row) means a newer version has been seen: the toy looks quietly during
+its twice-daily clock sync. **KONTROL** asks now; **YENİ SÜRÜM 4** then offers **YÜKLE**. Installing needs
+the USB cable in or at least 50% battery (the page says so when it is missing); it downloads with a
+progress bar (about a minute, the screen stays on, nothing can be pressed), verifies, and restarts into
+the new version. Her save lives in NVS (namespace `unicorn`), which an update never touches, so every day
+together, album page, birthday and trick is still there. Errors are plain: no WiFi (no network saved, or
+none answered), download failed, signature invalid; each offers TEKRAR, and the old firmware keeps
+running.
+
+**For the developer**, a release is two assets on a GitHub release: `firmware.bin` and `manifest.json`
+(`{"version", "size", "sha256", "sig"}`).
+
+```sh
+uv run --with cryptography python tools/release.py            # bump, build, sign -> dist/, prints the gh command
+uv run --with cryptography python tools/release.py --keygen   # only create the key (and fw/src/release_key.h)
+make -C test release                                          # --selftest: a throwaway key, tampering must fail
+```
+
+- `fw/src/version.h` holds `FW_VERSION`, a plain integer; `release.py` bumps it (and puts it back if
+  the build fails), builds with pio, signs, verifies its own signature against the key the image
+  carries, writes `dist/` (git-ignored) and **prints** the `gh release create vN ... --latest` command.
+  It never publishes anything; commit `version.h` and push first.
+- The signing key is made on first use at `~/.config/unicorn-pet/release-key.pem` (mode 600, outside
+  the repo, never printed). Only its public half goes into `fw/src/release_key.h`, which is committed.
+  **Back the private key up:** toys trust only the key they were built with, so without it no toy
+  accepts another update until it is flashed over USB. `release.py` refuses to make a new key when the
+  header already holds one, and refuses a private key that does not match the header.
+- The first time: `--keygen`, commit `release_key.h`, flash that build over USB once
+  (`pio run -d fw -t upload`); every later version can come over WiFi. A build with the empty
+  placeholder key refuses every update.
+
+**Security model.** The toy downloads `releases/latest/download/manifest.json` and `firmware.bin`
+(following GitHub's redirects) in a background task, with the same saved and built-in networks the
+clock uses. The manifest's `sig` is an ECDSA P-256 / SHA-256 signature over
+`unicorn-pet|<version>|<size>|<sha256>`, checked with mbedTLS against the public key compiled in. Only a
+version strictly greater than the running `FW_VERSION` is offered or installed (no downgrade, no
+replay of an older release). The image is streamed into the inactive OTA slot while it is hashed; a
+size over the slot, a length or SHA-256 that differs from the signed manifest, or a bad signature
+aborts it (`Update.abort()`), and only a fully matching image is made bootable. Because integrity
+comes from the signature, **TLS certificates are not validated** (`setInsecure`): there is no CA bundle
+to keep current and no need for a correct clock. What someone on the network path can still do is
+block updates, or offer an older signed release that is newer than the running one; never install an
+image that was not signed with the release key.
+
+**Rollback.** The bootloader's app rollback is on. A freshly installed image boots "on trial": the
+firmware tells Arduino not to accept it at boot (`verifyRollbackLater()`), and confirms it
+(`esp_ota_mark_app_valid_cancel_rollback()`) only after it has run its loop and drawn frames for about
+10 s. If it crashes or resets before that, the next boot goes back to the previous firmware; a later
+check may offer the same version again.
+
+The check, the download and the clock sync never run at once, the WiFi setup waits for them, and the
+board does not light-sleep while one runs; the update task never touches I2C or NVS. In the emulator
+the **yeni sürüm var** box plays a newer release (a saved WiFi network is needed, like on the board):
+KONTROL finds it, YÜKLE shows the progress on emulated time and then restarts the page's toy with the
+same save; EŞİTLE also does the quiet check.
 
 ## Languages
 
@@ -253,7 +392,9 @@ Chinese, Hindi, Arabic and Japanese would need glyphs the 8-pixel font cannot ho
 
 ## WiFi and location
 
-The toy uses WiFi only for its clock. Networks come from two places, and both are tried:
+The toy uses WiFi for its clock, its firmware updates (below) and the home listener of her daily routine
+(above, "Radio and power"). Networks come from two places,
+and both are tried:
 
 - **Added on the toy, with a phone** (no tiny keyboard): parent settings > SAAT > WIFI > AĞ EKLE >
   BAŞLAT. The toy opens a short-lived network of its own (`Unicorn-XXXX`, a fresh random password
@@ -305,7 +446,26 @@ pio run -d fw -t upload    # flash over USB-C
   every 5 minutes. While powered off time stands still (she just sleeps).
 - **Screen off:** the panel is switched off and the ESP32 light-sleeps, woken by touch or BOOT
   at once and every 200 ms to poll PWR (the key sits on the IO expander, which has no wake line).
-- **Sound:** ES8311 codec over I2S; the speaker amp is only enabled while a tune plays.
+  A press shorter than that is not lost: PWR is also the AXP2101's power key, which latches a
+  short press as an interrupt flag that the next wake reads.
+- **Battery:** the AXP2101 cuts the power at 3.3 V, before the 3.3 V rail sags into resets and
+  before the Li-ion cell is over-discharged.
+- **Sound:** ES8311 codec over I2S; the speaker amp is only enabled while a tune or her voice plays.
+- **Her voice:** `fw/data/voice.bin` (embedded with `board_build.embed_files`) holds 16 short lines
+  in all 10 languages as Opus, 16 kbps, 16 kHz mono, 20 ms frames (~0.5 MB; chosen by ear over the IMA
+  ADPCM it replaced, which took 1.7 MB). The core finds a clip and walks its Ogg pages (`pack_clip`,
+  `ogg_packet`, checked against damage, a pack can come off an SD card); the firmware decodes the packets with
+  libopus (pschatzmann's codec-opus, fixed point, ~225 KB of flash) on the audio task, the emulator with the
+  browser's `decodeAudioData`. The core says which line goes with a cue (`take_sfx(&line, &clip)`) and the
+  firmware plays it in the toy's language instead of the tune. Never at bedtime (bed time to wake-up), never
+  when muted, never the same line twice within 8 s. Lines and the voice: `tools/voice.py` (ElevenLabs, cached);
+  the serial log prints how long each clip took to decode.
+- **Private files:** the name and routine packs and `config.json` from a microSD card (SD_MMC, 1-bit, Waveshare's
+  pins CLK 2 / CMD 1 / D0 3, folder `/unicorn/`) or the LittleFS partition, loaded into PSRAM after the first
+  frame (`fw/src/store.cpp`). The listener traffic is `fw/src/net.cpp`, the microphone `fw/src/audio.cpp`.
+- **Two board batches:** SH8601 panel + FT3168 touch (0x38), or the newer CO5300 panel + CST820
+  touch (0x15, with a 16-pixel column offset). The touch chip that answers at boot picks the
+  driver; `-DPANEL_CO5300` / `-DPANEL_SH8601` force one. The serial log says which it found.
 - **Frames:** the 368x448 frame (330 KB) lives in the 8 MB PSRAM. After each render a checksum
   per row picks the rows that changed, and only that band goes over the QSPI bus (an identical
   frame sends nothing); a full frame every 64 sends and after the panel wakes. The core asks for
@@ -313,18 +473,20 @@ pio run -d fw -t upload    # flash over USB-C
 - **Buses and sensors:** the shared I2C bus runs at 400 kHz (every chip on it supports fast
   mode); PWR is polled at 50 Hz, the accelerometer runs alone in its low-power 128 Hz mode and is
   read once per sample. `LCD_HZ` (QSPI, 40 MHz) and `I2C_HZ` sit at the top of `fw/src/main.cpp`.
-- **Clock:** the PCF85063 holds UTC (`fw/src/clock.cpp` converts). A new build sets it from
-  `__DATE__`/`__TIME__` on its first boot only if the clock is behind that or had stopped (then it
-  is off by however long it was between building and flashing, until WiFi corrects it). A stopped
-  oscillator (flat battery) marks the calendar untrusted in NVS until a parent sets the clock in
-  the settings (the core returns `F_CLOCK`; the firmware writes `Game::wall_s` to the RTC) or the
-  next flash.
+- **Clock:** the PCF85063 holds UTC (`fw/src/clock.cpp` converts). A new build starts it from
+  `__DATE__`/`__TIME__` on its first boot only if the clock is behind that or had stopped. That
+  time keeps breaks running but is never trusted as a date (it is when the file was compiled, not
+  when it was flashed): the calendar (day/night, bedtime, birthdays) waits for WiFi time or a
+  parent setting the clock in the settings (the core returns `F_CLOCK`; the firmware writes
+  `Game::wall_s` to the RTC). A stopped oscillator (flat battery) also marks it untrusted.
 
 Pins, addresses and the IO-expander reset sequence come from Waveshare's own Arduino examples.
 Still to check on a real board (marked `VERIFY`): touch axis orientation (`fw/src/main.cpp`), and
 whether the AXP2101 keeps the RTC supplied after a long-press power-off (`fw/src/rtc.cpp`), plus
-tearing at ~30 fps.
-If the screen stays black, the panel may be the newer CO5300: build with `-DPANEL_CO5300`.
+tearing at ~30 fps; the microphone's slot, gain and power bits, the voice-activity thresholds, and the
+decoding time per clip (`fw/src/audio.cpp`).
+If the screen stays black, check the serial log's `board:` line; force the panel with
+`-DPANEL_CO5300` or `-DPANEL_SH8601`.
 
 ## Changing the art
 
@@ -349,4 +511,5 @@ hatches; the rainbow trick is drawn on her own pixel grid, swept in from the lef
   `core/assets.gen.h`.
 - ES8311 codec driver by Espressif Systems, Apache-2.0 (`fw/lib/es8311`).
 - QR Code generator library by Project Nayuki, MIT (`core/third_party/qrcodegen*`).
-- Libraries fetched by PlatformIO: GFX Library for Arduino, XPowersLib, SensorLib.
+- Libraries fetched by PlatformIO: GFX Library for Arduino, XPowersLib, SensorLib, ArduinoJson, and
+  codec-opus (libopus, BSD; pinned to a commit).

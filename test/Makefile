@@ -13,10 +13,29 @@ test: out
 out:
 	mkdir -p out
 
+# A five-year-old plays the real core for days, across many seeds; every loop is checked (monkey.cpp).
+monkey: out
+	$(CXX) $(CXXFLAGS) monkey.cpp ../core/game.cpp ../core/render.cpp ../core/sound.cpp ../core/qr.cpp -o out/monkey
+	./out/monkey
+
 # The firmware's time-zone helpers (fw/src/tz.h), with real POSIX summer-time rules.
 tz: out
 	$(CXX) $(CXXFLAGS) test_tz.cpp -o out/test_tz
 	./out/test_tz
+
+# The firmware's release-manifest parser (fw/src/manifest.h), on the host.
+ota: out
+	$(CXX) $(CXXFLAGS) test_ota.cpp -o out/test_ota
+	./out/test_ota
+
+# The firmware's listener reply parser (fw/src/http_reply.h), on the host.
+http: out
+	$(CXX) $(CXXFLAGS) test_http.cpp -o out/test_http
+	./out/test_http
+
+# tools/release.py signs and checks a dummy image with a throwaway key; tampering must fail.
+release:
+	cd .. && uv run --quiet --with cryptography python tools/release.py --selftest
 
 # Every language complete, and core/strings.gen.h generated from tools/i18n.py
 i18n:
@@ -28,6 +47,11 @@ portal:
 
 assets:
 	cd .. && uv run --quiet --with pillow python tools/export_c.py --check
+
+# Her voice packs (Opus): the generated headers match tools/voice.py and tools/routines.py, and ffmpeg decodes
+# every clip of fw/data/voice.bin (and of the private packs in fw/personal/, when they are there). No network.
+voice:
+	cd .. && python3 tools/voice.py --check
 
 # The emulator's page script must at least parse (a duplicate name once broke it silently).
 emu: | out
@@ -53,6 +77,10 @@ tour: out
 	./out/tour_bin
 	cd .. && uv run --quiet --with pillow python tools/make_tour.py
 
-all: test tz i18n portal assets emu wasm
+# The home listener's pure-Python parts (yes/no rules, WAV + voice checks, HTTP with a fake Whisper).
+listener:
+	cd ../server && python3 -W ignore::ResourceWarning -m unittest -q test_listener
 
-.PHONY: test tz i18n portal assets emu wasm all record tour
+all: test monkey tz ota http release i18n portal assets voice emu wasm listener
+
+.PHONY: test monkey tz ota http release i18n portal assets emu wasm listener all record tour
