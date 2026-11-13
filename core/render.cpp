@@ -424,8 +424,9 @@ static void text(const char* s, int x, int y, int scale, u16 c, int align = 1) {
 
 // centred text that drops to the small size if it would not fit the given width
 static void text_fit(const char* s, int cx, int y, int scale, u16 c, int max_w = SCREEN_W - 24) {
+    int want = scale;
     while (scale > 1 && text_w(s, scale) > max_w) scale--;
-    text(s, cx, y + (scale == 1 ? 4 : 0), scale, c);
+    text(s, cx, y + (want - scale) * 4, scale, c);   // a smaller size stays centred on the line
 }
 
 // left-aligned text cut to max_w pixels, ".." marking the cut (long network names)
@@ -597,9 +598,13 @@ static void battery_icon(const Game& g, int x0, int y0) {
     }
 }
 
-static void header(const Game& g, const char* sub) {
-    text(T(S_NAME_0 + g.s.character), SCREEN_W / 2, 52, 2, PAL[UP_ACCENT[g.s.character]]);
-    text(sub, SCREEN_W / 2, 74, 1, DIM);
+// Her name and what she is doing, big enough for a child to see at arm's length (8 px text is 0.6 mm on
+// this panel). Long ones step down a size: clear of the battery and bolt (from x 298), or of the house
+// button (from x 288) in the toy modes.
+static void header(const Game& g, const char* sub, bool house = false) {
+    int w = house ? 2 * (288 - SCREEN_W / 2) - 8 : 2 * (298 - SCREEN_W / 2) - 4;
+    text_fit(T(S_NAME_0 + g.s.character), SCREEN_W / 2, 38, 3, PAL[UP_ACCENT[g.s.character]], w);
+    text_fit(sub, SCREEN_W / 2, 68, 2, DIM, house ? w : SCREEN_W - 24);
 }
 
 static int arc(u32 p, u32 len, int height);
@@ -621,7 +626,7 @@ static void menu(const Game& g) {
             dy = arc(t % 1100, 500, 6);
         }
         icon(icons[i], scale, cx - UP_ICON_W * scale / 2, 388 - UP_ICON_H * scale / 2 + dy);
-        if (text_w(T(labels[i]), 1) <= 80) text(T(labels[i]), cx, 426, 1, i == g.menu ? INK : DIM);
+        if (text_w(T(labels[i]), 1) <= 80) text_fit(T(labels[i]), cx, 422, 2, i == g.menu ? INK : DIM, 80);
     }
 }
 
@@ -961,7 +966,7 @@ static void butterfly(const Game& g) {
 
 static void scene_toys(const Game& g) {
     static const int icons[TOY_COUNT] = {IC_STAR, IC_NOTE, IC_CLOUD, IC_MIRROR, IC_HOUSE};
-    header(g, T(S_TOYS));
+    header(g, T(S_TOYS), true);
     for (int i = 0; i < TOY_COUNT; i++) {
         int cx = i == TOY_HOME ? SCREEN_W / 2 : 116 + (i % 2) * 136, cy = 148 + (i / 2) * 116;
         rrect(cx - 52, cy - 52, cx + 52, cy + 52, 18, SEL, i == g.sel ? PAL[UP_ACCENT[g.s.character]] : TRACK, 3);
@@ -973,7 +978,7 @@ static void scene_toys(const Game& g) {
 }
 
 static void scene_music(const Game& g) {
-    header(g, T(S_MUSIC));
+    header(g, T(S_MUSIC), true);
     house_button();
     unicorn_front(g, g.echo_i ? M_HAPPY : M_IDLE, 22, 2);
     static const int petal_k[3] = {0, 2, 4};
@@ -998,7 +1003,7 @@ static void scene_music(const Game& g) {
 }
 
 static void scene_cloud(const Game& g) {
-    header(g, T(S_CLOUD));
+    header(g, T(S_CLOUD), true);
     house_button();
     for (int i = 0; i < 3; i++) ellipse(64 + i * 120, CLOUD_Y + 50, 4, 4, TRACK);   // lane guides
     // the cloud, sliding smoothly toward where it is going
@@ -1028,7 +1033,7 @@ static void scene_cloud(const Game& g) {
 
 static void scene_dress(const Game& g) {
     static const int icons[ACC_COUNT] = {-1, IC_BOW, IC_FLOWER, IC_TIARA};
-    header(g, T(S_MIRROR));
+    header(g, T(S_MIRROR), true);
     house_button();
     ground(g, false);
     bool happy = g.dress_at && (int)(g.clock_ms - g.dress_at) < 700;
