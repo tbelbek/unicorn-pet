@@ -523,5 +523,14 @@ class Server(unittest.TestCase):
         self.assertEqual(c[meta["guess"], "tv"], 1)
 
 
+class HolidayCap(unittest.TestCase):
+    def test_holiday_ranges_capped_at_the_toys_four(self):
+        import parent
+        four = [["2026-01-0%d" % i, "2026-01-0%d" % i] for i in range(1, 5)]
+        five = four + [["2026-02-01", "2026-02-02"]]
+        self.assertTrue(parent._valid("holiday_ranges", four))
+        self.assertFalse(parent._valid("holiday_ranges", five))
+
+
 if __name__ == "__main__":
     unittest.main()

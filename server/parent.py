@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import routines  # noqa: E402
 
+HOL_MAX = 4   # holiday ranges the toy keeps (core/unicorn.h HOL_MAX): more would be dropped at sync
 QKEYS = list(routines.QUESTIONS) + ["HAPPY"]
 LANGS = ["tr", "en", "es", "fr", "de", "pt", "it", "ru", "sv", "id"]  # tools/i18n.py LANGS, the toy's order
 DEFAULTS = {  # the toy's own defaults (core/unicorn.h); its first report replaces whatever differs
@@ -52,7 +53,7 @@ def _valid(k, v):
         return isinstance(v, dict) and all(q in QKEYS and isinstance(b, bool) for q, b in v.items())
     if k == "holiday_ranges":
         try:
-            return isinstance(v, list) and len(v) <= 20 and all(
+            return isinstance(v, list) and len(v) <= HOL_MAX and all(   # the toy keeps 4 (core HOL_MAX)
                 isinstance(r, list) and len(r) == 2 and all(_is_date(d) for d in r)
                 and date.fromisoformat(r[0]) <= date.fromisoformat(r[1]) for r in v)
         except (TypeError, ValueError):
@@ -364,7 +365,7 @@ def tab_rutinler(state):
 <label>Hafta sonu uyanma <input type="time" name="wake_weekend" value="{E(s["wake_weekend"])}"></label>
 <label>Yatma saati <input type="time" name="bedtime" value="{E(s["bedtime"])}"></label></div>
 <h2>Tatil</h2><div class="card">{_check("holiday", s["holiday"], "Tatil modu (okul soruları sorulmaz)")}
-<p class="mut">Tatil aralıkları, satır başına bir tane: <code>2026-12-24 2027-01-02</code></p>
+<p class="mut">Tatil aralıkları, satır başına bir tane (en fazla {HOL_MAX}): <code>2026-12-24 2027-01-02</code></p>
 <textarea name="holiday_ranges" rows="3">{E(ranges)}</textarea></div>
 <button>Kaydet</button></form>
 <h2>Bu hafta</h2><div class="wrap"><table><tr><th>gün</th>{head}<th>yıldız</th></tr>{rows}</table></div>

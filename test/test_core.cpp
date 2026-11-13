@@ -2912,6 +2912,29 @@ static int gaps_ok(const Asked* a, int n) {   // every question at least Q_GAP_M
     return 1;
 }
 
+TEST(one_good_morning_not_two) {
+    Game g = routine_game();                   // asleep; a child is looking at the screen when the night ends
+    g.set_wall(at(2026, 11, 2, 22, 0));
+    for (int i = 0; i < 600; i++) { g.tick(1000); g.take_sfx(); g.listen_req = LREQ_NONE; }
+    EQ(g.scene, SC_SLEEP);
+    g.set_wall(at(2026, 11, 3, 6, 59));
+    for (int i = 0; i < 5; i++) { g.tick(1000); g.take_sfx(); }
+    int morning = 0, greet = 0;
+    for (int sec = 0; sec < 600; sec++) {
+        if (sec < 120) { g.screen_on = 1; g.idle_ms = 0; }
+        g.set_wall(at(2026, 11, 3, 6, 59) + 5 + sec);
+        u32 f = g.tick(1000);
+        int line, clip;
+        if (f & F_SOUND) {
+            g.take_sfx(&line, &clip);
+            morning += line == V_MORNING;
+            if (clip >= R_GREET && clip < R_GREET + R_VARIANTS) greet++;
+        }
+        if (f & F_LISTEN) g.listen_req = LREQ_NONE;
+    }
+    EQ(morning + greet, 1);                    // the wake-up's good morning, or the routine's, never both
+}
+
 TEST(routine_school_morning) {
     Game g = routine_game();                   // Tuesday 3 November 2026, wake-up at 07:00
     Asked a[32];
@@ -3497,7 +3520,7 @@ int main() {
         T(wifi_setup_from_the_toy), T(firmware_update_page), T(text_edge_cases), T(every_language_fits_the_screen),
         T(review_fixes_bug_hunt), T(review_fixes_third_pass), T(old_local_break_deadlines_are_not_read_as_utc), T(no_sound_at_bedtime), T(she_speaks_her_lines), T(her_voice_file_decodes), T(damaged_packs_never_read_outside), T(the_screen_dims_at_night), T(fifth_pass_fixes), T(album_opens_from_the_info_screen),
         T(settings_close_when_the_grown_up_walks_away), T(every_scene_renders_for_every_character),
-        T(routine_school_morning), T(routine_weekend_and_holidays), T(routine_evening), T(routine_asks_again_once),
+        T(one_good_morning_not_two), T(routine_school_morning), T(routine_weekend_and_holidays), T(routine_evening), T(routine_asks_again_once),
         T(routine_stays_quiet), T(routine_question_flow), T(routine_variants_never_repeat_early), T(save_v7_loads_as_v8),
         T(settings_sync_with_the_parent_page), T(tv_test_mode_listens_only_to_lasting_sound), T(radio_link_policy),
         T(review_fixes_routine_pass), T(review_fixes_routine_pass2), T(review_fixes_routine_pass3),

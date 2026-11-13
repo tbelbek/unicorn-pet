@@ -921,7 +921,7 @@ void Game::leave_settings() {
     if (!s.hatched) go((s.birth_flags & BIRTH_CHOSEN) ? SC_EGG : SC_EGG_PICK);
     else if (back_scene == SC_SLEEP && back_night && !bedtime() && today().known) {   // morning came meanwhile
         go(plugged && !screen_on ? SC_LOUNGE : SC_HOME);   // closed in the dark: up quietly, as at check_bedtime
-        if (screen_on) { cue(SFX_WAKE, V_MORNING); greet(); }
+        if (screen_on) { if (!routines_on()) cue(SFX_WAKE, V_MORNING); greet(); }   // (the routine says hello)
     } else if (back_scene == SC_SLEEP) {   // the same sleep goes on: no new nap bonus, no new dreams
         go(SC_SLEEP);
         scene_ms = back_ms;
