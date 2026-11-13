@@ -18,7 +18,12 @@ static const int RATE = 16000;
 static const int VOLUME = 70;              // codec volume 0-100: a toy, not a party speaker
 static const int16_t AMP = 2500;           // square-wave amplitude out of 32767
 // the microphone: PGA gain (Waveshare's example uses 3 of 0..7 = 18 dB) and the voice-activity detector
-static const es8311_mic_gain_t MIC_GAIN = ES8311_MIC_GAIN_18DB;   // VERIFY on the board: a child at arm's length
+// 30 dB, measured on the board: at 18 dB a voice from across the desk reached only ~-50 dBFS (below the
+// detector's floor); at 30 dB the room sits near -50 dBFS and speech at -35..-25 dBFS, with headroom to clip
+static const es8311_mic_gain_t MIC_GAIN = ES8311_MIC_GAIN_30DB;
+// After the mic powers up the ADC needs ~300 ms to settle (first frames 5-10x the room's level, measured):
+// measured as the room, they pushed the detector's threshold to its cap and no answer was ever heard.
+static const int SETTLE_FRAMES = 15;
 static const int FRAME = 320;              // 20 ms
 static const int REC_MAX_MS = 6000;         // (when speech starts and stops: vad.h)
 static const int PREROLL = 15 * FRAME;     // 300 ms kept from before the first word
@@ -122,13 +127,15 @@ static void wav_header(uint8_t* h, uint32_t samples) {
     memcpy(h + 36, "data", 4); put32(40, bytes);
 }
 
-// one 20 ms frame of the microphone (the codec's ADC is the left slot; VERIFY), and its RMS
+// one 20 ms frame of the microphone (the codec's ADC is the left slot: checked, the right one reads 0), and its RMS
+int audio_mic_slot = 0;                    // bench: which I2S slot is the microphone
+
 static int mic_frame(int16_t* out) {
     static int16_t st[2 * FRAME];
     size_t got = i2s.readBytes((char*)st, sizeof st);
     int n = (int)(got / 4);
     int64_t sum = 0;
-    for (int i = 0; i < n; i++) { out[i] = st[2 * i]; sum += (int32_t)out[i] * out[i]; }
+    for (int i = 0; i < n; i++) { out[i] = st[2 * i + audio_mic_slot]; sum += (int32_t)out[i] * out[i]; }
     for (int i = n; i < FRAME; i++) out[i] = 0;
     return n ? (int)sqrtf((float)sum / n) : 0;
 }
@@ -139,6 +146,7 @@ static void record(int kind) {
     int16_t* pcm = (int16_t*)(rec + 44);
     int16_t frame[FRAME];
     i2s_channel_enable(i2s.rxChan());      // the microphone's half of I2S only while listening
+    for (int k = 0; k < SETTLE_FRAMES && !cancelled; k++) mic_frame(frame);   // the ADC settling: thrown away
     int room[VAD_ROOM_FRAMES];             // 100 ms: the ADC settles, the speaker's tail fades, and the room's
     for (int k = 0; k < VAD_ROOM_FRAMES; k++) room[k] = mic_frame(frame);   // level, before she may answer
     if (kind <= up::LK_OPEN) started = true;   // the ear shows for her question's own recording only
@@ -250,6 +258,8 @@ void audio_mic(bool on) {
     Wire.write(v);
     Wire.endTransmission();
 }
+
+void audio_mic_gain(int g) { if (codec) es8311_microphone_gain_set(codec, (es8311_mic_gain_t)g); }   // bench
 
 void audio_level(int l) {                  // parent setting: 0 normal, 1 low, 2 off
     if (l == level || !codec) return;

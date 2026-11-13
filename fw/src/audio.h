@@ -20,3 +20,5 @@ bool audio_listening();       // a request waits or a capture runs (the micropho
 bool audio_listen_started();  // once per recording: the child can speak now (core: listen_started)
 struct Heard { int kind; bool speech; int db, loud_pct; const uint8_t* wav; uint32_t len; };
 bool audio_heard(Heard* out); // a finished recording; wav (a whole WAV file) stays valid until the next audio_listen
+extern int audio_mic_slot;   // bench: 0 left, 1 right
+void audio_mic_gain(int g);  // bench: es8311 mic gain step 0..7 (0, 6 .. 42 dB)

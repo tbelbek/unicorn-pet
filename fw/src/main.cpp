@@ -22,12 +22,13 @@
 #include "ota.h"
 #include "store.h"
 #include "net.h"
+#include "version.h"
 
 static const int LCD_CS = 12, LCD_SCLK = 11, LCD_D0 = 4, LCD_D1 = 5, LCD_D2 = 6, LCD_D3 = 7;
 static const int I2C_SDA = 15, I2C_SCL = 14, TP_INT = 21, KEY_BOOT = 0;
 static const uint8_t TCA9554_ADDR = 0x20, FT3168_ADDR = 0x38, CST820_ADDR = 0x15;
 static const uint8_t EXIO_PWR = 4;                        // PWR key reads HIGH while held
-static const bool TOUCH_SWAP_XY = false, TOUCH_FLIP_X = false, TOUCH_FLIP_Y = false;   // VERIFY
+static const bool TOUCH_SWAP_XY = false, TOUCH_FLIP_X = false, TOUCH_FLIP_Y = false;   // checked on a CO5300/CST820 board: corners read (1,1)..(360,447)
 static const bool TILT_FLIP = false;                      // VERIFY: tilting right moves the cloud right
 static const uint8_t BRIGHTNESS = 180;                    // indoor toy: no need for full AMOLED
 static const uint32_t SLEEP_POLL_US = 200000;             // light-sleep wake to poll PWR (no GPIO wake)
@@ -318,6 +319,102 @@ void setup() {
     store_load_packs();                       // after the first frame: ~1.7 MB into PSRAM, in a task
 }
 
+// ---- bench console (USB serial) ------------------------------------------------------------
+// Lines in, one reply each: how the board is tested on the desk without looking at it.
+//   info | i2c | tap X Y | sel | shake | shot (the framebuffer, base64 RGB565) | mic KIND (0 yes/no, 1 open,
+//   2 level, 3 five raw seconds: the recording back as base64 WAV) | play SFX [LINE [CLIP]] | utc SECONDS_SINCE_2000 |
+//   boot MS (BOOT held that long; "boot 80" is a tap) | awake 0/1 (no screen timeout while testing)
+// Physical access only: nothing secret is printed (no token, no WiFi password).
+static int diag_mic = -1;                     // a bench recording is under way: its result comes here
+static uint32_t diag_boot_until;              // "boot MS": BOOT held down from the bench
+static bool diag_awake;                       // "awake 1": the screen never times out (bench only, not saved)
+
+static void b64_dump(const uint8_t* p, uint32_t n) {
+    static const char T[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char line[77];
+    int k = 0;
+    for (uint32_t i = 0; i < n; i += 3) {
+        uint32_t v = p[i] << 16 | (i + 1 < n ? p[i + 1] << 8 : 0) | (i + 2 < n ? p[i + 2] : 0);
+        line[k++] = T[v >> 18 & 63]; line[k++] = T[v >> 12 & 63];
+        line[k++] = i + 1 < n ? T[v >> 6 & 63] : '=';
+        line[k++] = i + 2 < n ? T[v & 63] : '=';
+        if (k == 76) { line[k] = 0; Serial.println(line); k = 0; }
+    }
+    if (k) { line[k] = 0; Serial.println(line); }
+}
+
+static void diag_poll() {
+    static char cmd[64];
+    static int n;
+    while (Serial.available()) {
+        int c = Serial.read();
+        if (c != '\n' && c != '\r') { if (n < (int)sizeof cmd - 1) cmd[n++] = c; continue; }
+        if (!n) continue;
+        cmd[n] = 0; n = 0;
+        int a = 0, b = 0, d = -1;
+        unsigned long u = 0;
+        if (!strcmp(cmd, "info")) {
+            float x = 0, y = 0, z = 0;
+            if (imu_ok) imu.getAccelerometer(x, y, z);
+            Serial.printf("INFO fw=%d up=%lus heap=%u psram=%u scene=%d stage=%d screen=%d bright=%d vol=%d lang=%d "
+                          "wall=%lu utc=%lu plugged=%d vbus=%d chg=%d batt=%d%% vbat=%dmV "
+                          "acc=%.2f,%.2f,%.2f store=%s routines=%d names=%d listening=%d\n",
+                          FW_VERSION, (unsigned long)(millis() / 1000), (unsigned)ESP.getFreeHeap(),
+                          (unsigned)ESP.getFreePsram(), game.scene, game.stage(), game.screen_on,
+                          game.screen_brightness(), game.volume(), game.s.lang, (unsigned long)game.wall_s,
+                          (unsigned long)rtc_now(), game.plugged, pmu_ok && pmu.isVbusIn(),
+                          pmu_ok && pmu.isCharging(), pmu_ok ? pmu.getBatteryPercent() : -1,
+                          pmu_ok ? pmu.getBattVoltage() : -1,
+                          x, y, z, store_where(), game.has_routines, game.has_names, audio_listening());
+        } else if (!strcmp(cmd, "i2c")) {
+            Serial.print("I2C");
+            for (uint8_t ad = 1; ad < 127; ad++) {
+                Wire.beginTransmission(ad);
+                if (Wire.endTransmission() == 0) Serial.printf(" 0x%02X", ad);
+            }
+            Serial.println();
+        } else if (sscanf(cmd, "tap %d %d", &a, &b) == 2) {
+            game.input(up::IN_TOUCH, a, b);
+            Serial.printf("OK tap %d %d scene=%d\n", a, b, game.scene);
+        } else if (!strcmp(cmd, "sel")) {
+            game.input(up::IN_SELECT, 0, 0); Serial.printf("OK scene=%d\n", game.scene);
+        } else if (!strcmp(cmd, "shake")) {
+            game.input(up::IN_SHAKE, 0, 0); Serial.printf("OK scene=%d\n", game.scene);
+        } else if (!strcmp(cmd, "shot")) {
+            up::render(game, fb);
+            panel_stale = true;                   // the next push sends it all again
+            Serial.printf("SHOT %d %d\n", up::SCREEN_W, up::SCREEN_H);
+            b64_dump((const uint8_t*)fb, up::SCREEN_W * up::SCREEN_H * 2);
+            Serial.println("END");
+        } else if (sscanf(cmd, "mic %d", &a) == 1 && a >= up::LK_YESNO && a <= up::LK_TV) {
+            diag_mic = a;
+            audio_mic(true);
+            audio_listen(a);
+            Serial.printf("OK mic %d: speak now\n", a);
+        } else if (sscanf(cmd, "play %d %d %d", &a, &b, &d) >= 1) {
+            audio_play(a, b, game.s.lang, d);
+            Serial.printf("OK play %d %d %d\n", a, b, d);
+        } else if (sscanf(cmd, "gain %d", &a) == 1 && a >= 0 && a <= 7) {
+            audio_mic_gain(a);
+            Serial.printf("OK gain %d (%d dB)\n", a, a * 6);
+        } else if (sscanf(cmd, "slot %d", &a) == 1 && (a == 0 || a == 1)) {
+            audio_mic_slot = a;
+            Serial.printf("OK slot %d\n", a);
+        } else if (sscanf(cmd, "awake %d", &a) == 1) {
+            diag_awake = a;
+            Serial.printf("OK awake %d\n", a);
+        } else if (sscanf(cmd, "boot %d", &a) == 1) {
+            diag_boot_until = millis() + a;
+            Serial.printf("OK boot %d\n", a);
+        } else if (sscanf(cmd, "utc %lu", &u) == 1) {
+            bool ok = clock_set_utc(u);
+            Serial.printf("%s utc %lu\n", ok ? "OK" : "ERR", u);
+        } else {
+            Serial.printf("ERR %s\n", cmd);
+        }
+    }
+}
+
 // Her daily routine and TV test mode: the core asks (F_LISTEN), the audio task records, net.cpp asks the listener.
 static void listening(uint32_t f) {
     static bool packs_known;
@@ -339,6 +436,13 @@ static void listening(uint32_t f) {
     Heard h;
     if (audio_heard(&h)) {
         if (!audio_listening()) audio_mic(false);   // off again between moments (not with another capture waiting)
+        if (diag_mic == h.kind) {             // a bench recording: to the serial port, not the game
+            diag_mic = -1;
+            Serial.printf("HEARD kind=%d speech=%d db=%d loud=%d%% len=%lu\n", h.kind, h.speech, h.db,
+                          h.loud_pct, (unsigned long)h.len);
+            if (h.wav && h.len) { Serial.println("WAV"); b64_dump(h.wav, h.len); Serial.println("END"); }
+            return;
+        }
         if (h.kind == up::LK_LEVEL) game.level_result(h.db, h.loud_pct);
         else if (h.kind == up::LK_TV) net_tv_sample(h.wav, h.len);
         else if (!h.speech) game.listen_result(up::ANS_SILENT);   // nothing said: nothing to send
@@ -353,9 +457,10 @@ void loop() {
     last = now;
 
     int x, y;
-    game.set_boot(digitalRead(KEY_BOOT) == LOW);   // taps, and the grown-up gesture (3 presses, hold the last)
+    game.set_boot(digitalRead(KEY_BOOT) == LOW || (int32_t)(millis() - diag_boot_until) < 0);   // taps, and the grown-up gesture (3 presses, hold the last)
     if (pwr_pressed()) game.input(up::IN_SELECT, 0, 0);
-    if (touch_read(&x, &y)) game.input(up::IN_TOUCH, x, y);
+    if (touch_read(&x, &y)) { Serial.printf("TOUCH %d %d\n", x, y); game.input(up::IN_TOUCH, x, y); }
+    diag_poll();
     read_accel();
     if (shaken()) game.input(up::IN_SHAKE, 0, 0);
     // tilt-a-cloud: sideways tilt at ~10 Hz, only while that game is open (VERIFY axis and sign)
@@ -381,6 +486,7 @@ void loop() {
     if (panel_on && game.screen_brightness() != bright) { bright = game.screen_brightness(); lcd->setBrightness(bright); }   // dims at night
     audio_level(game.volume());
 
+    if (diag_awake) game.idle_ms = 0;
     uint32_t f = game.tick(dt);
     if (f & up::F_SAVE) save_game();
     if (f & up::F_CLOCK) clock_set_local(game.wall_s);   // a parent set the date and time
@@ -413,6 +519,9 @@ void loop() {
     }
 
     // light sleep would drop the WiFi association: while the link is up only modem sleep (USB power, mostly)
+    // On USB power light sleep saves nothing and takes the USB port down with it (no console, no
+    // flashing without the BOOT button): only on the battery.
     if (panel_on || audio_busy() || clock_busy() || wifi_setup_busy() || ota_busy() || net_busy()) delay(5);
+    else if (game.plugged) delay(20);
     else nap();
 }
