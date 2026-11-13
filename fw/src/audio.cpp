@@ -44,8 +44,21 @@ static int level = -1;
 static OpusDecoder* dec;
 
 // The speaker amp needs a moment after PA_EN before it passes sound: without this lead-in of silence her
-// first syllable was lost (heard on the board).
+// first syllable was lost (heard on the board). Paid once: the amp then stays on AMP_HOLD_MS after the last
+// sound, so a tap's click right after another (feeding, a game) is not 150 ms late (also heard).
 static const int AMP_WAKE_MS = 150;
+static const uint32_t AMP_HOLD_MS = 10000;
+static bool amp_on;
+static uint32_t amp_until;
+static void play_note(int hz, int ms);
+
+static void amp_up() {                     // audio task
+    if (!amp_on) { digitalWrite(PA_EN, HIGH); amp_on = true; play_note(0, AMP_WAKE_MS); }
+}
+
+static void amp_down_later() { play_note(0, 30); amp_until = millis() + AMP_HOLD_MS; }   // silence flushed out
+
+static void amp_off() { if (amp_on) { digitalWrite(PA_EN, LOW); amp_on = false; } }
 
 static void play_note(int hz, int ms) {
     static int16_t buf[2 * 128];           // 128 stereo frames
@@ -78,8 +91,7 @@ static bool say(const uint8_t* bin, uint32_t len, int lang, int index, int64_t g
     if (!dec || !up::pack_clip(bin, len, lang, index, &c)) return false;
     opus_decoder_ctl(dec, OPUS_RESET_STATE);
     playing = true;
-    digitalWrite(PA_EN, HIGH);
-    play_note(0, AMP_WAKE_MS);             // the amp wakes on silence, not on her first syllable
+    amp_up();                              // the amp wakes on silence, not on her first syllable
     static int16_t pcm[960], st[2 * 960];  // up to 60 ms per packet (ours are 20 ms)
     uint32_t skip = c.pre_skip / 3, left = c.samples, spent = 0;   // pre-skip counts at 48 kHz
     const uint8_t* p;
@@ -96,8 +108,7 @@ static bool say(const uint8_t* bin, uint32_t len, int lang, int index, int64_t g
         for (uint32_t i = 0; i < use; i++) st[2 * i] = st[2 * i + 1] = pcm[from + i];
         i2s.write((uint8_t*)st, use * 4);
     }
-    play_note(0, 30);                      // flush silence before muting the amp
-    digitalWrite(PA_EN, LOW);
+    amp_down_later();
     playing = false;
     // measured on the board: decoding time against the length of speech (CPU share of the audio task)
     Serial.printf("voice: %lu ms of speech decoded in %lu ms\n", (unsigned long)(c.samples / 16),
@@ -198,8 +209,10 @@ static void audio_task(void*) {
     Cue c;
     for (;;) {
         if (xQueueReceive(cues, &c, pdMS_TO_TICKS(50)) != pdTRUE) {
+            if (amp_on && (int32_t)(millis() - amp_until) >= 0) amp_off();   // quiet for a while: amp off
             int kind = pending;            // after what she said, and once the last result was taken (rec is reused)
             if (kind >= 0 && rec && !heard_ready && pending.compare_exchange_strong(kind, -1)) {
+                amp_off();                 // no amp hiss in her answer
                 active = kind; cancelled = false; record(kind); active = -1; heard_ready = !cancelled;
             }
             continue;
@@ -209,14 +222,12 @@ static void audio_task(void*) {
         const up::Note* notes = up::melody(c.sfx, &count);
         if (!count) continue;
         playing = true;
-        digitalWrite(PA_EN, HIGH);         // speaker amp on only while a tune plays
-        play_note(0, AMP_WAKE_MS);
+        amp_up();                          // speaker amp on only around sounds
         for (int i = 0; i < count; i++) {
             if (uxQueueMessagesWaiting(cues)) break;   // a newer cue cuts this one short
             play_note(notes[i].hz, notes[i].ms);
         }
-        play_note(0, 30);                  // flush silence before muting the amp
-        digitalWrite(PA_EN, LOW);
+        amp_down_later();
         playing = false;
     }
 }
@@ -307,5 +318,5 @@ bool audio_heard(Heard* out) {
 }
 
 bool audio_busy() {
-    return playing || audio_listening() || heard_ready || (cues && uxQueueMessagesWaiting(cues));
+    return playing || amp_on || audio_listening() || heard_ready || (cues && uxQueueMessagesWaiting(cues));   // (no light sleep under a warm amp: a pop)
 }

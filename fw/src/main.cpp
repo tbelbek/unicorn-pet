@@ -23,6 +23,7 @@
 #include "store.h"
 #include "net.h"
 #include "version.h"
+#include "panel.h"
 
 static const int LCD_CS = 12, LCD_SCLK = 11, LCD_D0 = 4, LCD_D1 = 5, LCD_D2 = 6, LCD_D3 = 7;
 static const int I2C_SDA = 15, I2C_SCL = 14, TP_INT = 21, KEY_BOOT = 0;
@@ -38,7 +39,8 @@ static const float SHAKE_G = 1.2f;                        // |a| - 1 g beyond th
 static const uint32_t I2C_HZ = 400000;
 static const uint32_t LCD_HZ = 40000000;                  // QSPI clock: 80 MHz measured only 44 -> 36 ms a full frame (the byte swap is the cost), not worth the risk
 
-static Arduino_DataBus* bus = new Arduino_ESP32QSPI(LCD_CS, LCD_SCLK, LCD_D0, LCD_D1, LCD_D2, LCD_D3);
+// shared: the library takes SPI2 only around its own writes, so panel.cpp can stream the pixels
+static Arduino_DataBus* bus = new Arduino_ESP32QSPI(LCD_CS, LCD_SCLK, LCD_D0, LCD_D1, LCD_D2, LCD_D3, true);
 // Two batches of this board: SH8601 panel + FT3168 touch (0x38), and newer CO5300 + CST820 (0x15),
 // whose panel needs a 16-pixel column offset (Waveshare's own V2 example and ESP-IDF BSP). The touch
 // chip that answers at boot tells them apart; -DPANEL_CO5300 / -DPANEL_SH8601 force one.
@@ -50,7 +52,6 @@ static SensorQMI8658 imu;
 static bool imu_ok;
 static Preferences prefs;
 static up::Game game;
-static uint16_t* fb;
 static bool panel_on = true;
 
 // ---- TCA9554 IO expander -------------------------------------------------------------------
@@ -100,6 +101,24 @@ static void panel_power(bool on) {
 static uint32_t row_sum[up::SCREEN_H];
 
 static uint32_t diag_render_max, diag_push_max;   // bench: µs, the slowest render and panel send
+static uint32_t touch_at, diag_lat_max, diag_lat_n, diag_lat_sum;   // touch (or bench tap) -> its frame on the panel, ms
+
+// shortcut: render and send take turns on this core. Sending from a task on the other core with a second
+// buffer was tried and measured slower: both cores on PSRAM at once made a frame 3-4x longer.
+static uint16_t* fb;
+
+static void send_rows(const uint16_t* buf, int y0, int y1) {
+    uint32_t t1 = micros();
+    if (panel_fast_ok()) {
+        lcd->startWrite();
+        lcd->writeAddrWindow(0, y0, up::SCREEN_W, y1 - y0 + 1);   // the window, then RAMWR
+        lcd->endWrite();
+        panel_fast_send(buf + y0 * up::SCREEN_W, (uint32_t)up::SCREEN_W * (y1 - y0 + 1));
+    } else {
+        lcd->draw16bitRGBBitmap(0, y0, (uint16_t*)buf + y0 * up::SCREEN_W, up::SCREEN_W, y1 - y0 + 1);
+    }
+    if (micros() - t1 > diag_push_max) diag_push_max = micros() - t1;
+}
 
 static void push_frame() {
     static uint8_t sends;
@@ -122,9 +141,8 @@ static void push_frame() {
     if (y1 < 0) return;                    // nothing changed
     y0 &= ~1;                              // SH8601/CO5300 windows start on an even row...
     y1 |= 1;                               // ...and span an even number of rows
-    uint32_t t1 = micros();
-    lcd->draw16bitRGBBitmap(0, y0, fb + y0 * up::SCREEN_W, up::SCREEN_W, y1 - y0 + 1);
-    if (micros() - t1 > diag_push_max) diag_push_max = micros() - t1;
+    send_rows(fb, y0, y1);
+    if (touch_at) { uint32_t l = millis() - touch_at; touch_at = 0; diag_lat_n++; diag_lat_sum += l; if (l > diag_lat_max) diag_lat_max = l; }
 }
 
 // ---- inputs --------------------------------------------------------------------------------
@@ -294,6 +312,7 @@ void setup() {
     Serial.printf("board: %s panel, touch at 0x%02X\n", v2 ? "CO5300" : "SH8601", touch_addr);
     if (!lcd->begin(LCD_HZ)) Serial.println("display init failed");
     lcd->setBrightness(BRIGHTNESS);
+    if (!panel_fast_begin(LCD_CS, LCD_HZ)) Serial.println("panel: library path (no fast stream)");
 
     imu_ok = imu.begin(Wire, QMI8658_L_SLAVE_ADDRESS, I2C_SDA, I2C_SCL);
     if (imu_ok) {
@@ -367,7 +386,7 @@ static void diag_poll() {
             if (imu_ok) imu.getAccelerometer(x, y, z);
             Serial.printf("INFO fw=%d up=%lus heap=%u psram=%u scene=%d stage=%d screen=%d bright=%d vol=%d lang=%d "
                           "wall=%lu utc=%lu plugged=%d vbus=%d chg=%d batt=%d%% vbat=%dmV "
-                          "acc=%.2f,%.2f,%.2f store=%s routines=%d names=%d listening=%d rst=%d loopmax=%lums slow=%lu render=%luus push=%luus\n",
+                          "acc=%.2f,%.2f,%.2f store=%s routines=%d names=%d listening=%d rst=%d loopmax=%lums slow=%lu render=%luus push=%luus lat=%lu/%lums n=%lu\n",
                           FW_VERSION, (unsigned long)(millis() / 1000), (unsigned)ESP.getFreeHeap(),
                           (unsigned)ESP.getFreePsram(), game.scene, game.stage(), game.screen_on,
                           game.screen_brightness(), game.volume(), game.s.lang, (unsigned long)game.wall_s,
@@ -376,8 +395,9 @@ static void diag_poll() {
                           pmu_ok ? pmu.getBattVoltage() : -1,
                           x, y, z, store_where(), game.has_routines, game.has_names, audio_listening(), (int)esp_reset_reason(),
                           (unsigned long)diag_loop_max, (unsigned long)diag_loop_slow,
-                          (unsigned long)diag_render_max, (unsigned long)diag_push_max);
-            diag_loop_max = diag_loop_slow = diag_render_max = diag_push_max = 0;
+                          (unsigned long)diag_render_max, (unsigned long)diag_push_max,
+                          (unsigned long)(diag_lat_n ? diag_lat_sum / diag_lat_n : 0), (unsigned long)diag_lat_max, (unsigned long)diag_lat_n);
+            diag_loop_max = diag_loop_slow = diag_render_max = diag_push_max = diag_lat_max = diag_lat_n = diag_lat_sum = 0;
         } else if (!strcmp(cmd, "i2c")) {
             Serial.print("I2C");
             for (uint8_t ad = 1; ad < 127; ad++) {
@@ -386,6 +406,7 @@ static void diag_poll() {
             }
             Serial.println();
         } else if (sscanf(cmd, "tap %d %d", &a, &b) == 2) {
+            touch_at = millis();
             game.input(up::IN_TOUCH, a, b);
             Serial.printf("OK tap %d %d scene=%d\n", a, b, game.scene);
         } else if (!strcmp(cmd, "sel")) {
@@ -475,14 +496,14 @@ void loop() {
 
     int x, y;
     game.set_boot(digitalRead(KEY_BOOT) == LOW || (int32_t)(millis() - diag_boot_until) < 0);   // taps, and the grown-up gesture (3 presses, hold the last)
-    if (pwr_pressed()) { Serial.println("KEY PWR"); game.input(up::IN_SELECT, 0, 0); }
+    if (pwr_pressed()) { touch_at = millis(); Serial.println("KEY PWR"); game.input(up::IN_SELECT, 0, 0); }
     { static bool was; bool b = digitalRead(KEY_BOOT) == LOW; if (b && !was) Serial.println("KEY BOOT"); was = b; }
     { static int was = -2; static uint32_t at; if (millis() - at >= 50) { at = millis();   // bench: the PWR line raw
         int v = tca_read(0x00); if (v != was) { Serial.printf("EXIO 0x%02X\n", v); was = v; }
         if (pmu_ok) { pmu.getIrqStatus(); if (pmu.isPekeyShortPressIrq()) Serial.println("PMU PEKEY SHORT");
                       if (pmu.isPekeyLongPressIrq()) Serial.println("PMU PEKEY LONG");
                       if (panel_on) pmu.clearIrqStatus(); } } }   // (dark: pwr_pressed() reads and clears it)
-    if (touch_read(&x, &y)) { Serial.printf("TOUCH %d %d\n", x, y); game.input(up::IN_TOUCH, x, y); }
+    if (touch_read(&x, &y)) { touch_at = millis(); Serial.printf("TOUCH %d %d\n", x, y); game.input(up::IN_TOUCH, x, y); }
     diag_poll();
     read_accel();
     if (shaken()) game.input(up::IN_SHAKE, 0, 0);
@@ -509,7 +530,7 @@ void loop() {
     if (panel_on && game.screen_brightness() != bright) { bright = game.screen_brightness(); lcd->setBrightness(bright); }   // dims at night
     audio_level(game.volume());
 
-    if (diag_awake) game.idle_ms = 0;
+    if (diag_awake) { game.idle_ms = 0; game.play_ms = 0; }   // bench: no screen timeout, no play-time break
     uint32_t f = game.tick(dt);
     if (f & up::F_SAVE) save_game();
     if (f & up::F_CLOCK) clock_set_local(game.wall_s);   // a parent set the date and time
@@ -535,7 +556,8 @@ void loop() {
     static bool pending;
     static uint32_t last_push;
     pending |= (f & up::F_REDRAW) != 0;
-    if (pending && panel_on && millis() - last_push >= 33) {
+    // ~30 fps for animation, but a frame answering a touch goes out at once (it waited up to 33 ms before)
+    if (pending && panel_on && (millis() - last_push >= 33 || touch_at)) {
         push_frame();
         last_push = millis();
         pending = false;

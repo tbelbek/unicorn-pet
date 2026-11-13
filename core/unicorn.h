@@ -517,7 +517,7 @@ int qr_encode(const char* text, u8* modules, int max_side);
 
 // Hit boxes shared by input handling and rendering.
 // menu: buttons centred at MENU_STEP / 2 + i * MENU_STEP; a touch anywhere from MENU_Y0 down takes the nearest
-enum { MENU_Y0 = 368, MENU_Y1 = 434, MENU_STEP = 92 };
+enum { MENU_Y0 = 358, MENU_Y1 = 444, MENU_STEP = 92 };   // 84 x 86 buttons: small fingers
 enum { PET_X0 = 64, PET_Y0 = 100, PET_X1 = 304, PET_Y1 = 350 };   // shifted by Game::pet_x
 enum { HEADER_Y1 = 92 };                          // status bar + name: opens the info screen
 // Settings rows (all list pages): 48 px = 3.75 mm, at most SET_SLOTS on screen. A longer list shows in two

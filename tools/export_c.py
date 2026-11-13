@@ -92,14 +92,16 @@ def font_bitmaps():
     return bottom - top, data
 
 
-# Press Start 2P squeezes İ into a short I that reads as "i"; with the spare top row it gets a
-# full-height I (same as plain I) and its dot above, like every other capital.
-OVERRIDES = {"İ": ["...##...", ".######.", "...##...", "...##...", "...##...", "...##...", "...##...",
+# Press Start 2P squeezes İ into a short I that reads as "i". Its dot gets the spare top row, then an empty
+# row, then a 6-row I: a dot right on the serif read as a bump on the board, not as İ.
+OVERRIDES = {"İ": ["...##...", "........", ".######.", "...##...", "...##...", "...##...", "...##...",
                    ".######.", "........"]}
 
 
 # Accented capitals: Press Start 2P squashes the letter to fit the accent into 8 rows, so they read
-# as lower case. Like İ, they get the spare top row for the accent and a full-height letter below.
+# as lower case. Like İ, they get the spare top row for the accent, then an empty row, then the letter
+# one row shorter (a repeated row dropped). Seen on the board: an accent right on the letter's top row
+# merged into it (Ü read as U, É as a bumpy E), so the gap row is what makes the mark legible.
 ACCENT_ROWS = {"acute": "....##..", "grave": "..##....", "circ": "..####..", "tilde": ".##..##.",
                "dia": ".#...#..", "ring": "...##...", "breve": "..####.."}   # all different per base letter
 ACCENTED = {"À": ("A", "grave"), "Á": ("A", "acute"), "Â": ("A", "circ"), "Ã": ("A", "tilde"), "Ä": ("A", "dia"),
@@ -118,8 +120,11 @@ def accented_overrides(font, pad, top, bottom):
         d.fontmode = "1"
         d.text((0, pad), base, font=font, fill=1)
         rows = ["".join("#" if img.getpixel((x, y)) else "." for x in range(8)) for y in range(top, bottom)]
-        rows[0] = ACCENT_ROWS[mark]
-        out[ch] = rows
+        letter = rows[1:-1]                # the base letter's 7 rows (row 0 spare, the last for descenders)
+        drop = next((i for i in range(len(letter) - 1) if letter[i] == letter[i + 1]), len(letter) // 2)
+        del letter[drop]
+        out[ch] = [ACCENT_ROWS[mark], "........"] + letter + rows[-1:]
+        assert len(out[ch]) == len(rows), ch
     seen = {}
     for ch, rows in out.items():           # two accents on one letter drawn alike: a silent typo on screen
         key = (ACCENTED[ch][0], tuple(rows))   # (Ё and Ë may match: they are the same shape in print too)

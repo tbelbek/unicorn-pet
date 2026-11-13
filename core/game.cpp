@@ -1105,8 +1105,8 @@ void Game::mode_input(int type, int x, int y) {
     case SC_DRESS:
         if (type == IN_TOUCH) {
             if (y >= 340 && y <= 440) {
-                int i = (x - 24) / 86;
-                if (x >= 24 && i >= 0 && i < ACC_COUNT) {
+                int i = (x - 16) / 86;
+                if (x >= 16 && i >= 0 && i < ACC_COUNT) {
                     preview = (u8)i;
                     if (s.accessory != i) want_save = 1;
                     s.accessory = (u8)i;

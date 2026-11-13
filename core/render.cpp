@@ -64,14 +64,30 @@ static void fill(int x0, int y0, int x1, int y1, u16 c) {          // [x0,x1) x 
     if (y0 < 0) y0 = 0;
     if (x1 > SCREEN_W) x1 = SCREEN_W;
     if (y1 > SCREEN_H) y1 = SCREEN_H;
-    for (int y = y0; y < y1; y++)
-        for (int x = x0; x < x1; x++) FB[y * SCREEN_W + x] = c;
+    if (x0 >= x1) return;
+    u32 cc = (u32)c << 16 | c;
+    for (int y = y0; y < y1; y++) {        // two pixels per store: every frame clears and fills a lot
+        u16* p = FB + y * SCREEN_W + x0;
+        int n = x1 - x0;
+        if ((unsigned long)p & 2) { *p++ = c; n--; }   // (unsigned long: pointer-sized here, host and boards)
+        u32* q = (u32*)p;
+        for (; n >= 2; n -= 2) *q++ = cc;
+        if (n) *(u16*)q = c;
+    }
 }
 
+// The same pixels as testing every (x, y) against x²ry² + y²rx² <= rx²ry², one span per row: |x| only
+// shrinks as |y| grows, so each row's edge starts from the last one's.
 static void ellipse(int cx, int cy, int rx, int ry, u16 c) {
-    for (int y = -ry; y <= ry; y++)
-        for (int x = -rx; x <= rx; x++)
-            if ((long long)x * x * ry * ry + (long long)y * y * rx * rx <= (long long)rx * rx * ry * ry) px(cx + x, cy + y, c);
+    long long rr = (long long)rx * rx * ry * ry;
+    int xm = rx;
+    for (int y = 0; y <= ry; y++) {
+        long long yy = (long long)y * y * rx * rx;
+        while (xm >= 0 && (long long)xm * xm * ry * ry + yy > rr) xm--;
+        if (xm < 0) break;
+        fill(cx - xm, cy + y, cx + xm + 1, cy + y + 1, c);
+        if (y) fill(cx - xm, cy - y, cx + xm + 1, cy - y + 1, c);
+    }
 }
 
 static void rrect(int x0, int y0, int x1, int y1, int r, u16 fillc, u16 line, int width) {
@@ -591,17 +607,17 @@ static void menu(const Game& g) {
     u32 t = g.clock_ms + g.acc_ms;
     int rec = g.recommended();
     for (int i = 0; i < MENU_COUNT; i++) {
-        int cx = MENU_STEP / 2 + i * MENU_STEP, scale = 4, dy = 0;
+        int cx = MENU_STEP / 2 + i * MENU_STEP, scale = 5, dy = 0;
         if (i == g.menu)
-            rrect(cx - 36, MENU_Y0, cx + 36, MENU_Y1, 12, SEL, PAL[UP_ACCENT[g.s.character]], 2);
+            rrect(cx - 42, MENU_Y0, cx + 42, MENU_Y1, 14, SEL, PAL[UP_ACCENT[g.s.character]], 2);
         if (i == g.press_item && (int)(g.press_end - t) > 0) {      // dip, then pop past and settle
             int left = (int)(g.press_end - t);
-            scale = left > PRESS_MS * 2 / 3 ? 3 : left > PRESS_MS / 3 ? 5 : 4;
+            scale = left > PRESS_MS * 2 / 3 ? 4 : left > PRESS_MS / 3 ? 6 : 5;
         } else if (i == rec && !g.calm()) {                          // her need gently bounces
             dy = arc(t % 1100, 500, 6);
         }
-        icon(icons[i], scale, cx - UP_ICON_W * scale / 2, 389 - UP_ICON_H * scale / 2 + dy);
-        if (text_w(T(labels[i]), 1) <= 68) text(T(labels[i]), cx, 417, 1, i == g.menu ? INK : DIM);
+        icon(icons[i], scale, cx - UP_ICON_W * scale / 2, 388 - UP_ICON_H * scale / 2 + dy);
+        if (text_w(T(labels[i]), 1) <= 80) text(T(labels[i]), cx, 426, 1, i == g.menu ? INK : DIM);
     }
 }
 
@@ -697,11 +713,13 @@ static void mess(int cx, int base, int size) {
     art(m, h, "w", SHINE, cx - w * s / 2, base - h * s, s);
 }
 
-static void particles(const Game& g) {
+// top: a scene's header ends there; hearts and notes rising into it vanish instead of crossing her name
+static void particles(const Game& g, int top = 0) {
     for (int i = 0; i < NPART; i++) {
         const Part& p = g.part[i];
         if (p.kind == P_NONE) continue;
         int x = p.x + ahead(p.vx * 2, g), y = p.y + ahead(p.vy * 2, g);
+        if (y - 14 < top) continue;
         switch (p.kind) {
         case P_HEART:    x += wave(now(g) + i * 97, 900, 4); icon(IC_HEART, 3, x - 13, y - 12); break;
         case P_STAR:     icon(IC_STAR, 2, x - 9, y - 8); break;
@@ -771,7 +789,7 @@ static void home_like(const Game& g, int state, const char* sub, bool night, int
         if (left > 0) icon(treats[g.treat], left, sx + 34 * SC + 3 - UP_ICON_W * left / 2,
                            sy + (36 + 4) * SC - UP_ICON_H * left);
     }
-    particles(g);
+    particles(g, g.party ? 0 : HEADER_Y1);
     if (show_menu) menu(g);
 }
 
@@ -968,7 +986,7 @@ static void scene_music(const Game& g) {
                        yellow ? rgb(0xFF, 0x9F, 0x43) : YELLOW, yellow ? rgb(0xE8, 0x6A, 0x3A) : rgb(0xFF, 0x9F, 0x43)};
         art(FLOWER[open <= 10 ? 0 : open >= 22 ? 2 : 1], 17, "opqce", cols, cx - 34, cy - 34, 4);
     }
-    particles(g);
+    particles(g, HEADER_Y1);
     // dots for the notes she will sing back
     for (int i = 0; i < g.note_count; i++)
         ellipse(SCREEN_W / 2 - (g.note_count - 1) * 12 + i * 24, 360, 6, 6, RAINBOW[petal_k[g.notes[i]]]);
@@ -1000,7 +1018,7 @@ static void scene_cloud(const Game& g) {
         u16 cols[4] = {v[2], v[0], v[1], INK};
         art(FEATHER, 16, "oabq", cols, fx - 15, fy - 24, 3, i & 1);
     }
-    particles(g);
+    particles(g, HEADER_Y1);
 }
 
 static void scene_dress(const Game& g) {
@@ -1013,7 +1031,7 @@ static void scene_dress(const Game& g) {
     unicorn_side(g, happy ? M_HAPPY : M_IDLE, false, 0, 0);
     acc_draw = -1;
     for (int i = 0; i < ACC_COUNT; i++) {
-        int x0 = 24 + i * 86;
+        int x0 = 16 + i * 86;               // 4 x 78 + 3 x 8 = 336: centred, 16 px each side
         u16 line = i == g.s.accessory ? PAL[UP_ACCENT[g.s.character]] : i == g.preview ? LILAC : TRACK;
         rrect(x0, 352, x0 + 78, 430, 14, SEL, line, 3);
         if (icons[i] < 0) {                // "nothing": a ring with a slash, on the icons' 5 px grid
@@ -1025,7 +1043,7 @@ static void scene_dress(const Game& g) {
             icon(icons[i], 5, x0 + 39 - UP_ICON_W * 5 / 2, 391 - UP_ICON_H * 5 / 2);
         }
     }
-    particles(g);
+    particles(g, HEADER_Y1);
 }
 
 // birthday cake: two tiers, icing, a candle per birthday (up to five), flickering flames
@@ -2125,15 +2143,18 @@ static void scene_away(const Game& g) {
 
 static void scene_game(const Game& g) {
     char line[24];
-    text(T(S_STARS), SCREEN_W / 2, 18, 2, YELLOW);
+    // title, time bar and score share the strip left of the house button (288..360): centred on 140
+    const int cx = 140;
+    bool big = text_w(T(S_STARS), 2) <= 264;   // a long translation drops to the small font, clear of the house
+    text(T(S_STARS), cx, big ? 18 : 22, big ? 2 : 1, YELLOW);
     // rainbow time bar shrinking from both sides
     int left = (int)(GAME_MS - (g.scene_ms < GAME_MS ? g.scene_ms : GAME_MS));
-    int half = 150 * left / GAME_MS;
-    for (int x = SCREEN_W / 2 - half; x < SCREEN_W / 2 + half; x += 6)
+    int half = 120 * left / GAME_MS;
+    for (int x = cx - half; x < cx + half; x += 6)
         fill(x, 44, x + 6, 52, RAINBOW[((x + 2000) / 6) % 7]);
-    icon(IC_STAR, 3, 132, 62);
+    icon(IC_STAR, 3, cx - 52, 62);
     utoa(g.score, line);
-    text(line, 172, 64, 3, INK, 0);
+    text(line, cx - 12, 64, 3, INK, 0);
     // a small unicorn cheering at the bottom, behind the stars so they always stay tappable
     const int sz = UP_SIDE_W * UP_SIDE_H;
     const u8* spr = UP_SIDE + ((g.s.character * UP_SIDE_STATES + ST_HOP) * 2 + g.frame) * sz;
