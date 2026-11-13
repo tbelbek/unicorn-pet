@@ -40,7 +40,7 @@ static WifiNet nets[WIFI_KNOWN_MAX];
 static int nets_n;
 static Job answer_job, tv_job;
 static volatile int want = LINK_OFF;
-static volatile bool held;
+static volatile bool held, joining;     // joining: a join under way (no light sleep then either)
 static ListenerConf conf;
 static bool conf_ok;
 static IPAddress ip;                       // the listener, resolved once per connection
@@ -369,7 +369,9 @@ static void net_task(void*) {
             int n = nets_n;
             memcpy(copy, nets, sizeof copy);
             xSemaphoreGive(mx);
+            joining = true;
             held = n && wifi_join(copy, n);
+            joining = false;
             if (!held) {
                 retry_at = millis() + RETRY_MS;
                 if (answer_job.full) no_listener(answer_job);
@@ -439,7 +441,7 @@ void net_answer(int question, int kind, const uint8_t* wav, uint32_t len) {
 }
 void net_tv_sample(const uint8_t* wav, uint32_t len) { hand_over(tv_job, 0, LK_TV, wav, len); }
 bool net_sample_waiting() { return tv_job.full; }
-bool net_busy() { return held || answer_job.full || tv_job.full; }
+bool net_busy() { return held || joining || answer_job.full || tv_job.full; }
 
 void net_poll(Game& g, uint32_t now) {
     static uint32_t last_snap, last_nets;

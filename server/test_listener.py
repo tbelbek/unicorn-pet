@@ -173,10 +173,54 @@ class Sync(unittest.TestCase):
     def test_conflict_toy_wins_per_key(self):
         s = P.new_state()
         P.page_change(s, {"volume": 1, "brightness": 90})
-        self.toy(s, 1, volume=2)  # changed on the toy's own screen meanwhile
+        self.toy(s, 0, volume=2)  # changed on the toy's own screen meanwhile, before it fetched rev 1
         self.assertEqual((s["settings"]["volume"], s["settings"]["brightness"]), (2, 90))
         self.assertEqual(s["rev"], 2)
         self.assertEqual(P.config_for(s, 1)["settings"]["brightness"], 90)
+
+    def test_late_status_acknowledges_not_overrides(self):
+        s = P.new_state()
+        P.page_change(s, {"volume": 1})  # rev 1
+        fetched = P.config_for(s, 0)
+        P.page_change(s, {"volume": 2})  # rev 2, while the toy's status for rev 1 is still on its way
+        P.toy_report(s, {"rev": fetched["rev"], "settings": fetched["settings"]}, today="2026-11-13")
+        self.assertEqual(s["settings"]["volume"], 2, "the toy only acknowledged rev 1")
+        self.assertEqual(P.config_for(s, 1)["settings"]["volume"], 2)
+        P.toy_report(s, {"rev": 1, "settings": {**fetched["settings"], "calm": True}}, today="2026-11-13")
+        self.assertEqual((s["settings"]["volume"], s["settings"]["calm"]), (2, True), "a real toy edit still wins")
+
+    def test_rev_stays_a_uint32(self):
+        s = P.new_state()
+        for bad in (2**32, -1, 2**64):
+            with self.assertRaises(ValueError):
+                P.toy_report(s, {"rev": bad})
+        s["rev"] = P.REV_MAX
+        P.page_change(s, {"calm": True})
+        self.assertEqual(s["rev"], 0, "wraps instead of leaving the toy's range")
+        with tempfile.TemporaryDirectory() as d:  # a state file an older server wrote with a bad rev
+            st = P.Store(Path(d) / "state.json")
+            st.save({**P.new_state(), "rev": 2**32, "toy": {"rev": 2**32}})
+            self.assertEqual(st.load()["rev"], 1)
+
+    def test_hostile_values_are_escaped_everywhere(self):
+        x = '<script>alert(1)</script>"\''
+        s = P.new_state()
+        today = P.date.today().isoformat()
+        s["days"][today] = {"answers": [{"q": k, "a": x[:10], "t": x} for k in P.QKEYS], "stars": 1}
+        s["toy"].update(last_seen="2026-11-13T10:00:00+01:00", fw=x, battery=x, plugged=x, update=x, rev=x)
+        s["settings"].update(wake_weekday=x, wake_weekend=x, bedtime=x, brightness=x, play_min=x, break_min=x,
+                             holiday_ranges=[[x, x]], tv_test=True, tv_test_since=x)
+        with tempfile.TemporaryDirectory() as d:
+            j, tv = Path(d) / "j", Path(d) / "tv"
+            j.mkdir(), tv.mkdir()
+            (j / "2026-11-13.md").write_text(f"# 2026-11-13\n\n## {x} — {x}\n\n{x}\n\n[ses]({x})\n")
+            (tv / "2026-11-13_200000.json").write_text(json.dumps(
+                {"guess": x, "confidence": x, "label": x, "why": {"top": [[x, 0.5]]}}))
+            cfg = {"journal": j, "tv": tv}
+            for html in (P.tab_rutinler(s), P.tab_gunluk(cfg), P.tab_tv(cfg, s), P.tab_oyuncak(s),
+                         P.page(x, "", "tv").decode(), P.login_page(x).decode()):
+                self.assertEqual(html.count("<script"), html.count("<script>async"), "only the page's own script")
+                self.assertNotIn('"\'', html)
 
     def test_toy_change_shows_on_page(self):
         s = P.new_state()

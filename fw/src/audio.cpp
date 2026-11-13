@@ -9,6 +9,7 @@
 #include "es8311.h"
 #include "opus.h"
 #include "audio.h"
+#include "vad.h"
 #include "store.h"
 #include "../../core/unicorn.h"
 
@@ -19,8 +20,7 @@ static const int16_t AMP = 2500;           // square-wave amplitude out of 32767
 // the microphone: PGA gain (Waveshare's example uses 3 of 0..7 = 18 dB) and the voice-activity detector
 static const es8311_mic_gain_t MIC_GAIN = ES8311_MIC_GAIN_18DB;   // VERIFY on the board: a child at arm's length
 static const int FRAME = 320;              // 20 ms
-static const int VAD_MIN_RMS = 400;        // about -38 dBFS: quieter than this is never speech
-static const int VAD_START_FRAMES = 2, VAD_STOP_MS = 800, VAD_WAIT_MS = 5000, REC_MAX_MS = 6000;
+static const int REC_MAX_MS = 6000;         // (when speech starts and stops: vad.h)
 static const int PREROLL = 15 * FRAME;     // 300 ms kept from before the first word
 static const int REC_SAMPLES = RATE * REC_MAX_MS / 1000 + PREROLL;
 
@@ -136,7 +136,8 @@ static void record(int kind) {
     int16_t* pcm = (int16_t*)(rec + 44);
     int16_t frame[FRAME];
     i2s_channel_enable(i2s.rxChan());      // the microphone's half of I2S only while listening
-    for (int k = 0; k < 5; k++) mic_frame(frame);   // 100 ms: the ADC settles, the speaker's tail fades
+    int room[VAD_ROOM_FRAMES];             // 100 ms: the ADC settles, the speaker's tail fades, and the room's
+    for (int k = 0; k < VAD_ROOM_FRAMES; k++) room[k] = mic_frame(frame);   // level, before she may answer
     started = true;
     Heard h = {kind, false, -90, 0, rec, 44};
     uint32_t n = 0;
@@ -154,27 +155,20 @@ static void record(int kind) {
         for (int k = 0; k < 250 && !cancelled; k++) { mic_frame(pcm + n); n += FRAME; }
         h.speech = true;
     } else {                               // her question's answer: wait for speech, stop after a pause
-        int floor = 0, above = 0, quiet_ms = 0, waited = 0;
-        for (int k = 0; k < 10; k++) { int r = mic_frame(frame); if (r > floor) floor = r; }   // the room
-        int thr = floor * 3 > VAD_MIN_RMS ? floor * 3 : VAD_MIN_RMS;
+        Vad v = vad_begin(room);           // from the first frame on, her answer counts as speech
         while (!cancelled) {
             int16_t* at = h.speech ? pcm + n : pcm + (n % PREROLL);   // before speech: a 300 ms ring
-            int r = mic_frame(at);
+            int step = vad_step(v, mic_frame(at));
             n += FRAME;
-            if (!h.speech) {
-                above = r > thr ? above + 1 : 0;
-                if (above >= VAD_START_FRAMES) {   // speech: the ring, in order, becomes the start
-                    int keep = n < (uint32_t)PREROLL ? n : PREROLL, head = n % PREROLL;
-                    static int16_t tmp[PREROLL];
-                    for (int i = 0; i < keep; i++) tmp[i] = pcm[(head + PREROLL - keep + i) % PREROLL];
-                    memcpy(pcm, tmp, keep * 2);
-                    n = keep;
-                    h.speech = true;
-                } else if ((waited += 20) >= VAD_WAIT_MS) break;   // nothing said
-                continue;
-            }
-            quiet_ms = r > thr ? 0 : quiet_ms + 20;
-            if (quiet_ms >= VAD_STOP_MS || n + FRAME > (uint32_t)REC_SAMPLES) break;
+            if (step == VAD_END) break;    // a pause after speech, or nothing said
+            if (step == VAD_START) {       // speech: the ring, in order, becomes the start
+                int keep = n < (uint32_t)PREROLL ? n : PREROLL, head = n % PREROLL;
+                static int16_t tmp[PREROLL];
+                for (int i = 0; i < keep; i++) tmp[i] = pcm[(head + PREROLL - keep + i) % PREROLL];
+                memcpy(pcm, tmp, keep * 2);
+                n = keep;
+                h.speech = true;
+            } else if (h.speech && n + FRAME > (uint32_t)REC_SAMPLES) break;
         }
         if (!h.speech) n = 0;
     }

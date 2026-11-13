@@ -1820,6 +1820,7 @@ int Game::stars_today() const { return today().known && today().day == s.r_day ?
 // When question q may be asked today, [from, to) in minutes of the day; false if not today.
 static bool q_window(const Game& g, int q, int* from, int* to) {
     int wake = g.wake_min(), bed = g.clock_min(T_BED);
+    if (bed < wake) bed += 1440;           // a bedtime after midnight: her evening runs on past 24:00
     switch (Q_WHEN[q]) {
     case QW_AM: *from = wake; *to = wake + 60; break;
     case QW_PM: case QW_PM_LAST: *from = bed - 90; *to = bed - 30; break;
@@ -1828,7 +1829,14 @@ static bool q_window(const Game& g, int q, int* from, int* to) {
     }
     bool school = !g.free_day();
     if ((Q_DAYS[q] == QD_SCHOOL && !school) || (Q_DAYS[q] == QD_FREE && school) || (g.s.q_off & (1 << q))) return false;
-    return *from >= 0 && *to <= 1440 && *from < *to;   // a window across midnight (a very late bedtime): skipped
+    // A window off this day moves onto it; one across midnight keeps its bigger part. shortcut: the smaller
+    // part is not asked (a wake-up or bedtime near midnight only); asking it too needs a routine day that spans
+    // midnight.
+    if (*to <= 0) { *from += 1440; *to += 1440; }
+    else if (*from >= 1440) { *from -= 1440; *to -= 1440; }
+    if (*from < 0) { if (-*from > *to) { *from += 1440; *to = 1440; } else *from = 0; }
+    else if (*to > 1440) { if (*to - 1440 > 1440 - *from) { *from = 0; *to -= 1440; } else *to = 1440; }
+    return *from < *to;
 }
 static int q_group(int q) { return Q_WHEN[q] == QW_PM_LAST ? QW_PM : Q_WHEN[q]; }
 
@@ -1978,7 +1986,7 @@ void Game::listen_started() {
 
 void Game::listen_result(int a) {
     if (scene != SC_ASK || r_stage == RS_REPLY) return;
-    if (!today().known || !routines_on()) { routine_cancel(); return; }
+    if (!today().known || !routines_on() || quiet()) { routine_cancel(); return; }
     if (a == ANS_NO_LISTENER) {            // nobody to understand her: the child answers with the buttons
         if (r_stage != RS_BUTTONS) { r_stage = RS_BUTTONS; r_at = stamp(); r_sel = 0; dirty = 1; }
         return;
@@ -2205,7 +2213,6 @@ void Game::apply_settings(u32 rev, const Settings& page, u16 present) {
     Settings m = merge_settings(settings(), s.cfg_dirty, page, present);
     auto opt = [&](u8 bit, bool on) { s.opts = (u8)(on ? s.opts | bit : s.opts & ~bit); };
     opt(OPT_NO_ROUTINES, !m.v[K_ROUTINES]);
-    if (!routines_on()) routine_cancel();
     s.q_off = (u16)(~m.v[K_QUESTIONS] & ((1 << Q_COUNT) - 1));
     set_clock_min(T_WAKE, m.v[K_WAKE_WEEKDAY]);
     set_clock_min(T_WAKE_WE, m.v[K_WAKE_WEEKEND]);
@@ -2224,6 +2231,7 @@ void Game::apply_settings(u32 rev, const Settings& page, u16 present) {
     s.break_min = (u8)m.v[K_BREAK_MIN];
     opt(OPT_CALM, m.v[K_CALM]);
     opt(OPT_NO_SHAKE, !m.v[K_SHAKE]);
+    if (!routines_on() || quiet()) routine_cancel();   // switched off, muted or bedtime from the page: no question
     s.cfg_rev = rev;
     want_save = 1;
     dirty = 1;

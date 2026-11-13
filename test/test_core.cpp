@@ -3382,6 +3382,41 @@ TEST(review_fixes_routine_pass2) {
     }
 }
 
+// The third Codex pass (hunt 15): windows near midnight, a remote mute mid-question.
+TEST(review_fixes_routine_pass3) {
+    {   // wake-up and bedtime at 23:30: breakfast in the half hour before midnight, not never
+        Game g = routine_game();
+        g.s.q_off = (u16)~(1 << Q_BREAKFAST) & ((1 << Q_COUNT) - 1);
+        g.set_clock_min(T_WAKE, 23 * 60 + 30); g.set_clock_min(T_WAKE_WE, 23 * 60 + 30); g.set_clock_min(T_BED, 23 * 60 + 30);
+        Asked a[4];
+        EQ(live(g, at(2026, 11, 3, 23, 0), at(2026, 11, 4, 0, 40), ANS_YES, a, 4), 1);
+        EQ(a[0].q, Q_BREAKFAST); CHECK(a[0].minute >= 23 * 60 + 30);
+    }
+    {   // bedtime at 00:30: teeth in the evening before midnight, the happy question just after
+        Game g = routine_game();
+        g.s.q_off = (u16)~(1 << Q_TEETH_PM | 1 << Q_HAPPY) & ((1 << Q_COUNT) - 1);
+        g.set_clock_min(T_BED, 30);
+        Asked a[4];
+        int n = live(g, at(2026, 11, 3, 21, 0), at(2026, 11, 4, 0, 40), ANS_YES, a, 4);
+        EQ(n, 2);
+        EQ(a[0].q, Q_TEETH_PM); CHECK(a[0].minute >= 23 * 60 && a[0].minute < 24 * 60);
+        EQ(a[1].q, Q_HAPPY); CHECK(a[1].minute < 25);
+    }
+    {   // the page mutes the toy while she listens: the question ends, a late answer counts for nothing
+        Game g = routine_game();
+        g.s.q_off = (u16)~(1 << Q_DINNER) & ((1 << Q_COUNT) - 1);
+        g.set_wall(at(2026, 11, 3, 18, 0)); g.tick(100);
+        EQ(g.scene, SC_ASK);
+        g.listen_req = LREQ_NONE; g.listen_started();
+        Settings page = g.settings();
+        page.v[K_VOLUME] = VOL_OFF;
+        g.apply_settings(13, page, 1 << K_VOLUME);
+        CHECK(g.scene != SC_ASK); EQ(g.listen_req, LREQ_CANCEL);
+        g.listen_result(ANS_YES);
+        EQ(g.stars_today(), 0); EQ(g.s.r_ans[Q_DINNER], 0);
+    }
+}
+
 int main() {
     struct { const char* name; void (*fn)(); } tests[] = {
 #define T(n) {#n, n}
@@ -3430,7 +3465,7 @@ int main() {
         T(routine_school_morning), T(routine_weekend_and_holidays), T(routine_evening), T(routine_asks_again_once),
         T(routine_stays_quiet), T(routine_question_flow), T(routine_variants_never_repeat_early), T(save_v7_loads_as_v8),
         T(settings_sync_with_the_parent_page), T(tv_test_mode_listens_only_to_lasting_sound), T(radio_link_policy),
-        T(review_fixes_routine_pass), T(review_fixes_routine_pass2),
+        T(review_fixes_routine_pass), T(review_fixes_routine_pass2), T(review_fixes_routine_pass3),
     };
     for (auto& t : tests) {
         int before = failures;

@@ -27,6 +27,7 @@ DEFAULTS = {  # the toy's own defaults (core/unicorn.h); its first report replac
     "lang": "tr", "volume": 0, "brightness": 180, "play_min": 10, "break_min": 30, "calm": False, "shake": True,
 }
 TV_TEST_DAYS = 7
+REV_MAX = 2**32 - 1  # the toy keeps rev as a uint32 (and refuses a config with a bigger one)
 _TIME = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 JOURNAL_LOCK = threading.Lock()  # every change to a journal day file: an answer's append and a delete
@@ -81,7 +82,16 @@ def sanitize(settings, strict=False):
 
 def new_state():
     return {"rev": 0, "settings": json.loads(json.dumps(DEFAULTS)), "toy_settings": json.loads(json.dumps(DEFAULTS)),
-            "toy": {}, "days": {}}
+            "toy": {}, "days": {}, "served": {}}
+
+
+def _serve(state):
+    """Remember the settings GET /v1/config hands out at this rev (the last few revs): a toy that reports them
+    back acknowledges them, it did not change them."""
+    sv = state.setdefault("served", {})
+    sv[str(state["rev"])] = json.loads(json.dumps(state["settings"]))
+    for old in sorted(sv, key=int)[:-8]:
+        del sv[old]
 
 
 def page_change(state, patch):
@@ -90,7 +100,8 @@ def page_change(state, patch):
     new = {**state["settings"], **patch}
     if new == state["settings"]:
         return False
-    state["settings"], state["rev"] = new, state["rev"] + 1
+    state["settings"], state["rev"] = new, (state["rev"] + 1) & REV_MAX
+    _serve(state)
     return True
 
 
@@ -99,12 +110,15 @@ def toy_report(state, body, today=None):
     if not isinstance(body, dict):
         raise ValueError("JSON object expected")
     toy_rev = body.get("rev", 0)
-    if type(toy_rev) is not int or toy_rev < 0:
+    if type(toy_rev) is not int or not 0 <= toy_rev <= REV_MAX:
         raise ValueError("rev")
     toy = sanitize(body.get("settings") or {})
-    base, page = state["toy_settings"], state["settings"]
-    # shortcut: a page change made between the toy's GET /v1/config and this POST (the same connection,
-    # a second or so) is taken for the toy's; it is never lost silently, the page shows the result.
+    # What the toy started from: the config it fetched since its last report (served at toy_rev), else what it
+    # reported last time. A value that differs from that is the toy's own change; an equal one is just an
+    # acknowledgement, even when the page has moved on since (a status that arrives late cannot undo it).
+    served = state.get("served", {}).get(str(toy_rev))
+    base = served if served is not None and toy_rev != state["toy"].get("rev") else state["toy_settings"]
+    page = state["settings"]
     merged = {**page, **{k: v for k, v in toy.items() if v != base.get(k)}}
     if "questions" in toy:  # per question: the toy switching WATER off does not undo the page switching TEETH_AM off
         bq = base.get("questions", {})
@@ -112,7 +126,8 @@ def toy_report(state, body, today=None):
     toy_full = {**base, **toy}
     state["settings"], state["toy_settings"] = merged, toy_full
     # equal to what the toy has: its rev, so its next GET is a 304; otherwise newer than both
-    state["rev"] = max(state["rev"], toy_rev) + (0 if merged == toy_full else 1)
+    state["rev"] = (max(state["rev"], toy_rev) + (0 if merged == toy_full else 1)) & REV_MAX
+    _serve(state)
     st = state["toy"]
     st.update(rev=toy_rev, last_seen=datetime.now().astimezone().isoformat(timespec="seconds"))
     for k, ok in (("battery", lambda v: type(v) is int and -1 <= v <= 100), ("plugged", lambda v: type(v) is bool),
@@ -146,8 +161,11 @@ class Store:
 
     def load(self):
         try:
-            s = json.loads(self.path.read_text())
-            return {**new_state(), **s}
+            s = {**new_state(), **json.loads(self.path.read_text())}
+            if type(s["rev"]) is not int or not 0 <= s["rev"] <= REV_MAX:  # (an older server took any rev)
+                last = s["toy"].get("rev")
+                s["rev"] = ((last if type(last) is int and 0 <= last <= REV_MAX else 0) + 1) & REV_MAX
+            return s
         except (OSError, ValueError):
             return new_state()
 
@@ -302,12 +320,12 @@ def _seen(state):
 def _pending(state):
     if state["toy"].get("rev") == state["rev"]:
         return ""
-    return (f'<p class="note">Değişiklikler oyuncak bir sonraki bağlandığında ona ulaşır ({_seen(state)}). '
+    return (f'<p class="note">Değişiklikler oyuncak bir sonraki bağlandığında ona ulaşır ({E(_seen(state))}). '
             f'Oyuncak cevaplarda, saat eşitlemede ve TV örneklerinde bağlanır; bu birkaç saat sürebilir.</p>')
 
 
 def _check(name, on, text):
-    return f'<label>{E(text)} <input type="checkbox" name="{name}" {"checked" if on else ""}></label>'
+    return f'<label>{E(text)} <input type="checkbox" name="{E(name)}" {"checked" if on else ""}></label>'
 
 
 QLABEL = {"TEETH_AM": "Diş (sabah)", "TEETH_PM": "Diş (akşam)", "DRESS": "Giyinme", "SCHOOL_CLOTHES": "Okul kıyafeti",
@@ -330,7 +348,7 @@ def tab_rutinler(state):
         day = state["days"].get(d, {"answers": [], "stars": None})
         cell = {}
         for a in day["answers"]:
-            cell[a["q"]] = f'{ANSWER_TR.get(a["a"], a["a"])} <span class="mut">{E(a["t"])}</span>'
+            cell[a["q"]] = f'{E(ANSWER_TR.get(a["a"], str(a["a"])))} <span class="mut">{E(str(a["t"]))}</span>'
         stars = "★" * min(day["stars"], len(QKEYS)) if day.get("stars") else ("" if day.get("stars") is None else "0")
         rows += (f"<tr><td>{date.fromisoformat(d):%d.%m}</td>" + "".join(
             f"<td>{cell.get(k, '')}</td>" for k in QKEYS) + f"<td>{stars}</td></tr>")
@@ -362,6 +380,10 @@ def tab_gunluk(cfg):
     return "".join(out) or '<p class="mut">Henüz kayıt yok.</p>'
 
 
+def _pct(v):
+    return f"{v:.0%}" if type(v) in (int, float) else "?"
+
+
 def tab_tv(cfg, state):
     s = state["settings"]
     since = s.get("tv_test_since") or ""
@@ -382,7 +404,7 @@ def tab_tv(cfg, state):
         rows.append(
             f'<tr data-name="{E(name)}"><td>{E(name.replace("_", " "))}<br>'
             f'<audio controls preload="none" src="/tv/audio/{E(name)}.wav"></audio></td>'
-            f'<td>{"TV" if d.get("guess") == "tv" else "normal"} {d.get("confidence", 0):.0%}'
+            f'<td>{"TV" if d.get("guess") == "tv" else "normal"} {E(_pct(d.get("confidence")))}'
             f'<div class="mut">{E(", ".join(f"{a} {b:.2f}" for a, b in d.get("why", {}).get("top", [])))}</div></td><td>'
             + "".join(f'<button class="alt {"on" if lab == v else ""}" onclick="lab(this,\'{v}\')">{t}</button> '
                       for v, t in (("tv", "TV"), ("not_tv", "normal"))) + "</td></tr>")
@@ -402,7 +424,7 @@ if(r.ok)location.reload();else alert('Kaydedilemedi: '+r.status)}}</script>'''
 
 def tab_oyuncak(state):
     s, t = state["settings"], state["toy"]
-    lang = "".join(f'<option value="{k}" {"selected" if k == s["lang"] else ""}>{k.upper()}</option>' for k in LANGS)
+    lang = "".join(f'<option value="{E(k)}" {"selected" if k == s["lang"] else ""}>{E(k.upper())}</option>' for k in LANGS)
     vol = "".join(f'<option value="{i}" {"selected" if i == s["volume"] else ""}>{n}</option>'
                   for i, n in enumerate(["Normal", "Kısık", "Kapalı"]))
     bat = t.get("battery")
@@ -414,9 +436,9 @@ def tab_oyuncak(state):
     return f'''{_pending(state)}<form method="post" action="/settings"><input type="hidden" name="_tab" value="oyuncak">
 <div class="card"><label>Dil <select name="lang">{lang}</select></label>
 <label>Ses <select name="volume">{vol}</select></label>
-<label>Parlaklık <input type="range" name="brightness" min="1" max="255" value="{s["brightness"]}"></label>
-<label>Oyun süresi (dk) <input type="number" name="play_min" min="1" max="240" value="{s["play_min"]}"></label>
-<label>Mola (dk) <input type="number" name="break_min" min="1" max="240" value="{s["break_min"]}"></label>
+<label>Parlaklık <input type="range" name="brightness" min="1" max="255" value="{E(str(s["brightness"]))}"></label>
+<label>Oyun süresi (dk) <input type="number" name="play_min" min="1" max="240" value="{E(str(s["play_min"]))}"></label>
+<label>Mola (dk) <input type="number" name="break_min" min="1" max="240" value="{E(str(s["break_min"]))}"></label>
 {_check("calm", s["calm"], "Sakin mod")}{_check("shake", s["shake"], "Sallama")}</div><button>Kaydet</button></form>
 <h2>Durum</h2><div class="card">{"".join(f"<label>{k} <span>{E(str(v))}</span></label>" for k, v in info)}</div>'''
 

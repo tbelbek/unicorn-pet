@@ -33,6 +33,11 @@ http: out
 	$(CXX) $(CXXFLAGS) test_http.cpp -o out/test_http
 	./out/test_http
 
+# The firmware's answer detection (fw/src/vad.h), on the host.
+vad: out
+	$(CXX) $(CXXFLAGS) test_vad.cpp -o out/test_vad
+	./out/test_vad
+
 # tools/release.py signs and checks a dummy image with a throwaway key; tampering must fail.
 release:
 	cd .. && uv run --quiet --with cryptography python tools/release.py --selftest
@@ -81,6 +86,6 @@ tour: out
 listener:
 	cd ../server && python3 -W ignore::ResourceWarning -m unittest -q test_listener
 
-all: test monkey tz ota http release i18n portal assets voice emu wasm listener
+all: test monkey tz ota http vad release i18n portal assets voice emu wasm listener
 
-.PHONY: test monkey tz ota http release i18n portal assets emu wasm listener all record tour
+.PHONY: test monkey tz ota http vad release i18n portal assets emu wasm listener all record tour
