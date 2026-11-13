@@ -7,6 +7,7 @@ import os
 import random
 import socket
 import stat
+import struct
 import tempfile
 import threading
 import time
@@ -124,7 +125,8 @@ class Audio(unittest.TestCase):
     def test_wav_validation(self):
         self.assertEqual(len(L.read_wav(wav_bytes([0] * 16000))), 16000)
         for bad in [wav_bytes([0] * 100, rate=44100), wav_bytes([0] * 100, ch=2), wav_bytes([0] * 100, width=1),
-                    wav_bytes([0] * 16000 * 11), b"RIFF....nope", b""]:
+                    wav_bytes([0] * 16000 * 11), b"RIFF....nope", b"",
+                    b"RIFF" + struct.pack("<I", 36) + b"WAVEJUNK" + struct.pack("<I", 100) + b"\0" * 24]:
             with self.assertRaises(ValueError):
                 L.read_wav(bad)
 
@@ -213,6 +215,17 @@ class Sync(unittest.TestCase):
         self.assertEqual(s["settings"]["tv_test_since"], "", "a bad date from the toy is dropped")
         s["settings"]["tv_test_since"] = "2026-99-99"  # a state file from before: the page still renders
         self.assertIn("TV test modu", P.tab_tv({"tv": Path("/nonexistent")}, s))
+        self.toy(s, 2, tv_test=True, tv_test_since="9999-12-31")  # its end date cannot even be written
+        self.assertNotEqual(s["settings"]["tv_test_since"], "9999-12-31")
+        s["settings"]["tv_test_since"] = "9999-12-31"
+        self.assertIn("TV test modu", P.tab_tv({"tv": Path("/nonexistent")}, s))
+        self.toy(s, 3, holiday_ranges=[{"2026-01-01": 0, "2026-01-02": 0}])  # not a pair: dropped, no KeyError
+        self.assertEqual(s["settings"]["holiday_ranges"], [])
+        today = P.date.today().isoformat()  # (the weekly table shows the last seven days)
+        P.toy_report(s, {"rev": 3, "day": {"stars": 10 ** 30}}, today=today)
+        self.assertEqual(s["days"][today]["stars"], 0, "more stars than questions: not kept")
+        s["days"][today]["stars"] = 10 ** 30  # a state file from before: the page still renders
+        self.assertIn("Bu hafta", P.tab_rutinler(s))
 
     def test_status_and_day(self):
         s = P.new_state()

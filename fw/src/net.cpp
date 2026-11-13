@@ -4,6 +4,8 @@
 #include <ESPmDNS.h>
 #include <ArduinoJson.h>
 #include <lwip/sockets.h>
+#include <lwip/dns.h>
+#include <lwip/priv/tcpip_priv.h>
 #include "net.h"
 #include "http_reply.h"
 #include "store.h"
@@ -47,6 +49,33 @@ static uint8_t* jbuf;                      // a journal entry on its way out
 // ---- HTTP -------------------------------------------------------------------------------------------
 static int32_t left(uint32_t deadline) { int32_t ms = (int32_t)(deadline - millis()); return ms > 0 ? ms : 0; }
 
+// Plain DNS with a bounded wait: lwIP's own lookup, answered by a callback on the tcpip thread. The answer
+// lands in static storage tagged with the lookup's number, so a callback that comes after we gave up (or for
+// an older lookup) touches nothing that is gone and is ignored.
+#ifndef CONFIG_LWIP_TCPIP_CORE_LOCKING
+#error "dns_lookup() calls lwIP from the net task: it needs the tcpip core lock"
+#endif
+static volatile uint32_t dns_seq, dns_got, dns_ip;
+static void dns_found(const char*, const ip_addr_t* a, void* arg) {
+    uint32_t seq = (uint32_t)(uintptr_t)arg;
+    if (seq != dns_seq) return;            // a lookup we no longer wait for
+    dns_ip = a && IP_IS_V4(a) ? ip4_addr_get_u32(ip_2_ip4(a)) : 0;
+    dns_got = seq;
+}
+static uint32_t dns_lookup(const char* host, int32_t ms) {   // under `talk`: one lookup at a time
+    uint32_t seq = dns_seq + 1;
+    dns_seq = seq;
+    ip_addr_t a;
+    bool mine = !sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER);
+    if (mine) LOCK_TCPIP_CORE();
+    err_t e = dns_gethostbyname(host, &a, dns_found, (void*)(uintptr_t)seq);
+    if (mine) UNLOCK_TCPIP_CORE();
+    if (e == ERR_OK) return IP_IS_V4(&a) ? ip4_addr_get_u32(ip_2_ip4(&a)) : 0;   // cached or a literal
+    if (e != ERR_INPROGRESS) return 0;
+    for (uint32_t t0 = millis(); dns_got != seq && (int32_t)(millis() - t0) < ms;) delay(10);
+    return dns_got == seq ? dns_ip : 0;
+}
+
 static bool resolve(uint32_t deadline) {
     if (ip != IPAddress(0, 0, 0, 0)) return true;
     int n = strlen(conf.host);
@@ -58,7 +87,7 @@ static bool resolve(uint32_t deadline) {
         int32_t ms = left(deadline);
         ip = MDNS.queryHost(name, ms < 2000 ? ms : 2000);
     } else if (!ip.fromString(conf.host)) {
-        WiFi.hostByName(conf.host, ip);    // shortcut: plain DNS has the resolver's own timeout; the default is mDNS
+        ip = IPAddress(dns_lookup(conf.host, left(deadline)));
     }
     return ip != IPAddress(0, 0, 0, 0);
 }
@@ -91,7 +120,8 @@ static int http(const char* method, const char* path, const uint8_t* body, uint3
     if (!conf_ok || !resolve(deadline)) return -1;
     NetworkClient c;
     int32_t ms_left = left(deadline);
-    if (ms_left <= 0 || !c.connect(ip, conf.port, ms_left)) return -1;
+    if (ms_left <= 0) return -1;
+    if (!c.connect(ip, conf.port, ms_left)) { ip = IPAddress(0, 0, 0, 0); return -1; }   // it may have moved: look again
     String head = String(method) + " " + path + " HTTP/1.1\r\nHost: " + conf.host + ":" + conf.port +
                   "\r\nConnection: close\r\nX-Token: " + conf.token + "\r\nContent-Length: " + len + "\r\n";
     if (type) head += String("Content-Type: ") + type + "\r\n";

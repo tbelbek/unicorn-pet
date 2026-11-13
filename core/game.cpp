@@ -1906,7 +1906,10 @@ int Game::question_due(u32 now) {
 void Game::check_routine() {
     Cal c = today();
     if (!routines_on() || !c.known) return;
-    if (c.day != s.r_day) routine_day();
+    if (c.day != s.r_day) {
+        if (scene == SC_ASK) return;       // a question from before midnight: its answer belongs to its own day
+        routine_day();
+    }
     if ((scene != SC_HOME && scene != SC_LOUNGE) || quiet() || party || greeting || memory_new || petting) return;
     u32 now = c.day * 1440u + c.minute;
     int wake = wake_min();
@@ -1975,7 +1978,7 @@ void Game::listen_started() {
 
 void Game::listen_result(int a) {
     if (scene != SC_ASK || r_stage == RS_REPLY) return;
-    if (!today().known) { routine_cancel(); return; }
+    if (!today().known || !routines_on()) { routine_cancel(); return; }
     if (a == ANS_NO_LISTENER) {            // nobody to understand her: the child answers with the buttons
         if (r_stage != RS_BUTTONS) { r_stage = RS_BUTTONS; r_at = stamp(); r_sel = 0; dirty = 1; }
         return;
@@ -2009,11 +2012,12 @@ void Game::listen_result(int a) {
     dirty = 1;
 }
 
-// The clock stopped being trusted mid-question: she ends it without a word (the second try may still come).
+// The clock stopped being trusted, or the routine was switched off: no routine clip is said (the morning hello
+// too), and a question under way ends without a word (with a trusted clock its second try may still come).
 void Game::routine_cancel() {
+    rclip = 0;
     if (scene != SC_ASK) return;
     if (r_stage <= RS_LISTEN) listen_req = LREQ_CANCEL;
-    rclip = 0;
     routine_done();
 }
 
@@ -2201,6 +2205,7 @@ void Game::apply_settings(u32 rev, const Settings& page, u16 present) {
     Settings m = merge_settings(settings(), s.cfg_dirty, page, present);
     auto opt = [&](u8 bit, bool on) { s.opts = (u8)(on ? s.opts | bit : s.opts & ~bit); };
     opt(OPT_NO_ROUTINES, !m.v[K_ROUTINES]);
+    if (!routines_on()) routine_cancel();
     s.q_off = (u16)(~m.v[K_QUESTIONS] & ((1 << Q_COUNT) - 1));
     set_clock_min(T_WAKE, m.v[K_WAKE_WEEKDAY]);
     set_clock_min(T_WAKE_WE, m.v[K_WAKE_WEEKEND]);

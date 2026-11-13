@@ -3335,6 +3335,53 @@ TEST(review_fixes_routine_pass) {
     }
 }
 
+// The second Codex pass (hunt 14): a question across midnight, routines switched off mid-question, the hello.
+TEST(review_fixes_routine_pass2) {
+    {   // asked at 23:5x, answered after midnight: the answer is the old day's, the new day starts clean after it
+        Game g = routine_game();
+        g.s.q_off = (u16)~(1 << Q_BREAKFAST) & ((1 << Q_COUNT) - 1);
+        g.set_clock_min(T_WAKE, 23 * 60); g.set_clock_min(T_WAKE_WE, 23 * 60); g.set_clock_min(T_BED, 23 * 60);
+        u32 t = at(2026, 11, 3, 23, 0);
+        for (; g.scene != SC_ASK && t < at(2026, 11, 4, 0, 0); t += 60) {
+            g.set_wall(t);
+            for (int k = 0; k < 60 && g.scene != SC_ASK; k++) g.tick(1000);
+        }
+        EQ(g.scene, SC_ASK); EQ(g.r_q, Q_BREAKFAST);
+        g.listen_req = LREQ_NONE; g.listen_started();
+        g.set_wall(at(2026, 11, 4, 0, 0) + 10); g.tick(100);
+        EQ(g.scene, SC_ASK);                   // still her question
+        g.listen_result(ANS_YES);
+        run(g, R_REPLY_MS + 500);
+        EQ(g.s.r_day, at(2026, 11, 4, 0, 0) / 86400);
+        EQ(g.s.r_done & 1 << Q_BREAKFAST, 0); EQ(g.stars_today(), 0);   // the new day's breakfast is still to come
+        EQ(g.s.week[(g.s.r_day + 6) % 7], 1 << Q_BREAKFAST);            // the star went to the day she asked
+    }
+    {   // the page switches routines off while she listens: the question ends, a late answer says nothing
+        Game g = routine_game();
+        g.s.q_off = (u16)~(1 << Q_DINNER) & ((1 << Q_COUNT) - 1);
+        g.set_wall(at(2026, 11, 3, 18, 0)); g.tick(100);
+        EQ(g.scene, SC_ASK);
+        g.listen_req = LREQ_NONE; g.listen_started();
+        Settings page = g.settings();
+        page.v[K_ROUTINES] = 0;
+        g.apply_settings(12, page, 1 << K_ROUTINES);
+        CHECK(g.scene != SC_ASK); EQ(g.listen_req, LREQ_CANCEL);
+        int line, clip;
+        g.take_sfx(&line, &clip); EQ(clip, -1);
+        g.listen_result(ANS_YES);
+        g.take_sfx(&line, &clip); EQ(clip, -1); EQ(g.stars_today(), 0);
+    }
+    {   // the morning hello waiting to be said when the clock stops being trusted: not said
+        Game g = routine_game();
+        g.set_wall(at(2026, 11, 3, 7, 0)); g.tick(100);
+        CHECK(g.s.r_done & 1 << Q_COUNT);       // the hello is queued
+        CHECK(g.rclip != 0);
+        g.set_wall(at(2026, 11, 3, 7, 0), false);
+        int line, clip;
+        g.take_sfx(&line, &clip); EQ(clip, -1);
+    }
+}
+
 int main() {
     struct { const char* name; void (*fn)(); } tests[] = {
 #define T(n) {#n, n}
@@ -3383,7 +3430,7 @@ int main() {
         T(routine_school_morning), T(routine_weekend_and_holidays), T(routine_evening), T(routine_asks_again_once),
         T(routine_stays_quiet), T(routine_question_flow), T(routine_variants_never_repeat_early), T(save_v7_loads_as_v8),
         T(settings_sync_with_the_parent_page), T(tv_test_mode_listens_only_to_lasting_sound), T(radio_link_policy),
-        T(review_fixes_routine_pass),
+        T(review_fixes_routine_pass), T(review_fixes_routine_pass2),
     };
     for (auto& t : tests) {
         int before = failures;

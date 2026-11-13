@@ -5,6 +5,7 @@
 #include <ESP_I2S.h>
 #include <Wire.h>
 #include <math.h>
+#include <atomic>
 #include "es8311.h"
 #include "opus.h"
 #include "audio.h"
@@ -102,7 +103,10 @@ static bool speak(const Cue& c) {
 
 // ---- listening ----------------------------------------------------------------------------------
 
-static volatile int listen_kind = -1;      // a request (up::LK_*), -1 = none
+// A request (up::LK_*, -1 = none) waits in `pending` while a capture runs in `active`: a question that becomes
+// due during a TV level check is recorded right after it, never dropped.
+static std::atomic<int> pending{-1};
+static volatile int active = -1;
 static volatile bool cancelled, started, heard_ready;
 static uint8_t* rec;                       // PSRAM: a WAV header, then up to REC_SAMPLES samples
 static Heard heard;
@@ -177,16 +181,17 @@ static void record(int kind) {
     i2s_channel_disable(i2s.rxChan());
     wav_header(rec, n);
     h.len = 44 + n * 2;
-    heard = h;
-    heard_ready = !cancelled;
+    heard = h;                             // (the task then marks it ready, once `active` is clear)
 }
 
 static void audio_task(void*) {
     Cue c;
     for (;;) {
         if (xQueueReceive(cues, &c, pdMS_TO_TICKS(50)) != pdTRUE) {
-            int kind = listen_kind;
-            if (kind >= 0 && rec) { cancelled = false; record(kind); listen_kind = -1; }   // after what she said
+            int kind = pending;            // after what she said, and once the last result was taken (rec is reused)
+            if (kind >= 0 && rec && !heard_ready && pending.compare_exchange_strong(kind, -1)) {
+                active = kind; cancelled = false; record(kind); active = -1; heard_ready = !cancelled;
+            }
             continue;
         }
         if (speak(c)) continue;
@@ -267,13 +272,12 @@ void audio_play(int sfx, int line, int lang, int clip) {
 }
 
 void audio_listen(int kind) {
-    heard_ready = false;
     started = false;
-    cancelled = false;
-    listen_kind = kind;
+    pending = kind;
 }
 
-void audio_listen_cancel() { cancelled = true; listen_kind = -1; }
+void audio_listen_cancel() { pending = -1; cancelled = true; }
+bool audio_listening() { return pending >= 0 || active >= 0; }
 
 bool audio_listen_started() {
     if (!started) return false;
@@ -282,12 +286,12 @@ bool audio_listen_started() {
 }
 
 bool audio_heard(Heard* out) {
-    if (!heard_ready || listen_kind >= 0) return false;
+    if (!heard_ready) return false;
     heard_ready = false;
     *out = heard;
     return true;
 }
 
 bool audio_busy() {
-    return playing || listen_kind >= 0 || (cues && uxQueueMessagesWaiting(cues));
+    return playing || audio_listening() || heard_ready || (cues && uxQueueMessagesWaiting(cues));
 }

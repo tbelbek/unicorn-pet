@@ -14,7 +14,8 @@ bool audio_busy();           // a tune, a line or a recording is under way (keep
 //   LK_LEVEL: about 1 s, only the level is kept     LK_TV: 5 s
 void audio_mic(bool on);     // main task only (I2C): the codec's microphone path powered up or down
 void audio_listen(int kind);
-void audio_listen_cancel();
+void audio_listen_cancel();  // the request waiting and the capture under way
+bool audio_listening();       // a request waits or a capture runs (the microphone stays powered)
 bool audio_listen_started();  // once per recording: the child can speak now (core: listen_started)
 struct Heard { int kind; bool speech; int db, loud_pct; const uint8_t* wav; uint32_t len; };
 bool audio_heard(Heard* out); // a finished recording; wav (a whole WAV file) stays valid until the next audio_listen

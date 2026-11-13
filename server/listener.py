@@ -107,7 +107,7 @@ def read_wav(body):
             if w.getnframes() > MAX_SECONDS * 16000:
                 raise ValueError("longer than 10 s")
             frames = w.readframes(w.getnframes())
-    except (wave.Error, EOFError) as e:
+    except (wave.Error, EOFError, RuntimeError) as e:  # RuntimeError: a chunk that runs past the end
         raise ValueError(f"not a PCM WAV: {e}")
     pcm = array.array("h")
     pcm.frombytes(frames[: len(frames) // 2 * 2])
@@ -310,6 +310,7 @@ def write_journal(cfg, key, when, text, wav):
 TV_CLASSES = {5: "Speech synthesizer", 132: "Music", 262: "Background music", 263: "Theme music",
               265: "Soundtrack music", 518: "Television", 519: "Radio"}
 _yamnet = None
+_yamnet_lock = threading.Lock()  # one interpreter, not thread-safe: one sample at a time
 
 
 def yamnet_scores(pcm):
@@ -323,17 +324,18 @@ def yamnet_scores(pcm):
     path = DATA / "yamnet.tflite"
     if not path.exists():
         return None
-    if _yamnet is None:
-        _yamnet = Interpreter(model_path=str(path))
-        _yamnet.allocate_tensors()
     x = np.asarray(pcm, dtype=np.float32) / 32768.0
     x = np.pad(x, (0, max(0, 15600 - len(x))))
-    inp, out = _yamnet.get_input_details()[0]["index"], _yamnet.get_output_details()[0]["index"]
     scores = []
-    for i in range(0, len(x) - 15600 + 1, 8000):
-        _yamnet.set_tensor(inp, x[i:i + 15600])
-        _yamnet.invoke()
-        scores.append(_yamnet.get_tensor(out)[0].copy())
+    with _yamnet_lock:
+        if _yamnet is None:
+            _yamnet = Interpreter(model_path=str(path))
+            _yamnet.allocate_tensors()
+        inp, out = _yamnet.get_input_details()[0]["index"], _yamnet.get_output_details()[0]["index"]
+        for i in range(0, len(x) - 15600 + 1, 8000):
+            _yamnet.set_tensor(inp, x[i:i + 15600])
+            _yamnet.invoke()
+            scores.append(_yamnet.get_tensor(out)[0].copy())
     return np.mean(scores, axis=0)
 
 

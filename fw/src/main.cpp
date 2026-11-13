@@ -338,7 +338,7 @@ static void listening(uint32_t f) {
     if (audio_listen_started()) game.listen_started();
     Heard h;
     if (audio_heard(&h)) {
-        audio_mic(false);                     // the microphone is off again between moments
+        if (!audio_listening()) audio_mic(false);   // off again between moments (not with another capture waiting)
         if (h.kind == up::LK_LEVEL) game.level_result(h.db, h.loud_pct);
         else if (h.kind == up::LK_TV) net_tv_sample(h.wav, h.len);
         else if (!h.speech) game.listen_result(up::ANS_SILENT);   // nothing said: nothing to send

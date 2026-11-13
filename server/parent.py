@@ -35,7 +35,7 @@ JOURNAL_LOCK = threading.Lock()  # every change to a journal day file: an answer
 def _is_date(v):
     """A real calendar day as YYYY-MM-DD (not 2026-99-99)."""
     try:
-        return isinstance(v, str) and bool(_DATE.fullmatch(v)) and bool(date.fromisoformat(v))
+        return isinstance(v, str) and bool(_DATE.fullmatch(v)) and 2000 <= date.fromisoformat(v).year <= 2099  # the toy's
     except ValueError:
         return False
 
@@ -52,7 +52,7 @@ def _valid(k, v):
     if k == "holiday_ranges":
         try:
             return isinstance(v, list) and len(v) <= 20 and all(
-                len(r) == 2 and all(_is_date(d) for d in r)
+                isinstance(r, list) and len(r) == 2 and all(_is_date(d) for d in r)
                 and date.fromisoformat(r[0]) <= date.fromisoformat(r[1]) for r in v)
         except (TypeError, ValueError):
             return False
@@ -125,7 +125,7 @@ def toy_report(state, body, today=None):
             raise ValueError("day.answers must be a list")
         answers = [{"q": a["q"], "a": str(a.get("a", ""))[:10], "t": str(a.get("t", ""))[:5]}
                    for a in day.get("answers", [])[:60] if isinstance(a, dict) and a.get("q") in QKEYS]
-        stars = day.get("stars") if type(day.get("stars")) is int else 0
+        stars = day.get("stars") if type(day.get("stars")) is int and 0 <= day["stars"] <= len(QKEYS) else 0
         today = today or date.today().isoformat()
         state["days"][today] = {"answers": answers, "stars": stars}
         for old in sorted(state["days"])[:-35]:  # five weeks are plenty for a weekly table
@@ -331,7 +331,7 @@ def tab_rutinler(state):
         cell = {}
         for a in day["answers"]:
             cell[a["q"]] = f'{ANSWER_TR.get(a["a"], a["a"])} <span class="mut">{E(a["t"])}</span>'
-        stars = "★" * day["stars"] if day.get("stars") else ("" if day.get("stars") is None else "0")
+        stars = "★" * min(day["stars"], len(QKEYS)) if day.get("stars") else ("" if day.get("stars") is None else "0")
         rows += (f"<tr><td>{date.fromisoformat(d):%d.%m}</td>" + "".join(
             f"<td>{cell.get(k, '')}</td>" for k in QKEYS) + f"<td>{stars}</td></tr>")
     return f'''{_pending(state)}<form method="post" action="/settings"><input type="hidden" name="_tab" value="rutinler">
