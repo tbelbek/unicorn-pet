@@ -41,7 +41,7 @@ def reply(s, prefixes, timeout=10.0):
                     return head, base64.b64decode("".join(body))
                 if b:
                     body.append(b)
-        if line.startswith(prefixes):
+        if line.startswith(prefixes) or line[1:].startswith(prefixes):   # (the first byte after open can be lost)
             return line, None
         print("  |", line)                       # the firmware's own log, passed through
     raise TimeoutError(f"no reply starting with {prefixes}")

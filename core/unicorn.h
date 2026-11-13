@@ -441,6 +441,7 @@ struct Game {
     void apply_settings(u32 rev, const Settings& page, u16 present);
     SyncMark sync_mark() const;
     void settings_synced(const SyncMark& sent);
+    void bench_ask(int q) { if (q >= 0 && q < Q_COUNT && has_routines) ask(q); }   // the board's bench console
 
 private:
     void go(u8 sc);

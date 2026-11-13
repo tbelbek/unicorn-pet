@@ -36,7 +36,7 @@ static const float SHAKE_G = 1.2f;                        // |a| - 1 g beyond th
 // Every chip on the shared I2C bus (AXP2101, TCA9554, FT3168, QMI8658, PCF85063, ES8311) does
 // 400 kHz fast mode: touch, PWR and the accelerometer are read 4x faster than at the 100 kHz default.
 static const uint32_t I2C_HZ = 400000;
-static const uint32_t LCD_HZ = 40000000;                  // QSPI clock; VERIFY whether 80 MHz is clean
+static const uint32_t LCD_HZ = 40000000;                  // QSPI clock: 80 MHz measured only 44 -> 36 ms a full frame (the byte swap is the cost), not worth the risk
 
 static Arduino_DataBus* bus = new Arduino_ESP32QSPI(LCD_CS, LCD_SCLK, LCD_D0, LCD_D1, LCD_D2, LCD_D3);
 // Two batches of this board: SH8601 panel + FT3168 touch (0x38), and newer CO5300 + CST820 (0x15),
@@ -99,9 +99,13 @@ static void panel_power(bool on) {
 // A checksum per row decides; a full frame every 64 sends heals any (2^-32) collision.
 static uint32_t row_sum[up::SCREEN_H];
 
+static uint32_t diag_render_max, diag_push_max;   // bench: µs, the slowest render and panel send
+
 static void push_frame() {
     static uint8_t sends;
+    uint32_t t0 = micros();
     up::render(game, fb);
+    if (micros() - t0 > diag_render_max) diag_render_max = micros() - t0;
     ota_frame_pushed(millis());            // a new firmware on trial is kept once it has drawn for a while
     bool full = panel_stale || ++sends % 64 == 0;
     int y0 = up::SCREEN_H, y1 = -1;
@@ -118,7 +122,9 @@ static void push_frame() {
     if (y1 < 0) return;                    // nothing changed
     y0 &= ~1;                              // SH8601/CO5300 windows start on an even row...
     y1 |= 1;                               // ...and span an even number of rows
+    uint32_t t1 = micros();
     lcd->draw16bitRGBBitmap(0, y0, fb + y0 * up::SCREEN_W, up::SCREEN_W, y1 - y0 + 1);
+    if (micros() - t1 > diag_push_max) diag_push_max = micros() - t1;
 }
 
 // ---- inputs --------------------------------------------------------------------------------
@@ -247,6 +253,7 @@ static void nap() {
 
 void setup() {
     Serial.begin(115200);
+    Serial.printf("reset reason %d\n", (int)esp_reset_reason());   // 1 power-on, 3 software, 4 panic, 5-7 watchdogs, 9 brownout
     pinMode(KEY_BOOT, INPUT_PULLUP);
     pinMode(TP_INT, INPUT_PULLUP);
     Wire.begin(I2C_SDA, I2C_SCL);
@@ -323,11 +330,13 @@ void setup() {
 // Lines in, one reply each: how the board is tested on the desk without looking at it.
 //   info | i2c | tap X Y | sel | shake | shot (the framebuffer, base64 RGB565) | mic KIND (0 yes/no, 1 open,
 //   2 level, 3 five raw seconds: the recording back as base64 WAV) | play SFX [LINE [CLIP]] | utc SECONDS_SINCE_2000 |
-//   boot MS (BOOT held that long; "boot 80" is a tap) | awake 0/1 (no screen timeout while testing)
+//   boot MS (BOOT held that long; "boot 80" is a tap) | awake 0/1 (no screen timeout while testing) |
+//   ask Q (her routine question Q now, as if due) | gain 0-7 | slot 0/1
 // Physical access only: nothing secret is printed (no token, no WiFi password).
 static int diag_mic = -1;                     // a bench recording is under way: its result comes here
 static uint32_t diag_boot_until;              // "boot MS": BOOT held down from the bench
-static bool diag_awake;                       // "awake 1": the screen never times out (bench only, not saved)
+static bool diag_awake;
+static uint32_t diag_loop_max, diag_loop_slow;   // the longest loop since the last "info", and loops over 50 ms
 
 static void b64_dump(const uint8_t* p, uint32_t n) {
     static const char T[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -358,14 +367,17 @@ static void diag_poll() {
             if (imu_ok) imu.getAccelerometer(x, y, z);
             Serial.printf("INFO fw=%d up=%lus heap=%u psram=%u scene=%d stage=%d screen=%d bright=%d vol=%d lang=%d "
                           "wall=%lu utc=%lu plugged=%d vbus=%d chg=%d batt=%d%% vbat=%dmV "
-                          "acc=%.2f,%.2f,%.2f store=%s routines=%d names=%d listening=%d\n",
+                          "acc=%.2f,%.2f,%.2f store=%s routines=%d names=%d listening=%d rst=%d loopmax=%lums slow=%lu render=%luus push=%luus\n",
                           FW_VERSION, (unsigned long)(millis() / 1000), (unsigned)ESP.getFreeHeap(),
                           (unsigned)ESP.getFreePsram(), game.scene, game.stage(), game.screen_on,
                           game.screen_brightness(), game.volume(), game.s.lang, (unsigned long)game.wall_s,
                           (unsigned long)rtc_now(), game.plugged, pmu_ok && pmu.isVbusIn(),
                           pmu_ok && pmu.isCharging(), pmu_ok ? pmu.getBatteryPercent() : -1,
                           pmu_ok ? pmu.getBattVoltage() : -1,
-                          x, y, z, store_where(), game.has_routines, game.has_names, audio_listening());
+                          x, y, z, store_where(), game.has_routines, game.has_names, audio_listening(), (int)esp_reset_reason(),
+                          (unsigned long)diag_loop_max, (unsigned long)diag_loop_slow,
+                          (unsigned long)diag_render_max, (unsigned long)diag_push_max);
+            diag_loop_max = diag_loop_slow = diag_render_max = diag_push_max = 0;
         } else if (!strcmp(cmd, "i2c")) {
             Serial.print("I2C");
             for (uint8_t ad = 1; ad < 127; ad++) {
@@ -394,6 +406,9 @@ static void diag_poll() {
         } else if (sscanf(cmd, "play %d %d %d", &a, &b, &d) >= 1) {
             audio_play(a, b, game.s.lang, d);
             Serial.printf("OK play %d %d %d\n", a, b, d);
+        } else if (sscanf(cmd, "ask %d", &a) == 1) {
+            game.bench_ask(a);
+            Serial.printf("OK ask %d scene=%d\n", a, game.scene);
         } else if (sscanf(cmd, "gain %d", &a) == 1 && a >= 0 && a <= 7) {
             audio_mic_gain(a);
             Serial.printf("OK gain %d (%d dB)\n", a, a * 6);
@@ -454,11 +469,19 @@ void loop() {
     static uint32_t last = millis();
     uint32_t now = millis();
     uint32_t dt = now - last;                 // unsigned: survives the 49-day millis() wrap
+    if (dt > diag_loop_max) diag_loop_max = dt;
+    if (dt > 50) diag_loop_slow++;
     last = now;
 
     int x, y;
     game.set_boot(digitalRead(KEY_BOOT) == LOW || (int32_t)(millis() - diag_boot_until) < 0);   // taps, and the grown-up gesture (3 presses, hold the last)
-    if (pwr_pressed()) game.input(up::IN_SELECT, 0, 0);
+    if (pwr_pressed()) { Serial.println("KEY PWR"); game.input(up::IN_SELECT, 0, 0); }
+    { static bool was; bool b = digitalRead(KEY_BOOT) == LOW; if (b && !was) Serial.println("KEY BOOT"); was = b; }
+    { static int was = -2; static uint32_t at; if (millis() - at >= 50) { at = millis();   // bench: the PWR line raw
+        int v = tca_read(0x00); if (v != was) { Serial.printf("EXIO 0x%02X\n", v); was = v; }
+        if (pmu_ok) { pmu.getIrqStatus(); if (pmu.isPekeyShortPressIrq()) Serial.println("PMU PEKEY SHORT");
+                      if (pmu.isPekeyLongPressIrq()) Serial.println("PMU PEKEY LONG");
+                      if (panel_on) pmu.clearIrqStatus(); } } }   // (dark: pwr_pressed() reads and clears it)
     if (touch_read(&x, &y)) { Serial.printf("TOUCH %d %d\n", x, y); game.input(up::IN_TOUCH, x, y); }
     diag_poll();
     read_accel();

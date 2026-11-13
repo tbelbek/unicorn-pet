@@ -43,6 +43,10 @@ static es8311_handle_t codec;
 static int level = -1;
 static OpusDecoder* dec;
 
+// The speaker amp needs a moment after PA_EN before it passes sound: without this lead-in of silence her
+// first syllable was lost (heard on the board).
+static const int AMP_WAKE_MS = 150;
+
 static void play_note(int hz, int ms) {
     static int16_t buf[2 * 128];           // 128 stereo frames
     int frames = RATE * ms / 1000;
@@ -75,6 +79,7 @@ static bool say(const uint8_t* bin, uint32_t len, int lang, int index, int64_t g
     opus_decoder_ctl(dec, OPUS_RESET_STATE);
     playing = true;
     digitalWrite(PA_EN, HIGH);
+    play_note(0, AMP_WAKE_MS);             // the amp wakes on silence, not on her first syllable
     static int16_t pcm[960], st[2 * 960];  // up to 60 ms per packet (ours are 20 ms)
     uint32_t skip = c.pre_skip / 3, left = c.samples, spent = 0;   // pre-skip counts at 48 kHz
     const uint8_t* p;
@@ -205,6 +210,7 @@ static void audio_task(void*) {
         if (!count) continue;
         playing = true;
         digitalWrite(PA_EN, HIGH);         // speaker amp on only while a tune plays
+        play_note(0, AMP_WAKE_MS);
         for (int i = 0; i < count; i++) {
             if (uxQueueMessagesWaiting(cues)) break;   // a newer cue cuts this one short
             play_note(notes[i].hz, notes[i].ms);

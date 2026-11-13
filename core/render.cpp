@@ -824,7 +824,8 @@ static void scene_egg_pick(const Game& g) {
         icon(IC_HEART, 5, SCREEN_W / 2 - UP_ICON_W * 5 / 2, 390);
         if (g.idle_ms > EGG_HINT_MS) hand_hint(g, SCREEN_W / 2 + 40, 420);
     } else if (g.idle_ms > EGG_HINT_MS) {
-        hand_hint(g, EX[0] + 40, EY[0] + 50);
+        // the fingertip (4 px left of x) right under the first egg's middle; it was under its edge, between eggs
+        hand_hint(g, EX[0] + 4, EY[0] + UP_EGG_H * 2 + 6);
     }
 }
 
