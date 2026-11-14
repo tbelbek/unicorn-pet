@@ -407,6 +407,33 @@ TEST(event_pet_hearts_and_rationed_happiness) {
     EQ(g.particles(), 0);                  // and everything fades out
 }
 
+// The firmware draws each frame band by band (render_band) instead of into a PSRAM framebuffer: every band
+// must be the very pixels render() has there, whatever the band height (22 on the board) and the scene.
+static bool bands_match(const Game& g, int h) {
+    static u16 band[SCREEN_W * 64];
+    render(g, fb);
+    for (int y0 = 0; y0 < SCREEN_H; y0 += h) {
+        int y1 = y0 + h < SCREEN_H ? y0 + h : SCREEN_H;
+        render_band(g, band, y0, y1);
+        for (int i = 0; i < (y1 - y0) * SCREEN_W; i++)
+            if (band[i] != fb[y0 * SCREEN_W + i]) return false;
+    }
+    return true;
+}
+
+TEST(render_band_matches_render) {
+    Game e; e.init(7); run(e, 1500);
+    CHECK(bands_match(e, 22)); CHECK(bands_match(e, 7));               // the egg picker
+    Game g = hatched();
+    for (int t = 0; t < 12; t++) { run(g, 700); CHECK(bands_match(g, 22)); CHECK(bands_match(g, 64)); }   // home, wandering
+    tap_header(g); run(g, 300); CHECK(bands_match(g, 22));             // info
+    run(g, INFO_MS + 200);
+    tap_menu(g, MENU_FEED); run(g, 300); CHECK(bands_match(g, 22));    // the snack picker
+    g.input(IN_TOUCH, 61, 200); run(g, 600); CHECK(bands_match(g, 1)); // eating, one row at a time
+    run(g, ACTION_MS);
+    g.set_plugged(true); run(g, 15000); CHECK(bands_match(g, 22));     // on the lounger
+}
+
 TEST(event_info_from_the_header) {
     Game g = hatched();
     tap_header(g);
@@ -3497,7 +3524,7 @@ int main() {
         T(minigame_joy_does_not_depend_on_the_score), T(minigame_stars_keep_coming),
         T(event_play_refused_when_tired), T(event_sleep_until_rested), T(event_sleep_woken_early),
         T(event_wash_dissolves_messes), T(messes_follow_cleanliness),
-        T(event_pet_hearts_and_rationed_happiness), T(event_info_from_the_header),
+        T(event_pet_hearts_and_rationed_happiness), T(event_info_from_the_header), T(render_band_matches_render),
         T(idle_life_blinks_walks_and_hit_box_follows), T(needy_unicorn_stays_put),
         T(cosmetics_pause_while_the_screen_is_dark),
         T(screen_turns_off_and_first_touch_only_wakes), T(menu_strip_takes_the_nearest_button),

@@ -8,6 +8,8 @@
 #include <Wire.h>
 #include <Preferences.h>
 #include <esp_sleep.h>
+#include <esp_timer.h>
+#include <soc/usb_serial_jtag_struct.h>
 #include <driver/gpio.h>
 #include <Arduino_GFX_Library.h>
 #define XPOWERS_CHIP_AXP2101
@@ -72,11 +74,18 @@ static int tca_read(uint8_t reg) {
 
 // As in Waveshare's example: EXIO1/EXIO2 are the panel and touch resets, pulsed low then high;
 // EXIO4 (PWR key) and EXIO5 (PMU IRQ) stay inputs.
+// (EXIO1 is the panel's DSI_PWR_EN. Driving it low while dark was tried: the panel then stays black after
+// SLPOUT + DISPON and would need a full re-init, so it stays high; SLPIN already does most of that saving.)
+static const uint8_t EXIO_LCD_RESET = 1 << 0, EXIO_TP_RESET = 1 << 2;
+static uint8_t tca_out;                   // what the output register holds
+
+static void tca_set(uint8_t v) { tca_out = v; tca_write(0x01, v); }
+
 static void expander_init() {
-    tca_write(0x03, 0xF9);        // config: 1 = input; EXIO1, EXIO2 outputs
-    tca_write(0x01, 0x00);
+    tca_write(0x03, 0xF8);        // config: 1 = input; EXIO0 (panel reset), EXIO1, EXIO2 outputs
+    tca_set(0x00);
     delay(20);
-    tca_write(0x01, 0x06);
+    tca_set(0x07);
     delay(120);
 }
 
@@ -84,11 +93,79 @@ static void expander_init() {
 
 static bool panel_stale = true;           // the panel's content is unknown: send the whole frame
 
+// CST820 register 0xFE: 1 = never auto-sleep. Lit, it must answer every poll; dark, it may doze (a slow
+// scan, ~mA less) and still pulls TP_INT low on a touch, which wakes the nap. Asleep it ignores I2C.
+static bool touch_autosleep(bool allow) {
+    if (touch_addr != CST820_ADDR) return true;
+    Wire.beginTransmission(CST820_ADDR);
+    Wire.write(0xFE);
+    Wire.write(allow ? 0x00 : 0x01);
+    return Wire.endTransmission() == 0;
+}
+
+// The touch chip dozes only while dark on the battery (the nap wakes on TP_INT). Dark on USB power nothing
+// naps, and the chip is polled as before.
+static bool touch_dozing, touch_booting;
+static uint32_t touch_reset_at;
+
+static void touch_doze(bool doze) {
+    if (doze == touch_dozing || touch_addr != CST820_ADDR) return;
+    if (doze) { touch_dozing = touch_autosleep(true); return; }
+    touch_dozing = false;
+    if (touch_autosleep(false)) return;   // awake: it was just touched
+    // woken by PWR, BOOT, a shake, her routine or the cable, it still dozes and misses the write: reset it
+    tca_set(tca_out & ~EXIO_TP_RESET); delay(10); tca_set(tca_out | EXIO_TP_RESET);
+    touch_booting = true;
+    touch_reset_at = millis();
+}
+
+static void touch_booted() {              // after that reset (each loop): "stay awake" once it answers again
+    if (!touch_booting) return;
+    if (touch_autosleep(false) || millis() - touch_reset_at > 500) touch_booting = false;
+}
+
+// CO5300 (datasheet V0.01): dark, it goes to deep standby (DSTBON 4Fh: 3 µA, against ~110-135 µA in plain
+// sleep-in); out of it only by a reset pulse (RESX low > 3 ms, then 5 ms to reload its OTP) and its init again.
+// SLPOUT needs 5 ms before the next command, and 120 ms must pass from SLPIN to SLPOUT. Arduino_CO5300's
+// displayOn()/displayOff() waited 240 ms each way; this wakes in ~20 ms. The SH8601 batch keeps the library's.
+static bool panel_co5300;
+static uint32_t panel_slept_at;
+static bool panel_dispon_due;              // after a reset its memory is noise: DISPON once the first frame is in
+
+static void co5300_w(uint8_t c, uint8_t d) { bus->beginWrite(); bus->writeC8D8(c, d); bus->endWrite(); }
+
+static void co5300_wake() {
+    uint32_t since = millis() - panel_slept_at;
+    if (since < 120) delay(120 - since);
+    tca_set(tca_out & ~EXIO_LCD_RESET); delay(4); tca_set(tca_out | EXIO_LCD_RESET); delay(6);
+    bus->sendCommand(0x11);               // SLPOUT
+    delay(5);
+    co5300_w(0xFE, 0x00);                 // the library's init after that (Arduino_CO5300.h co5300_init_operations)
+    co5300_w(0xC4, 0x80);                 // SPI mode
+    co5300_w(0x3A, 0x55);                 // 16 bits a pixel
+    co5300_w(0x53, 0x20);
+    co5300_w(0x63, 0xFF);                 // HBM brightness
+    co5300_w(0x58, 0x00);                 // high-contrast mode off
+    bus->sendCommand(0x20);               // inversion off (invertDisplay(false))
+    lcd->setRotation(lcd->getRotation()); // MADCTL, as begin() set it
+    lcd->startWrite(); lcd->writeAddrWindow(0, 0, 2, 2); lcd->endWrite();   // the window cache: CASET/PASET reset
+    panel_dispon_due = true;              // push_frame() sends DISPON after the whole first frame
+}
+
 static void panel_power(bool on) {
     if (on == panel_on) return;
-    if (on) { lcd->displayOn(); lcd->setBrightness(game.screen_brightness()); panel_stale = true; }
-    else {
-        lcd->displayOff();        // AMOLED: every pixel off, nothing to leak
+    if (on) {
+        touch_doze(false);                // (a reset of it is waited for in the loop, not here)
+        if (panel_co5300) co5300_wake(); else lcd->displayOn();
+        lcd->setBrightness(game.screen_brightness()); panel_stale = true;
+    } else {
+        if (panel_co5300) {
+            bus->sendCommand(0x28);       // DISPOFF
+            bus->sendCommand(0x10);       // SLPIN: the booster winds down over ~120 ms
+            delay(120);
+            co5300_w(0x4F, 0x01);         // DSTBON
+            panel_slept_at = millis();
+        } else lcd->displayOff();         // AMOLED: every pixel off, nothing to leak
         if (pmu_ok) pmu.clearIrqStatus();   // a press made while lit is not a new one in the dark
     }
     panel_on = on;
@@ -103,8 +180,9 @@ static uint32_t row_sum[up::SCREEN_H];
 static uint32_t diag_render_max, diag_push_max;   // bench: µs, the slowest render and panel send
 static uint32_t touch_at, diag_lat_max, diag_lat_n, diag_lat_sum;   // touch (or bench tap) -> its frame on the panel, ms
 
-// shortcut: render and send take turns on this core. Sending from a task on the other core with a second
-// buffer was tried and measured slower: both cores on PSRAM at once made a frame 3-4x longer.
+// The whole frame in PSRAM: only for the bench's "shot" and when the fast stream is missing (push_frame draws
+// band by band in internal RAM). Sending from a task on the other core was tried before the bands and measured
+// slower: both cores on PSRAM at once made a frame 3-4x longer.
 static uint16_t* fb;
 
 static void send_rows(const uint16_t* buf, int y0, int y1) {
@@ -120,29 +198,93 @@ static void send_rows(const uint16_t* buf, int y0, int y1) {
     if (micros() - t1 > diag_push_max) diag_push_max = micros() - t1;
 }
 
-static void push_frame() {
-    static uint8_t sends;
+static uint32_t diag_frames;                  // bench: push_frame calls (frames rendered), for the fps under a naptest
+
+static uint32_t row_check(const uint16_t* row) {   // FNV-1a over a row, two pixels at a time
+    const uint32_t* w = (const uint32_t*)row;
+    uint32_t s = 2166136261u;
+    for (int i = 0; i < up::SCREEN_W / 2; i++) s = (s ^ *w++) * 16777619u;
+    return s;
+}
+
+static void note_latency() {
+    if (touch_at) { uint32_t l = millis() - touch_at; touch_at = 0; diag_lat_n++; diag_lat_sum += l; if (l > diag_lat_max) diag_lat_max = l; }
+}
+
+// Without the fast stream (no DMA buffers): the whole frame in PSRAM, as before the bands.
+static void push_frame_psram(bool full) {
     uint32_t t0 = micros();
     up::render(game, fb);
     if (micros() - t0 > diag_render_max) diag_render_max = micros() - t0;
-    ota_frame_pushed(millis());            // a new firmware on trial is kept once it has drawn for a while
-    bool full = panel_stale || ++sends % 64 == 0;
     int y0 = up::SCREEN_H, y1 = -1;
-    const uint32_t* w = (const uint32_t*)fb;
     for (int y = 0; y < up::SCREEN_H; y++) {
-        uint32_t s = 2166136261u;
-        for (int i = 0; i < up::SCREEN_W / 2; i++) s = (s ^ *w++) * 16777619u;
+        uint32_t s = row_check(fb + y * up::SCREEN_W);
         if (s == row_sum[y] && !full) continue;
         row_sum[y] = s;
         if (y < y0) y0 = y;
         y1 = y;
     }
+    if (y1 >= 0) {
+        y0 &= ~1;                          // SH8601/CO5300 windows start on an even row...
+        y1 |= 1;                           // ...and span an even number of rows
+        send_rows(fb, y0, y1);
+        note_latency();
+    }
+    if (panel_dispon_due) { bus->sendCommand(0x29); panel_dispon_due = false; }
+}
+
+// The frame band by band in internal RAM (render_band), each band's changed rows swapped to the panel's byte
+// order and sent while the next band is drawn: no 330 KB PSRAM framebuffer written, read back and read again
+// (measured 15.4 ms render + 5.5 ms checksum there, vs ~5.5 ms for all bands here).
+static const int BAND_ROWS = PANEL_BAND_PX / up::SCREEN_W & ~1;   // 22: even, so windows stay on even rows
+
+static void push_frame() {
+    static uint8_t sends;
+    diag_frames++;
+    ota_frame_pushed(millis());            // a new firmware on trial is kept once it has drawn for a while
+    bool full = panel_stale || ++sends % 64 == 0;
     panel_stale = false;
-    if (y1 < 0) return;                    // nothing changed
-    y0 &= ~1;                              // SH8601/CO5300 windows start on an even row...
-    y1 |= 1;                               // ...and span an even number of rows
-    send_rows(fb, y0, y1);
-    if (touch_at) { uint32_t l = millis() - touch_at; touch_at = 0; diag_lat_n++; diag_lat_sum += l; if (l > diag_lat_max) diag_lat_max = l; }
+    if (!panel_fast_ok()) { push_frame_psram(full); return; }
+    uint32_t t0 = micros(), drawing = 0;
+    int on_wire = -1;                      // which band buffer the DMA is reading
+    bool sent = false;
+    for (int k = 0, y = 0; y < up::SCREEN_H; k++, y += BAND_ROWS) {
+        int y1 = y + BAND_ROWS < up::SCREEN_H ? y + BAND_ROWS : up::SCREEN_H;
+        if (on_wire == (k & 1)) { panel_band_wait(); on_wire = -1; }   // (the band before it had nothing to send)
+        uint16_t* band = panel_band(k);
+        uint32_t td = micros();
+        up::render_band(game, band, y, y1);
+        drawing += micros() - td;
+        int r0 = -1, r1 = -1;
+        for (int r = y; r < y1; r++) {
+            uint32_t s = row_check(band + (r - y) * up::SCREEN_W);
+            if (s == row_sum[r] && !full) continue;
+            row_sum[r] = s;
+            if (r0 < 0) r0 = r;
+            r1 = r;
+        }
+        if (r0 < 0) continue;
+        r0 &= ~1;                          // even rows, an even count (y and y1 are even)
+        r1 |= 1;
+        uint32_t* p = (uint32_t*)(band + (r0 - y) * up::SCREEN_W);
+        for (int i = 0, n = (r1 - r0 + 1) * up::SCREEN_W / 2; i < n; i++) {
+            uint32_t v = p[i];
+            p[i] = ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);   // the panel is big-endian
+        }
+        panel_band_wait();                 // the band before is out: the bus is free for the window
+        lcd->startWrite();
+        lcd->writeAddrWindow(0, r0, up::SCREEN_W, r1 - r0 + 1);   // the window, then RAMWR
+        lcd->endWrite();
+        panel_band_send((uint16_t*)p, (uint32_t)(r1 - r0 + 1) * up::SCREEN_W);
+        on_wire = k & 1;
+        sent = true;
+    }
+    panel_band_wait();
+    if (panel_dispon_due) { bus->sendCommand(0x29); panel_dispon_due = false; }   // DISPON: the frame is in
+    if (drawing > diag_render_max) diag_render_max = drawing;
+    uint32_t rest = micros() - t0 - drawing;
+    if (rest > diag_push_max) diag_push_max = rest;
+    if (sent) note_latency();
 }
 
 // ---- inputs --------------------------------------------------------------------------------
@@ -155,17 +297,24 @@ static bool edge(bool down, bool* last, uint32_t* t, uint32_t debounce) {
 // PWR is also the AXP2101's power key. While the screen is dark we only wake every SLEEP_POLL_US,
 // so a child's quick press (~100 ms) would often fall between two looks at EXIO4: the PMU latches
 // a short press as an interrupt flag, which is read (and cleared) instead.
+// One register read per dark wake (INTSTS2, bit 3 = PKEY short press), cleared only when set: the
+// library's getIrqStatus() + clearIrqStatus() are six I2C transactions, every 200 ms all night.
 static bool pmu_short_press() {
     if (!pmu_ok) return false;
-    pmu.getIrqStatus();
-    bool pressed = pmu.isPekeyShortPressIrq();
-    pmu.clearIrqStatus();
-    return pressed;
+    Wire.beginTransmission(AXP2101_SLAVE_ADDRESS);
+    Wire.write(0x49);
+    if (Wire.endTransmission(false) != 0 || Wire.requestFrom((uint8_t)AXP2101_SLAVE_ADDRESS, (uint8_t)1) != 1) return false;
+    if (!(Wire.read() & 0x08)) return false;
+    Wire.beginTransmission(AXP2101_SLAVE_ADDRESS);
+    Wire.write(0x49);
+    Wire.write(0x08);                         // write-1-to-clear
+    Wire.endTransmission();
+    return true;
 }
 
 static bool pwr_pressed() {
     static bool last; static uint32_t t, polled;
-    if (!panel_on) { tca_read(0x00); return pmu_short_press(); }
+    if (!panel_on) return pmu_short_press();
     if (millis() - polled < 20) return false;   // a button, not a sensor: 50 Hz is plenty
     polled = millis();
     int v = tca_read(0x00);
@@ -222,6 +371,37 @@ static bool shaken() {
     return false;
 }
 
+// ---- battery log ---------------------------------------------------------------------------
+// The AXP2101 has no current meter, so what the dark costs is measured the slow way: every 15 min on the
+// battery the level is written to NVS (it survives the 3.3 V cut-off); unplugging starts a new log.
+// Bench "batlog" prints it. 96 records = 24 h; 96 small NVS writes a day are nothing for the flash.
+struct BatRec { uint16_t min; uint16_t mv; uint8_t pct; uint8_t dark_pct; };
+static const int BATLOG_N = 96;
+static const uint32_t BATLOG_MS = 15u * 60000u;
+static BatRec batlog[BATLOG_N];
+static int batlog_n;
+static uint32_t batlog_t0, batlog_last, batlog_dark_ms, batlog_dark_from;
+static bool vbus_now = true;              // the cable, read once a second (true until then: no log at boot)
+
+static void batlog_poll(bool plugged, uint32_t now) {
+    // A log starts only at an unplug seen since boot: a reset on the battery (a crash, an update's restart)
+    // keeps last night's records instead of starting over on top of them.
+    static bool was_plugged = false, logging = false;
+    if (!pmu_ok || now < 5000) return;     // (the plugged state settles over ~2 s after boot: no false start)
+    if (plugged) { was_plugged = true; logging = false; return; }
+    if (was_plugged) {                     // unplugged: a new log, its first record now
+        logging = true;
+        was_plugged = false;
+        batlog_n = 0; batlog_t0 = batlog_last = now; batlog_dark_ms = 0; batlog_dark_from = now;
+    } else if (!logging || now - batlog_last < BATLOG_MS || batlog_n >= BATLOG_N) return;
+    else batlog_last = now;
+    uint32_t span = now - batlog_dark_from;
+    batlog[batlog_n++] = {(uint16_t)((now - batlog_t0) / 60000), (uint16_t)pmu.getBattVoltage(),
+                          (uint8_t)pmu.getBatteryPercent(), (uint8_t)(span ? (uint64_t)batlog_dark_ms * 100 / span : 0)};
+    batlog_dark_ms = 0; batlog_dark_from = now;
+    prefs.putBytes("batlog", batlog, batlog_n * sizeof(BatRec));
+}
+
 // ---- save ----------------------------------------------------------------------------------
 
 static bool keep_old_save;                    // an unreadable save could not be backed up: leave it alone
@@ -259,12 +439,57 @@ static void load_game() {
 
 // Screen off and nothing playing: light-sleep until a touch, BOOT, or the next poll for PWR.
 // millis() keeps counting across light sleep, so the game clock stays right.
-static void nap() {
+static uint32_t touch_listen_until;           // after a pin wake in the dark: stay up and read the touch chip a moment
+
+// bench: what the naps really did (counted always, read with "naps")
+static uint32_t nap_n, nap_err, nap_timer, nap_gpio, nap_other, nap_tp_low, nap_boot_low;
+static uint64_t nap_slept_us;
+static uint64_t nap_awake_us;                 // from one nap's wake to the next nap: the CPU's time awake in the dark
+static int64_t nap_woke_at;
+static uint64_t sect_us[8];                   // ... and where it goes, loop section by section (dark only)
+static int64_t sect_t;
+#define SECT(i) do { int64_t t_ = esp_timer_get_time(); if (!panel_on && nap_woke_at) sect_us[i] += t_ - sect_t; sect_t = t_; } while (0)   // (only loops right after a nap)
+static uint32_t nap_since;                    // millis() when the counters were last cleared
+
+static uint32_t lit_n;                       // lit naps: the gaps between frames (on the battery)
+static uint64_t lit_slept_us;
+
+static void nap(uint32_t us = SLEEP_POLL_US, bool lit = false) {
     gpio_wakeup_enable((gpio_num_t)KEY_BOOT, GPIO_INTR_LOW_LEVEL);
     gpio_wakeup_enable((gpio_num_t)TP_INT, GPIO_INTR_LOW_LEVEL);
     esp_sleep_enable_gpio_wakeup();
-    esp_sleep_enable_timer_wakeup(SLEEP_POLL_US);
-    esp_light_sleep_start();
+    esp_sleep_enable_timer_wakeup(us);
+    if (lit) {                            // counted apart: the dark figures stay the dark's
+        int64_t t0 = esp_timer_get_time();
+        esp_light_sleep_start();
+        lit_slept_us += esp_timer_get_time() - t0;
+        lit_n++;
+        return;
+    }
+    if (digitalRead(TP_INT) == LOW) nap_tp_low++;      // a low level here wakes the nap at once
+    if (digitalRead(KEY_BOOT) == LOW) nap_boot_low++;
+    int64_t t0 = esp_timer_get_time();
+    if (nap_woke_at) nap_awake_us += t0 - nap_woke_at;
+    esp_err_t e = esp_light_sleep_start();
+    nap_woke_at = esp_timer_get_time();
+    nap_slept_us += nap_woke_at - t0;
+    nap_n++;
+    if (e != ESP_OK) nap_err++;
+    switch (esp_sleep_get_wakeup_cause()) {
+    case ESP_SLEEP_WAKEUP_TIMER: nap_timer++; break;
+    case ESP_SLEEP_WAKEUP_GPIO: nap_gpio++; touch_listen_until = millis() + 300; break;   // a finger (or BOOT)
+    default: nap_other++; break;
+    }
+}
+
+// After light sleep the host has given up on the USB-Serial/JTAG port and does not ask again: drop D+'s
+// pull-up for a moment so it sees a fresh plug-in (bench "naptest"; a real plug-in is a real one).
+static void usb_reconnect() {
+    USB_SERIAL_JTAG.conf0.pad_pull_override = 1;
+    USB_SERIAL_JTAG.conf0.dp_pullup = 0;
+    delay(100);
+    USB_SERIAL_JTAG.conf0.dp_pullup = 1;
+    USB_SERIAL_JTAG.conf0.pad_pull_override = 0;
 }
 
 // ---- main ----------------------------------------------------------------------------------
@@ -289,6 +514,13 @@ void setup() {
         // stop before the cell is flat: below ~3.3 V the 3.3 V rail sags and the ESP32/PSRAM misbehave
         // (resets that light the screen again and again), and a Li-ion cell should not go to 2.6 V
         pmu.setSysPowerDownVoltage(3300);
+        // Rails nothing on this board uses (schematic: DC2-4 have no input, ALDO2-4 end at test pads,
+        // BLDO1/2, CPUSLDO and DLDO1/2 at nothing), all on by default. DC1 is VCC3V3, ALDO1 the codec's AVDD + mic.
+        pmu.disableDC2(); pmu.disableDC3(); pmu.disableDC4();
+        pmu.disableALDO2(); pmu.disableALDO3(); pmu.disableALDO4();
+        pmu.disableBLDO1(); pmu.disableBLDO2(); pmu.disableCPUSLDO(); pmu.disableDLDO1(); pmu.disableDLDO2();
+        // ADC channels nobody reads (isVbusIn() is a status bit; the battery's voltage stays on for the %)
+        pmu.disableVbusVoltageMeasure(); pmu.disableSystemVoltageMeasure(); pmu.disableTemperatureMeasure();
         pmu.disableIRQ(XPOWERS_AXP2101_ALL_IRQ);
         pmu.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ);
         pmu.clearIrqStatus();
@@ -310,6 +542,7 @@ void setup() {
         Wire.write(0x01);
         Wire.endTransmission();
         lcd = new Arduino_CO5300(bus, GFX_NOT_DEFINED, 0, up::SCREEN_W, up::SCREEN_H, 16, 0, 0, 0);
+        panel_co5300 = true;
     } else {
         lcd = new Arduino_SH8601(bus, GFX_NOT_DEFINED, 0, up::SCREEN_W, up::SCREEN_H);
     }
@@ -329,6 +562,7 @@ void setup() {
         Serial.println("QMI8658 not found: shake disabled");
     }
     if (!audio_begin()) Serial.println("ES8311 init failed: sound disabled");
+    else if (pmu_ok) audio_set_rail([](bool on) { if (on) pmu.enableALDO1(); else pmu.disableALDO1(); });
     if (!rtc_begin()) Serial.println("PCF85063 not found: breaks count powered time only");
 
     Wire.setClock(I2C_HZ);                    // after every driver's begin(), which may reset it
@@ -354,11 +588,16 @@ void setup() {
 //   info | i2c | tap X Y | sel | shake | shot (the framebuffer, base64 RGB565) | mic KIND (0 yes/no, 1 open,
 //   2 level, 3 five raw seconds: the recording back as base64 WAV) | play SFX [LINE [CLIP]] | utc SECONDS_SINCE_2000 |
 //   boot MS (BOOT held that long; "boot 80" is a tap) | awake 0/1 (no screen timeout while testing) |
-//   ask Q (her routine question Q now, as if due) | gain 0-7 | slot 0/1 | wipe (a new egg, restarts)
+//   ask Q (her routine question Q now, as if due) | gain 0-7 | slot 0/1 | wipe (a new egg, restarts) |
+//   naptest S (S seconds as if on the battery: USB drops until it ends) | naps (what the naps did: slept %, wake
+//   causes, what kept it awake, µs per loop section) | rails (AXP2101 outputs, expander) | codec (ES8311 registers
+//   that differ from boot) | batlog (the battery log: minutes, mV, %, % of it dark)
 // Physical access only: nothing secret is printed (no token, no WiFi password).
 static int diag_mic = -1;                     // a bench recording is under way: its result comes here
 static uint32_t diag_boot_until;              // "boot MS": BOOT held down from the bench
 static bool diag_awake;
+static uint32_t diag_nap_until;               // "naptest S": as if on the battery for S seconds (light sleep drops USB)
+static uint32_t diag_skip[6];                 // loops kept awake while dark, by reason: panel audio clock wifi ota net
 static uint32_t diag_loop_max, diag_loop_slow;   // the longest loop since the last "info", and loops over 50 ms
 
 // A dump is asked for by someone reading the port: wait for room then, or its bytes are lost.
@@ -457,6 +696,73 @@ static void diag_poll() {
         } else if (sscanf(cmd, "awake %d", &a) == 1) {
             diag_awake = a;
             Serial.printf("OK awake %d\n", a);
+        } else if (sscanf(cmd, "naptest %d", &a) == 1 && a > 0 && a <= 600) {
+            nap_n = nap_err = nap_timer = nap_gpio = nap_other = nap_tp_low = nap_boot_low = 0;
+            nap_slept_us = nap_awake_us = lit_slept_us = 0; nap_woke_at = 0; lit_n = 0; diag_frames = 0; nap_since = millis();
+            memset(sect_us, 0, sizeof sect_us);
+            memset(diag_skip, 0, sizeof diag_skip);
+            Serial.printf("OK naptest %d: USB goes away until it ends\n", a);
+            Serial.flush();
+            diag_nap_until = millis() + a * 1000u;
+        } else if (!strcmp(cmd, "naps")) {
+            uint32_t wall = millis() - nap_since;
+            Serial.printf("NAPS n=%lu slept=%lums wall=%lums (%lu%%) timer=%lu gpio=%lu other=%lu err=%lu tp_low=%lu boot_low=%lu "
+                          "skip panel=%lu audio=%lu clock=%lu wifi=%lu ota=%lu net=%lu tp=%d boot=%d ",
+                          (unsigned long)nap_n, (unsigned long)(nap_slept_us / 1000), (unsigned long)wall,
+                          (unsigned long)(wall ? nap_slept_us / 10 / wall : 0), (unsigned long)nap_timer,
+                          (unsigned long)nap_gpio, (unsigned long)nap_other, (unsigned long)nap_err,
+                          (unsigned long)nap_tp_low, (unsigned long)nap_boot_low,
+                          (unsigned long)diag_skip[0], (unsigned long)diag_skip[1], (unsigned long)diag_skip[2],
+                          (unsigned long)diag_skip[3], (unsigned long)diag_skip[4], (unsigned long)diag_skip[5],
+                          digitalRead(TP_INT), digitalRead(KEY_BOOT));
+            Serial.printf("frames=%lu lit_naps=%lu lit_slept=%lums awake=%lums per_wake=%luus sect_us=%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
+                          (unsigned long)diag_frames, (unsigned long)lit_n, (unsigned long)(lit_slept_us / 1000),
+                          (unsigned long)(nap_awake_us / 1000), (unsigned long)(nap_n > 1 ? nap_awake_us / (nap_n - 1) : 0),
+                          (unsigned long)sect_us[0], (unsigned long)sect_us[1], (unsigned long)sect_us[2], (unsigned long)sect_us[3],
+                          (unsigned long)sect_us[4], (unsigned long)sect_us[5], (unsigned long)sect_us[6], (unsigned long)sect_us[7]);
+        } else if (!strcmp(cmd, "batlog")) {
+            BatRec r[BATLOG_N];
+            size_t n = prefs.getBytes("batlog", r, sizeof r) / sizeof(BatRec);
+            Serial.printf("BATLOG n=%u", (unsigned)n);
+            for (size_t i = 0; i < n; i++) Serial.printf(" %u:%umV/%u%%/dark%u", r[i].min, r[i].mv, r[i].pct, r[i].dark_pct);
+            Serial.println();
+        } else if (!strcmp(cmd, "rprof")) {   // where a frame's time goes: render, a plain PSRAM clear, the row checksum
+            const int N = 10, W = up::SCREEN_W, H = up::SCREEN_H;
+            uint32_t t0 = micros();
+            for (int i = 0; i < N; i++) up::render(game, fb);
+            uint32_t t_render = (micros() - t0) / N;
+            t0 = micros();
+            for (int i = 0; i < N; i++) memset(fb, 0, W * H * 2);
+            uint32_t t_clear = (micros() - t0) / N;
+            volatile uint32_t sink = 0;
+            t0 = micros();
+            for (int i = 0; i < N; i++) { const uint32_t* w = (const uint32_t*)fb; uint32_t x = 0; for (int k = 0; k < W * H / 2; k++) x ^= w[k]; sink = x; }
+            uint32_t t_read = (micros() - t0) / N;
+            uint16_t* band = (uint16_t*)heap_caps_malloc(W * 32 * 2, MALLOC_CAP_INTERNAL);
+            uint32_t t_band = 0;
+            if (band) { t0 = micros(); for (int i = 0; i < N; i++) for (int b = 0; b < H / 32; b++) memset(band, b, W * 32 * 2); t_band = (micros() - t0) / N; free(band); }
+            uint32_t t_empty = 0, t_b22 = 0, t_b56 = 0;
+            uint16_t* bb = (uint16_t*)heap_caps_malloc(W * 56 * 2, MALLOC_CAP_INTERNAL);
+            if (bb) {
+                t0 = micros(); for (int i = 0; i < N; i++) up::render_band(game, bb, 0, 0); t_empty = (micros() - t0) / N;
+                t0 = micros(); for (int i = 0; i < N; i++) for (int y = 0; y < H; y += 22) up::render_band(game, bb, y, y + 22); t_b22 = (micros() - t0) / N;
+                t0 = micros(); for (int i = 0; i < N; i++) for (int y = 0; y < H; y += 56) up::render_band(game, bb, y, y + 56); t_b56 = (micros() - t0) / N;
+                free(bb);
+            }
+            up::render(game, fb);
+            panel_stale = true;
+            Serial.printf("OK rprof render=%luus psram_clear=%luus psram_read=%luus internal_clear_x14=%luus empty_pass=%luus bands22=%luus bands56=%luus scene=%d\n",
+                          (unsigned long)t_render, (unsigned long)t_clear, (unsigned long)t_read, (unsigned long)t_band,
+                          (unsigned long)t_empty, (unsigned long)t_b22, (unsigned long)t_b56, game.scene);
+        } else if (!strcmp(cmd, "codec")) {
+            audio_codec_check();
+        } else if (!strcmp(cmd, "rails")) {
+            if (!pmu_ok) { Serial.println("RAILS none"); continue; }
+            Serial.printf("RAILS dc1=%d dc2=%d dc3=%d dc4=%d dc5=%d aldo1=%d aldo2=%d aldo3=%d aldo4=%d bldo1=%d bldo2=%d cpus=%d dldo1=%d dldo2=%d exio=0x%02X cfg=0x%02X out=0x%02X\n",
+                          pmu.isEnableDC1(), pmu.isEnableDC2(), pmu.isEnableDC3(), pmu.isEnableDC4(), pmu.isEnableDC5(),
+                          pmu.isEnableALDO1(), pmu.isEnableALDO2(), pmu.isEnableALDO3(), pmu.isEnableALDO4(),
+                          pmu.isEnableBLDO1(), pmu.isEnableBLDO2(), pmu.isEnableCPUSLDO(), pmu.isEnableDLDO1(),
+                          pmu.isEnableDLDO2(), tca_read(0x00), tca_read(0x03), tca_read(0x01));
         } else if (sscanf(cmd, "boot %d", &a) == 1) {
             diag_boot_until = millis() + a;
             Serial.printf("OK boot %d\n", a);
@@ -505,18 +811,21 @@ static void listening(uint32_t f) {
 }
 
 void loop() {
+    sect_t = esp_timer_get_time();
     static uint32_t last = millis();
     uint32_t now = millis();
     uint32_t dt = now - last;                 // unsigned: survives the 49-day millis() wrap
     if (dt > diag_loop_max) diag_loop_max = dt;
     if (dt > 50) diag_loop_slow++;
+    if (!panel_on) batlog_dark_ms += dt;
     last = now;
 
     int x, y;
-    game.set_boot(digitalRead(KEY_BOOT) == LOW || (int32_t)(millis() - diag_boot_until) < 0);   // taps, and the grown-up gesture (3 presses, hold the last)
+    game.set_boot(digitalRead(KEY_BOOT) == LOW || (diag_boot_until && (int32_t)(millis() - diag_boot_until) < 0));   // taps, and the grown-up gesture (3 presses, hold the last)
     if (pwr_pressed()) { touch_at = millis(); Serial.println("KEY PWR"); game.input(up::IN_SELECT, 0, 0); }
     { static bool was; bool b = digitalRead(KEY_BOOT) == LOW; if (b && !was) Serial.println("KEY BOOT"); was = b; }
-    if (touch_read(&x, &y)) { touch_at = millis(); Serial.printf("TOUCH %d %d\n", x, y); game.input(up::IN_TOUCH, x, y); }
+    bool touch_window = touch_listen_until && (int32_t)(millis() - touch_listen_until) < 0;
+    if ((!touch_dozing || touch_window) && touch_read(&x, &y)) { touch_at = millis(); Serial.printf("TOUCH %d %d\n", x, y); game.input(up::IN_TOUCH, x, y); }
     diag_poll();
     read_accel();
     if (shaken()) game.input(up::IN_SHAKE, 0, 0);
@@ -527,28 +836,37 @@ void loop() {
         int t = (int)(acc_x * 200.0f);        // ~0.5 g of tilt = full deflection
         game.set_tilt(TILT_FLIP ? -t : t);
     }
+    SECT(0);
 
     static uint32_t last_rtc, last_batt;
     if (now - last_rtc >= 1000) {
         last_rtc = now;
         { uint32_t utc = rtc_now();             // one read: local and UTC agree
       game.set_wall(clock_local(utc), clock_trusted(), utc); }   // local for the day, UTC for breaks
-        if (pmu_ok) game.set_plugged(pmu.isVbusIn());   // USB power, not isCharging(): that ends at 100%
+        bool test = diag_nap_until && (int32_t)(millis() - diag_nap_until) < 0;   // bench: as if unplugged
+        if (diag_nap_until && !test) { diag_nap_until = 0; usb_reconnect(); }
+        vbus_now = pmu_ok && pmu.isVbusIn();
+        if (pmu_ok) game.set_plugged(vbus_now && !test);   // USB power, not isCharging(): that ends at 100%
     }
     if (now - last_batt >= 30000 || !last_batt) {        // battery % for the indicator
         last_batt = now ? now : 1;
         game.set_battery(pmu_ok && pmu.isBatteryConnect() ? pmu.getBatteryPercent() : -1);   // -1 on a PMU error too
     }
+    batlog_poll(vbus_now, now);                           // the cable itself: a naptest never starts a log
     static int bright = -1;                              // parent settings: brightness, volume
     if (panel_on && game.screen_brightness() != bright) { bright = game.screen_brightness(); lcd->setBrightness(bright); }   // dims at night
     audio_level(game.volume());
+    SECT(1);
 
     if (diag_awake) { game.idle_ms = 0; game.play_ms = 0; }   // bench: no screen timeout, no play-time break
     uint32_t f = game.tick(dt);
     if (f & up::F_SAVE) save_game();
     if (f & up::F_CLOCK) clock_set_local(game.wall_s);   // a parent set the date and time
+    SECT(2);
     clock_poll(now);                          // WiFi time (and zone) sync, about twice a day
+    SECT(3);
     wifi_setup_poll(game, now, f);            // a parent adding a network from the toy
+    SECT(4);
     // the update's battery rule on fresh readings: the game's plugged state is debounced over ~2 s
     bool power_ok = !(f & up::F_UPDATE) || (pmu_ok && (pmu.isVbusIn() ||
                     (pmu.isBatteryConnect() && pmu.getBatteryPercent() >= 50)));
@@ -563,23 +881,42 @@ void loop() {
         audio_play(sfx, line, game.s.lang, clip);   // a routine clip, her voice, else the tune
     }
     listening(f);                             // (after the sound: she asks first, then listens)
+    SECT(5);
     net_poll(game, now);
+    SECT(6);
     panel_power(f & up::F_SCREEN_ON);
+    touch_doze(!panel_on && !game.plugged);
+    touch_booted();
     // the core asks for a frame on every call while something moves; cap pushes at ~30 fps
     static bool pending;
     static uint32_t last_push;
-    pending |= (f & up::F_REDRAW) != 0;
+    pending |= (f & up::F_REDRAW) != 0 || panel_stale;   // (a woken panel gets its frame even in a still scene)
     // ~30 fps for animation, but a frame answering a touch goes out at once (it waited up to 33 ms before)
     if (pending && panel_on && (millis() - last_push >= 33 || touch_at)) {
-        push_frame();
-        last_push = millis();
+        uint32_t start = millis();         // ~30 fps counts from frame start to frame start (it used to count
+        push_frame();                      // from the end: the frame's own time + 33 ms, ~17 fps measured)
+        last_push = start;
         pending = false;
     }
 
     // light sleep would drop the WiFi association: while the link is up only modem sleep (USB power, mostly)
     // On USB power light sleep saves nothing and takes the USB port down with it (no console, no
     // flashing without the BOOT button): only on the battery.
-    if (panel_on || audio_busy() || clock_busy() || wifi_setup_busy() || ota_busy() || net_busy()) delay(5);
-    else if (game.plugged) delay(20);
-    else nap();
+    SECT(7);
+    audio_sleep();                            // the codec off between sounds (returns at once while one plays)
+    bool busy[6] = {panel_on || touch_window, audio_busy(), clock_busy(), wifi_setup_busy(), ota_busy(), net_busy()};
+    bool awake = false;
+    for (int i = 0; i < 6; i++) if (busy[i]) { awake = true; diag_skip[i]++; break; }
+    if (awake || game.plugged) nap_woke_at = 0;   // (only back-to-back naps count as awake-between-naps)
+    bool others = busy[1] || busy[2] || busy[3] || busy[4] || busy[5];
+    if (game.plugged) delay(awake ? 5 : 20);
+    else if (!awake) nap();
+    else if (panel_on && !others) {
+        // Lit on the battery, nothing playing or on the air: the gap until the next frame (or the next 20 ms
+        // look at PWR) is slept instead of idled at 240 MHz. A touch or BOOT ends it at once (GPIO wake);
+        // waking costs <1 ms, taken off the end so the frame is not late.
+        int32_t gap = pending ? 33 - (int32_t)(millis() - last_push) : 20;
+        if (gap > 20) gap = 20;
+        if (gap >= 4) nap((uint32_t)gap * 1000 - 1000, true); else delay(5);
+    } else delay(5);
 }

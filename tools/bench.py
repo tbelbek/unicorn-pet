@@ -88,7 +88,7 @@ def command(s, cmd, out=None):
         except TimeoutError:
             pass
         return head
-    return reply(s, ("OK", "ERR", "INFO", "I2C"))[0]
+    return reply(s, ("OK", "ERR", "INFO", "I2C", "NAPS", "RAILS", "CODEC", "BATLOG"))[0]
 
 
 def main():

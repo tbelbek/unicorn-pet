@@ -211,9 +211,12 @@ static void audio_task(void*) {
         if (xQueueReceive(cues, &c, pdMS_TO_TICKS(50)) != pdTRUE) {
             if (amp_on && (int32_t)(millis() - amp_until) >= 0) amp_off();   // quiet for a while: amp off
             int kind = pending;            // after what she said, and once the last result was taken (rec is reused)
-            if (kind >= 0 && rec && !heard_ready && pending.compare_exchange_strong(kind, -1)) {
-                amp_off();                 // no amp hiss in her answer
-                active = kind; cancelled = false; record(kind); active = -1; heard_ready = !cancelled;
+            if (kind >= 0 && rec && !heard_ready) {
+                active = kind;             // busy before pending clears: audio_sleep() must not see a gap here
+                if (pending.compare_exchange_strong(kind, -1)) {
+                    amp_off();             // no amp hiss in her answer
+                    cancelled = false; record(kind); active = -1; heard_ready = !cancelled;
+                } else active = -1;
             }
             continue;
         }
@@ -232,6 +235,85 @@ static void audio_task(void*) {
     }
 }
 
+// The codec's whole setup: at boot, and again after every audio_sleep() (es8311_init starts with a reset).
+static bool codec_setup() {
+    const es8311_clock_config_t clk = {
+        .mclk_inverted = false,
+        .sclk_inverted = false,
+        .mclk_from_mclk_pin = true,
+        .mclk_frequency = RATE * 256,
+        .sample_frequency = RATE,
+    };
+    if (es8311_init(codec, &clk, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16) != ESP_OK) return false;
+    es8311_sample_frequency_config(codec, clk.mclk_frequency, clk.sample_frequency);
+    es8311_voice_volume_set(codec, level == 2 ? 0 : level == 1 ? VOLUME * 2 / 3 : VOLUME, NULL);
+    es8311_microphone_config(codec, false);   // the analog mic, as in Waveshare's example
+    es8311_microphone_gain_set(codec, MIC_GAIN);
+    audio_mic(false);                      // powered up only while listening
+    return true;
+}
+
+static bool codec_awake = true;            // false: suspended and MCLK stopped (audio_sleep)
+static uint32_t codec_woke_at;             // the audio task takes a cue off the queue a moment before it is
+static const uint32_t CODEC_GRACE_MS = 3000;   // "playing" (her pack is looked up first): no sleep in between
+static void (*codec_rail)(bool on);        // the codec's analog supply (AVDD + the mic): main.cpp's AXP2101 ALDO1
+void audio_set_rail(void (*rail)(bool on)) { codec_rail = rail; }
+static const int CODEC_REGS = 0x46;
+static uint8_t boot_regs[CODEC_REGS];      // bench: the registers as the first setup left them
+
+static int codec_read(uint8_t reg) {
+    Wire.beginTransmission(ES8311_ADDRRES_0);
+    Wire.write(reg);
+    if (Wire.endTransmission(false) != 0 || Wire.requestFrom((uint8_t)ES8311_ADDRRES_0, (uint8_t)1) != 1) return -1;
+    return Wire.read();
+}
+
+// bench: which registers differ from the first setup (after a sleep and a wake there should be none)
+void audio_codec_check() {
+    Serial.printf("CODEC awake=%d diff:", codec_awake);
+    for (int r = 0; r < CODEC_REGS; r++) {
+        int v = codec_read(r);
+        if (v != boot_regs[r]) Serial.printf(" %02X:%02X>%02X", r, boot_regs[r], v & 0xFF);
+    }
+    Serial.println();
+}
+
+static void codec_write(uint8_t reg, uint8_t v) {
+    Wire.beginTransmission(ES8311_ADDRRES_0);
+    Wire.write(reg);
+    Wire.write(v);
+    Wire.endTransmission();
+}
+
+// Between sounds the codec is suspended and I2S stops (no MCLK): its analog side idled at a few mA all day
+// and all night. Only once the amp is off (audio_busy() covers its 10 s hold), so no pop reaches the speaker.
+// The register sequence is esp-adf's es8311_suspend(). Main task only (I2C).
+void audio_sleep() {
+    if (!codec || !codec_awake || audio_busy() || millis() - codec_woke_at < CODEC_GRACE_MS) return;
+    codec_write(0x32, 0x00);               // DAC volume 0
+    codec_write(0x17, 0x00);               // ADC volume 0
+    codec_write(0x0E, 0xFF);               // PGA, ADC modulator off
+    codec_write(0x12, 0x02);               // DAC off
+    codec_write(0x14, 0x00);
+    codec_write(0x0D, 0xFA);               // analog circuits, VMID off
+    codec_write(0x15, 0x00);
+    codec_write(0x37, 0x08);
+    codec_write(0x45, 0x01);               // (0x01 is also its value after setup: nothing to undo on wake)
+    i2s_channel_disable(i2s.txChan());
+    if (codec_rail) codec_rail(false);     // AVDD and the analog mic off too: the setup starts from a reset anyway
+    codec_awake = false;
+}
+
+// Before any sound or recording: I2S (MCLK) back, then the codec set up again (~3 ms of I2C).
+static void audio_wake() {
+    codec_woke_at = millis();              // also when awake already: a new cue restarts the grace
+    if (!codec || codec_awake) return;
+    if (codec_rail) { codec_rail(true); delay(2); }   // the LDO up before the codec is set up
+    i2s_channel_enable(i2s.txChan());
+    codec_awake = true;
+    if (!codec_setup()) Serial.println("ES8311: no answer after sleep");
+}
+
 bool audio_begin() {
     pinMode(PA_EN, OUTPUT);
     digitalWrite(PA_EN, LOW);
@@ -242,19 +324,8 @@ bool audio_begin() {
     es8311_handle_t es = es8311_create(0, ES8311_ADDRRES_0);
     if (!es) return false;
     codec = es;
-    const es8311_clock_config_t clk = {
-        .mclk_inverted = false,
-        .sclk_inverted = false,
-        .mclk_from_mclk_pin = true,
-        .mclk_frequency = RATE * 256,
-        .sample_frequency = RATE,
-    };
-    if (es8311_init(es, &clk, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16) != ESP_OK) return false;
-    es8311_sample_frequency_config(es, clk.mclk_frequency, clk.sample_frequency);
-    es8311_voice_volume_set(es, VOLUME, NULL);
-    es8311_microphone_config(es, false);   // the analog mic, as in Waveshare's example
-    es8311_microphone_gain_set(es, MIC_GAIN);
-    audio_mic(false);                      // powered up only while listening
+    if (!codec_setup()) { codec = nullptr; return false; }
+    for (int r = 0; r < CODEC_REGS; r++) boot_regs[r] = (uint8_t)codec_read(r);
     int err = 0;
     dec = opus_decoder_create(RATE, 1, &err);   // ~18 KB; libopus' scratch (120 KB) goes to PSRAM on first use
     if (err != OPUS_OK) { dec = nullptr; Serial.println("opus decoder: no memory"); }
@@ -269,6 +340,8 @@ bool audio_begin() {
 // board: 0x02 is es8311_init's "everything on"). Main task only: it is an I2C write.
 void audio_mic(bool on) {
     if (!codec) return;
+    if (on) audio_wake();
+    else if (!codec_awake) return;         // suspended: the mic is off already (0x62 would undo part of it)
     uint8_t v = on ? 0x02 : 0x62;
     Wire.beginTransmission(ES8311_ADDRRES_0);
     Wire.write(0x0E);
@@ -291,11 +364,13 @@ void audio_level(int l) {                  // parent setting: 0 normal, 1 low, 2
 
 void audio_play(int sfx, int line, int lang, int clip) {
     if (level == 2 || !cues || (!sfx && !line && clip < 0)) return;
+    audio_wake();
     Cue c = {(int16_t)sfx, (int16_t)line, (int16_t)clip, (uint8_t)lang, hush.load()};
     xQueueOverwrite(cues, &c);
 }
 
 void audio_listen(int kind) {
+    audio_wake();
     started = false;
     pending = kind;
 }

@@ -5,7 +5,9 @@
 
 namespace up {
 
-static u16* FB;
+static u16* FB;                             // rows [CY0, CY1) of the screen: a whole frame, or one band of it
+static int CY0 = 0, CY1 = SCREEN_H;
+static inline bool off_band(int y0, int y1) { return y1 <= CY0 || y0 >= CY1; }   // rows [y0, y1) miss the band
 static int LANG;                            // the save's language, set at the top of render()
 static_assert(STR_LANGS == LANG_COUNT, "tools/i18n.py and enum Lang disagree");
 static const char* T(int id) { return UP_STR[LANG][id]; }
@@ -56,18 +58,18 @@ static void palettes() {
 
 
 static inline void px(int x, int y, u16 c) {
-    if ((unsigned)x < SCREEN_W && (unsigned)y < SCREEN_H) FB[y * SCREEN_W + x] = c;
+    if ((unsigned)x < SCREEN_W && y >= CY0 && y < CY1) FB[(y - CY0) * SCREEN_W + x] = c;
 }
 
 static void fill(int x0, int y0, int x1, int y1, u16 c) {          // [x0,x1) x [y0,y1)
     if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
+    if (y0 < CY0) y0 = CY0;
     if (x1 > SCREEN_W) x1 = SCREEN_W;
-    if (y1 > SCREEN_H) y1 = SCREEN_H;
+    if (y1 > CY1) y1 = CY1;
     if (x0 >= x1) return;
     u32 cc = (u32)c << 16 | c;
     for (int y = y0; y < y1; y++) {        // two pixels per store: every frame clears and fills a lot
-        u16* p = FB + y * SCREEN_W + x0;
+        u16* p = FB + (y - CY0) * SCREEN_W + x0;
         int n = x1 - x0;
         if ((unsigned long)p & 2) { *p++ = c; n--; }   // (unsigned long: pointer-sized here, host and boards)
         u32* q = (u32*)p;
@@ -79,6 +81,7 @@ static void fill(int x0, int y0, int x1, int y1, u16 c) {          // [x0,x1) x 
 // The same pixels as testing every (x, y) against x²ry² + y²rx² <= rx²ry², one span per row: |x| only
 // shrinks as |y| grows, so each row's edge starts from the last one's.
 static void ellipse(int cx, int cy, int rx, int ry, u16 c) {
+    if (off_band(cy - ry, cy + ry + 1)) return;
     long long rr = (long long)rx * rx * ry * ry;
     int xm = rx;
     for (int y = 0; y <= ry; y++) {
@@ -91,7 +94,7 @@ static void ellipse(int cx, int cy, int rx, int ry, u16 c) {
 }
 
 static void rrect(int x0, int y0, int x1, int y1, int r, u16 fillc, u16 line, int width) {
-    for (int y = y0; y <= y1; y++)
+    for (int y = y0 > CY0 ? y0 : CY0; y <= y1 && y < CY1; y++)
         for (int x = x0; x <= x1; x++) {
             int dx = x < x0 + r ? x0 + r - x : x > x1 - r ? x - (x1 - r) : 0;
             int dy = y < y0 + r ? y0 + r - y : y > y1 - r ? y - (y1 - r) : 0;
@@ -106,7 +109,8 @@ static void rrect(int x0, int y0, int x1, int y1, int r, u16 fillc, u16 line, in
 
 // flip: mirror horizontally (the unicorn walking left); sx/sy: separate scales for squash & stretch
 static void blit2(const u8* data, int w, int h, int sx, int sy, int x0, int y0, const u16* pal, bool flip) {
-    for (int y = 0; y < h; y++)
+    if (sy <= 0 || off_band(y0, y0 + h * sy)) return;
+    for (int y = y0 >= CY0 ? 0 : (CY0 - y0) / sy; y < h && y0 + y * sy < CY1; y++)
         for (int x = 0; x < w; x++) {
             u8 i = data[y * w + (flip ? w - 1 - x : x)];
             if (i) fill(x0 + x * sx, y0 + y * sy, x0 + (x + 1) * sx, y0 + (y + 1) * sy, pal[i]);
@@ -120,7 +124,8 @@ static void blit(const u8* data, int w, int h, int scale, int x0, int y0, const 
 // Small hand-drawn sprites: one char per pixel, '.' is clear, `keys` names the colours in `cols`.
 static void art(const char* const* rows, int h, const char* keys, const u16* cols, int x0, int y0, int s,
                 bool flip = false) {
-    for (int y = 0; y < h; y++) {
+    if (s <= 0 || off_band(y0, y0 + h * s)) return;
+    for (int y = y0 >= CY0 ? 0 : (CY0 - y0) / s; y < h && y0 + y * s < CY1; y++) {
         const char* r = rows[y];
         int w = 0;
         while (r[w]) w++;
@@ -409,7 +414,8 @@ static void text(const char* s, int x, int y, int scale, u16 c, int align = 1) {
         w = text_w(s, scale);
     }
     if (align == 1) x -= w / 2;
-    if (x < 0 || x + w > SCREEN_W) overflows++;
+    if ((x < 0 || x + w > SCREEN_W) && CY0 == 0) overflows++;   // (once per frame, not once per band)
+    if (off_band(y, y + UP_FONT_H * scale)) return;
     u32 cp;
     while (*s) {
         s = next_cp(s, &cp);
@@ -2359,8 +2365,12 @@ static void scene_info(const Game& g) {
     }
 }
 
-void render(const Game& g, u16* fb) {
-    FB = fb;
+void render(const Game& g, u16* fb) { render_band(g, fb, 0, SCREEN_H); }
+
+void render_band(const Game& g, u16* buf, int y0, int y1) {
+    FB = buf;
+    CY0 = y0 < 0 ? 0 : y0;
+    CY1 = y1 > SCREEN_H ? SCREEN_H : y1;
     LANG = g.s.lang < STR_LANGS ? g.s.lang : 0;
     SC = g.stage() == STAGE_FOAL ? 4 : 6;
     palettes();

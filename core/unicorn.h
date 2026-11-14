@@ -507,6 +507,9 @@ private:
 };
 
 void render(const Game& g, u16* fb);             // fb = SCREEN_W * SCREEN_H RGB565
+// Only screen rows [y0, y1), into buf ((y1 - y0) * SCREEN_W pixels): the same pixels as render() has there.
+// The firmware draws a frame band by band in internal RAM (no PSRAM framebuffer traffic).
+void render_band(const Game& g, u16* buf, int y0, int y1);
 int text_overflows();                            // text drawn off the screen since the last call (tests)
 
 // QR code (version <= QR_MAX_VERSION, medium error correction) as side*side bytes of 0/1.

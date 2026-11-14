@@ -451,10 +451,29 @@ pio run -d fw -t upload    # flash over USB-C
 - **Screen off:** the panel is switched off and the ESP32 light-sleeps, woken by touch or BOOT
   at once and every 200 ms to poll PWR (the key sits on the IO expander, which has no wake line).
   A press shorter than that is not lost: PWR is also the AXP2101's power key, which latches a
-  short press as an interrupt flag that the next wake reads.
+  short press as an interrupt flag that the next wake reads (one register read per wake).
+  Measured on the bench (`naptest`): asleep ~99% of the time, ~2 ms awake per wake.
+- **Dark on the battery, everything else idles too:** the CST820 touch chip dozes (its own auto-sleep;
+  a touch still pulls TP_INT low and wakes the nap, and it is reset back awake when PWR, BOOT, a shake
+  or her routine lights the screen), the ES8311 is suspended with I2S (MCLK) stopped and its analog
+  supply (ALDO1: AVDD and the mic) off, and the AXP2101 rails nothing on the board uses (DC2-4,
+  ALDO2-4, BLDO1/2, CPUSLDO, DLDO1/2) and its unread ADC channels are off from boot, as is the RTC's
+  32 kHz CLKOUT. On USB power the touch chip stays awake and is polled as before (nothing naps there).
+- **The panel, dark:** the CO5300 goes to deep standby (datasheet: 3 µA, against ~110-135 µA in plain
+  sleep-in). Out of it takes a reset pulse on EXIO0 and its short init again; with SLPOUT needing only
+  5 ms (Arduino_CO5300's displayOn/Off waited 240 ms each way) a touch in the dark now reaches a lit,
+  drawn screen in ~51 ms (measured; ~300 ms before). DISPON waits for the first whole frame, so the
+  reset's random memory never shows. Not done: cutting DSI_PWR_EN (EXIO1), which left the panel black.
+- **Lit on the battery:** the gap until the next frame (or the next 20 ms look at PWR) is light-slept
+  instead of idled, woken at once by a touch or BOOT. Scenes that animate render for most of each
+  frame, so this mostly helps still ones; the frame rate is unchanged (measured).
+- **Battery log:** every 15 min on the battery the level goes to NVS (`batlog` on the bench prints it:
+  minutes, mV, %, how much of it was dark); unplugging starts a new log. The AXP2101 has no current
+  meter, so this is how the dark's draw is measured: an unplugged night, then the log.
 - **Battery:** the AXP2101 cuts the power at 3.3 V, before the 3.3 V rail sags into resets and
   before the Li-ion cell is over-discharged.
-- **Sound:** ES8311 codec over I2S; the speaker amp is only enabled while a tune or her voice plays.
+- **Sound:** ES8311 codec over I2S; the speaker amp is only enabled while a tune or her voice plays,
+  and the codec itself is suspended between sounds (woken in ~3 ms of I2C, inside the amp's lead-in).
 - **Her voice:** `fw/data/voice.bin` (embedded with `board_build.embed_files`) holds 16 short lines
   in all 10 languages as Opus, 16 kbps, 16 kHz mono, 20 ms frames (~0.5 MB; chosen by ear over the IMA
   ADPCM it replaced, which took 1.7 MB). The core finds a clip and walks its Ogg pages (`pack_clip`,
@@ -470,10 +489,14 @@ pio run -d fw -t upload    # flash over USB-C
 - **Two board batches:** SH8601 panel + FT3168 touch (0x38), or the newer CO5300 panel + CST820
   touch (0x15, with a 16-pixel column offset). The touch chip that answers at boot picks the
   driver; `-DPANEL_CO5300` / `-DPANEL_SH8601` force one. The serial log says which it found.
-- **Frames:** the 368x448 frame (330 KB) lives in the 8 MB PSRAM. After each render a checksum
-  per row picks the rows that changed, and only that band goes over the QSPI bus (an identical
-  frame sends nothing); a full frame every 64 sends and after the panel wakes. The core asks for
-  a frame on every step while anything moves, but breathing moves a pixel only every ~200 ms.
+- **Frames:** drawn band by band (22 rows, `render_band`) into the panel driver's two internal DMA
+  buffers, never into PSRAM: a checksum per row picks each band's changed rows, they are swapped to
+  the panel's byte order and sent while the next band is drawn (an identical frame sends nothing; a
+  full frame every 64 sends and after the panel wakes). Measured: all bands 5.5 ms against 15.4 ms
+  rendering into a PSRAM framebuffer plus 5.5 ms reading it back, ~25 fps where it was ~17 (the 33 ms
+  pacing also counted from a frame's end, not its start), no loop over 50 ms. The core asks for a
+  frame on every step while anything moves, but breathing moves a pixel only every ~200 ms. The PSRAM
+  frame is kept for the bench's `shot` and as the fallback without the fast stream.
 - **Buses and sensors:** the shared I2C bus runs at 400 kHz (every chip on it supports fast
   mode); PWR is polled at 50 Hz, the accelerometer runs alone in its low-power 128 Hz mode and is
   read once per sample. `LCD_HZ` (QSPI, 40 MHz) and `I2C_HZ` sit at the top of `fw/src/main.cpp`.

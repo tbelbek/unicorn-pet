@@ -8,6 +8,8 @@ bool audio_begin();          // after Wire.begin(); false if the codec does not 
 void audio_play(int sfx, int line = 0, int lang = 0, int clip = -1);
 void audio_level(int level);  // 0 normal, 1 low, 2 off (parent setting)
 bool audio_busy();           // a tune, a line or a recording is under way (keeps the CPU awake)
+void audio_set_rail(void (*rail)(bool on));   // the codec's analog supply, switched with audio_sleep/wake
+void audio_sleep();          // main task: the codec suspended and I2S stopped while nothing plays (woken by play/listen)
 
 // Listening (up::LK_*): after whatever is playing, the task records from the codec's ADC, 16 kHz mono.
 //   LK_YESNO / LK_OPEN: from the first speech until 0.8 s of silence, at most 6 s (nothing in 5 s: silent)
@@ -21,4 +23,5 @@ bool audio_listen_started();  // once per recording: the child can speak now (co
 struct Heard { int kind; bool speech; int db, loud_pct; const uint8_t* wav; uint32_t len; };
 bool audio_heard(Heard* out); // a finished recording; wav (a whole WAV file) stays valid until the next audio_listen
 extern int audio_mic_slot;   // bench: 0 left, 1 right
+void audio_codec_check();  // bench: "CODEC awake=.. diff: REG:boot>now ..."
 void audio_mic_gain(int g);  // bench: es8311 mic gain step 0..7 (0, 6 .. 42 dB)

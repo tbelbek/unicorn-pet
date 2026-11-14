@@ -87,3 +87,34 @@ void panel_fast_send(const uint16_t* px, uint32_t n) {
     gpio_set_level((gpio_num_t)cs_pin, 1);
     spi_device_release_bus(dev);
 }
+
+// ---- bands -------------------------------------------------------------------------------------
+// The frame drawn band by band into the two DMA buffers in turn (no PSRAM framebuffer): one band goes
+// out on the wire while the next is drawn. The caller sets the window (Arduino_GFX, which takes the bus
+// itself) between panel_band_wait() and panel_band_send().
+static bool band_busy;
+
+uint16_t* panel_band(int i) { return (uint16_t*)buf[i & 1]; }
+
+void panel_band_send(const uint16_t* px, uint32_t n) {   // px in the panel's byte order, n <= CHUNK_PX
+    static spi_transaction_ext_t t;
+    spi_device_acquire_bus(dev, portMAX_DELAY);
+    gpio_set_level((gpio_num_t)cs_pin, 0);
+    memset(&t, 0, sizeof t);
+    t.base.flags = SPI_TRANS_MODE_QIO;
+    t.base.cmd = 0x32;
+    t.base.addr = 0x003C00;
+    t.base.tx_buffer = px;
+    t.base.length = n * 16;
+    spi_device_queue_trans(dev, &t.base, portMAX_DELAY);
+    band_busy = true;
+}
+
+void panel_band_wait() {
+    if (!band_busy) return;
+    spi_transaction_t* done;
+    spi_device_get_trans_result(dev, &done, portMAX_DELAY);
+    gpio_set_level((gpio_num_t)cs_pin, 1);
+    spi_device_release_bus(dev);
+    band_busy = false;
+}

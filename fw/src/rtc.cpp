@@ -35,6 +35,19 @@ bool rtc_begin() {
     uint8_t r[7];
     present = read_regs(r);
     lost = present && (r[0] & 0x80);       // oscillator stopped: the time is meaningless
+    if (present) {                         // Control_2 COF = 111: CLKOUT off (it runs 32 kHz by default, nothing uses it)
+        Wire.beginTransmission(ADDR);
+        Wire.write(0x01);
+        if (Wire.endTransmission(false) == 0 && Wire.requestFrom(ADDR, (uint8_t)1) == 1) {
+            uint8_t c2 = Wire.read();
+            if ((c2 & 0x07) != 0x07) {
+                Wire.beginTransmission(ADDR);
+                Wire.write(0x01);
+                Wire.write(c2 | 0x07);
+                Wire.endTransmission();
+            }
+        }
+    }
     return present;
 }
 
