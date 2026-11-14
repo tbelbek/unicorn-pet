@@ -41,7 +41,8 @@ static WifiNet nets[WIFI_KNOWN_MAX];
 static int nets_n;
 static Job answer_job, tv_job;
 static volatile int want = LINK_OFF;
-static volatile bool held, joining;     // joining: a join under way (no light sleep then either)
+static volatile bool held, joining;
+static volatile int home_probe;           // the core asked "at home?": 1 asked, 2 yes, 3 no (a scan on the net task)     // joining: a join under way (no light sleep then either)
 static ListenerConf conf;
 static bool conf_ok;
 static IPAddress ip;                       // the listener, resolved once per connection
@@ -205,9 +206,11 @@ static bool parse_config(const String& body, Settings* page, u16* present, u32* 
     for (int l = 0; l < LANG_COUNT; l++) if (!strcmp(lang, LANG_CODE[l])) { page->v[K_LANG] = (u16)l; *present |= 1 << K_LANG; }
     JsonObjectConst q = s["questions"];
     if (!q.isNull()) {                     // partial is fine: missing questions keep their state
-        for (int k = 0; k < Q_COUNT; k++)
-            if (q[Q_KEY[k]].is<bool>()) page->v[K_QUESTIONS] = (u16)(q[Q_KEY[k]] ? page->v[K_QUESTIONS] | 1 << k : page->v[K_QUESTIONS] & ~(1 << k));
-        *present |= 1 << K_QUESTIONS;
+        for (int k = 0; k < Q_COUNT; k++) {
+            u16& v = page->v[k < 16 ? K_QUESTIONS : K_QUESTIONS2];   // 16 questions a key
+            if (q[Q_KEY[k]].is<bool>()) v = (u16)(q[Q_KEY[k]] ? v | 1 << (k & 15) : v & ~(1 << (k & 15)));
+        }
+        *present |= 1 << K_QUESTIONS | 1 << K_QUESTIONS2;
     }
     if (s["tv_test_since"].is<const char*>()) page->tv_day = (u16)day_of(s["tv_test_since"]);   // "" -> 0: today
     JsonArrayConst hr = s["holiday_ranges"];
@@ -230,7 +233,7 @@ static String status_json(const Snap& sn, const Settings& st, u32 rev) {
     char t[16];
     s["routines"] = st.v[K_ROUTINES] != 0;
     JsonObject q = s["questions"].to<JsonObject>();
-    for (int k = 0; k < Q_COUNT; k++) q[Q_KEY[k]] = (st.v[K_QUESTIONS] >> k & 1) != 0;
+    for (int k = 0; k < Q_COUNT; k++) q[Q_KEY[k]] = (st.v[k < 16 ? K_QUESTIONS : K_QUESTIONS2] >> (k & 15) & 1) != 0;
     auto hhmm = [&](const char* key, int m) { snprintf(t, sizeof t, "%02d:%02d", m / 60, m % 60); s[key] = t; };
     hhmm("wake_weekday", st.v[K_WAKE_WEEKDAY]); hhmm("wake_weekend", st.v[K_WAKE_WEEKEND]); hhmm("bedtime", st.v[K_BEDTIME]);
     s["holiday"] = st.v[K_HOLIDAY] != 0;
@@ -354,6 +357,14 @@ static void net_task(void*) {
     bool synced_once = false;
     for (;;) {
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+        if (home_probe == 1) {             // before the listener check: the core asks with no listener set up too
+            WifiNet copy[WIFI_KNOWN_MAX];
+            xSemaphoreTake(mx, portMAX_DELAY);
+            int n = nets_n;
+            memcpy(copy, nets, sizeof copy);
+            xSemaphoreGive(mx);
+            home_probe = (held && WiFi.status() == WL_CONNECTED) || wifi_home_scan(copy, n) ? 2 : 3;
+        }
         int w = want;
         bool jobs = answer_job.full || tv_job.full;
         if (!conf_ok && answer_job.full) no_listener(answer_job);   // no config.json: nobody to ask
@@ -442,7 +453,7 @@ void net_answer(int question, int kind, const uint8_t* wav, uint32_t len) {
 }
 void net_tv_sample(const uint8_t* wav, uint32_t len) { hand_over(tv_job, 0, LK_TV, wav, len); }
 bool net_sample_waiting() { return tv_job.full; }
-bool net_busy() { return held || joining || answer_job.full || tv_job.full; }
+bool net_busy() { return held || joining || answer_job.full || tv_job.full || home_probe == 1; }
 
 void net_poll(Game& g, uint32_t now) {
     static uint32_t last_snap, last_nets;
@@ -455,7 +466,7 @@ void net_poll(Game& g, uint32_t now) {
         snap.mark = g.sync_mark();
         snap.r_day = g.s.r_day;
         snap.rday_now = g.rday_now();
-        memcpy(snap.r_ans, g.s.r_ans, sizeof snap.r_ans);
+        for (int k = 0; k < Q_COUNT; k++) snap.r_ans[k] = g.ans(k);
         snap.stars = g.stars_today();
         snap.local_s = g.cal_ok ? g.wall_s : 0;
         snap.utc_offset = g.wall_s && g.utc_s ? (int32_t)(g.wall_s - g.utc_s) : 0;
@@ -470,6 +481,9 @@ void net_poll(Game& g, uint32_t now) {
     // the radio policy; the WiFi setup (or one about to start) takes the radio from everyone
     int w = g.wifi_req == WREQ_START ? LINK_OFF : g.link(net_sample_waiting());
     if (w != want) { want = w; if (task) xTaskNotifyGive(task); }
+    if (held) g.home_result(true);         // connected to a known network: at home
+    else if (g.home_req && !home_probe) { home_probe = 1; if (task) xTaskNotifyGive(task); }
+    if (home_probe >= 2) { g.home_result(home_probe == 2); home_probe = 0; }
     Result r;
     while (xQueueReceive(results, &r, 0) == pdTRUE) {
         if (r.kind == R_ANSWER) g.listen_result(r.answer);

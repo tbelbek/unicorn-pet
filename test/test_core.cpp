@@ -421,7 +421,26 @@ static bool bands_match(const Game& g, int h) {
     return true;
 }
 
+static Game gone_out();
+static u32 at(int y, int mo, int d, int h, int mi);
 TEST(render_band_matches_render) {
+    Game a = gone_out();                   // out with friends: every vignette, by day and the night one
+    for (int p = 0; p <= AWAY_PICKS; p++) {
+        if (p == AWAY_PICKS) a.set_wall(at(2026, 7, 1, 22, 0)); else a.away_pick = (u8)p;
+        for (int t = 0; t < 3; t++) { run(a, 700); CHECK(bands_match(a, 22)); CHECK(bands_match(a, 7)); }
+    }
+    for (int act = ACT_COLOR; act < ACT_COUNT; act++) {   // her own break: the vignette by day and night, and the yes moment
+        a.s.away_act = (u8)act;
+        for (int hour : {11, 22}) {
+            a.set_wall(at(2026, 7, 1, hour, 0));
+            for (int t = 0; t < 3; t++) { run(a, 700); CHECK(bands_match(a, 22)); CHECK(bands_match(a, 7)); }
+        }
+        Game l = hatched();
+        l.s.away_act = (u8)act;
+        l.play_ms = PLAY_LIMIT_MS;
+        while (l.scene != SC_LEAVE) l.tick(100);
+        for (int t = 0; t < 6; t++) { run(l, 500); CHECK(bands_match(l, 22)); CHECK(bands_match(l, 7)); }
+    }
     Game e; e.init(7); run(e, 1500);
     CHECK(bands_match(e, 22)); CHECK(bands_match(e, 7));               // the egg picker
     Game g = hatched();
@@ -857,18 +876,33 @@ TEST(away_freezes_needs_and_keeps_the_screen_short) {
     int hunger = g.stat(HUNGER);
     run(g, AWAY_SCREEN_OFF_MS - 300);
     CHECK(g.screen_on);
-    g.input(IN_TOUCH, 184, 200);                         // knock knock
-    EQ(cue_after(g), SFX_KNOCK);                         // heard, but nothing to win by knocking
-    CHECK(g.wobbling);
+    g.input(IN_TOUCH, 184, 200);                         // a tap at the picture
+    EQ(cue_after(g), SFX_POP);                           // the friends wave back; nothing to win by tapping
+    EQ(g.part[0].kind, P_HEART);
     run(g, 200);
-    shot(g, "18_door_knock");
+    shot(g, "18_away_hello");
     run(g, 400);
-    CHECK(!g.screen_on);                                 // knocking did not extend the screen
+    CHECK(!g.screen_on);                                 // tapping did not extend the screen
     g.input(IN_TOUCH, 46, 400);                          // menu taps do nothing out here
     EQ(g.scene, SC_AWAY);
     run(g, 20 * 60000);
     EQ(g.stat(HUNGER), hunger);                          // nobody gets hungry while out with friends
     CHECK(g.away_ms > 0 && g.away_ms <= 10 * 60000 + 1000);
+}
+
+// every look at the away screen shows another game; the night one is picked by the clock, not stored
+TEST(away_vignette_changes_on_each_look_and_a_tap_ends_nothing) {
+    Game g = gone_out();
+    for (int k = 0; k < 6; k++) {
+        run(g, AWAY_SCREEN_OFF_MS + 200); CHECK(!g.screen_on);   // dark again
+        u8 before = g.away_pick;
+        g.input(IN_TOUCH, 184, 200);                            // a look
+        CHECK(g.screen_on); CHECK(g.away_pick != before); CHECK(g.away_pick < AWAY_PICKS);
+        g.input(IN_TOUCH, 184, 200);                            // a tap at the picture: hearts, nothing more
+        EQ(g.scene, SC_AWAY); EQ(cue_after(g), SFX_POP); CHECK(g.away_ms > 0);
+        g.tick(100); CHECK(bands_match(g, 22));
+    }
+    g.set_wall(at(2026, 7, 1, 22, 0)); g.tick(100); shot(g, "18b_away_night");
 }
 
 TEST(she_comes_back_after_the_break) {
@@ -1446,6 +1480,12 @@ TEST(tilt_a_cloud) {
     g.input(IN_TOUCH, 30, 200);            // steer by touch: left third
     run(g, 1500);
     EQ(g.cloud_x, 64);
+    for (int i = 0; i < 10; i++) { g.set_tilt(100); g.tick(100); }
+    CHECK(g.cloud_x >= 290);               // across the screen in a second (it took 3 s: a feather got away)
+    g.set_tilt(14); g.tick(100); g.set_tilt(14); g.tick(100);
+    CHECK(g.cloud_x < 290);                // a slight tilt is a slight offset, not a jump to the edge
+    for (int i = 0; i < 6; i++) { g.set_tilt(0); g.tick(100); }
+    g.input(IN_TOUCH, 30, 200); run(g, 1500); EQ(g.cloud_x, 64);
     shot(g, "28_cloud");
     run(g, CLOUD_MS);
     EQ(g.scene, SC_HOME);
@@ -1804,13 +1844,15 @@ TEST(warm_reunion_after_a_long_gap) {
 }
 
 TEST(save_layout_v6) {
-    EQ(SAVE_SIZE, 128);
+    EQ(SAVE_SIZE, 172);
     Save s;
     EQ((int)((u8*)&s.memory_day - (u8*)&s), 36);   // older fields keep their place
     EQ((int)((u8*)&s.bed10 - (u8*)&s), 47);        // v7's bedtime sits in v6's (zero) pad byte
     EQ((int)((u8*)&s.wake_we10 - (u8*)&s), 51);    // v8's weekend wake-up sits in v7's (zero) spare byte
     EQ((int)((u8*)&s.r_day - (u8*)&s), 52);        // and the rest comes after v7's checksum
-    EQ((int)((u8*)&s.check - (u8*)&s), 124);
+    EQ((int)((u8*)&s.r_ans_bath - (u8*)&s), 124);  // v9's bath fields after v8's checksum
+    EQ((int)((u8*)&s.r_asked - (u8*)&s), 132);     // v10's 32-bit masks after v9's checksum
+    EQ((int)((u8*)&s.check - (u8*)&s), 168);
     Game g = hatched();                            // a v6 save (52 bytes) loads with the defaults
     g.s.care_days = 20; g.s.party_year = 26;
     u8 buf[SAVE_SIZE];
@@ -2721,7 +2763,7 @@ static int overflow_scan(int lang, char* where, int where_n) {
     for (int q = 0; q < Q_COUNT; q++)
         for (int st = RS_ASK; st <= RS_REPLY; st++)
             for (int a = ANS_YES; a <= ANS_NO; a++) {
-                g.r_q = (u8)q; g.r_stage = (u8)st; g.s.r_ans[q] = (u16)(a << 11);
+                g.r_q = (u8)q; g.r_stage = (u8)st; g.set_ans(q, (u16)(a << 11));
                 check(g, "question card");
             }
     g.scene = SC_SETTINGS;
@@ -2986,7 +3028,7 @@ TEST(routine_school_morning) {
     int greet = 0;
     for (int i = 0; i < R_VARIANTS; i++) greet += clips[R_GREET + i];
     EQ(greet, 1);                              // good morning, once
-    for (int q = 0; q < Q_YESNO; q++) {
+    for (int q = 0; q < Q_HAPPY; q++) {
         int asks = 0, yes = 0;
         for (int i = 0; i < R_VARIANTS; i++) { asks += clips[Q_ASK[q] + i]; yes += clips[Q_YES[q] + i]; }
         bool expected = want >> q & 1;
@@ -3042,7 +3084,253 @@ TEST(routine_evening) {
     EQ(reply, 1); EQ(g.stars_today(), 4);
     Game s = routine_game();                   // silence: a kind good night, and no second try
     live(s, at(2026, 11, 3, 18, 55), at(2026, 11, 3, 19, 40), ANS_SILENT, a, 32);
-    CHECK(s.s.r_done & 1 << Q_HAPPY); EQ(s.s.r_ans[Q_HAPPY] >> 11, ANS_SILENT);
+    CHECK(s.s.r_done & 1 << Q_HAPPY); EQ(s.ans(Q_HAPPY) >> 11, ANS_SILENT);
+}
+
+// Out with her friends she still asks (she pops in, then goes back out); the break runs on meanwhile.
+TEST(routine_asks_during_her_break_then_she_goes_back_out) {
+    Game g = routine_game();                   // Tuesday: dinner at 18:00, the evening ones 18:00-19:00
+    g.set_wall(at(2026, 11, 3, 17, 55));
+    g.tick(1000); g.take_sfx();
+    for (int i = 0; i < NSTATS; i++) g.set_stat(i, 6000);
+    g.screen_on = 1; g.play_ms = PLAY_LIMIT_MS; g.tick(100);
+    while (g.scene != SC_AWAY) g.tick(100);    // out till about 18:25
+    g.take_sfx();
+    int asked_out = 0, back_out = 0;
+    for (u32 t = at(2026, 11, 3, 18, 0); t < at(2026, 11, 3, 18, 20); t++) {
+        g.set_wall(t);
+        u32 f = g.tick(1000);
+        g.take_sfx();
+        if ((f & F_LISTEN) && g.listen_req == LREQ_LISTEN) {
+            g.listen_req = LREQ_NONE;
+            asked_out += g.r_back == SC_AWAY;
+            g.listen_started(); g.listen_result(ANS_YES);
+        } else if (f & F_LISTEN) g.listen_req = LREQ_NONE;
+        if (g.scene != SC_ASK && asked_out) back_out += g.scene == SC_AWAY;
+    }
+    CHECK(asked_out >= 1);
+    CHECK(back_out > 0);                       // and out again after each
+    EQ(g.scene, SC_AWAY); CHECK(g.away_ms > 0);  // the break goes on
+    u8 buf[SAVE_SIZE];                         // a power cut mid-question keeps the break
+    g.set_wall(at(2026, 11, 3, 18, 20)); g.bench_ask(Q_TOILET); g.save(buf);
+    Save sv; std::memcpy(&sv, buf, sizeof sv); CHECK(sv.away_s > 0 || sv.away_until > 0);
+}
+
+// Busy in a game, a menu or the settings when a question comes due: it waits and comes up to an hour late,
+// but never at bedtime.
+static void busy(Game& g, u32 from, u32 to) {
+    for (u32 t = from; t < to; t++) {
+        g.set_wall(t);
+        g.scene = SC_SETTINGS; g.screen_on = 1; g.idle_ms = 0;
+        u32 f = g.tick(1000);
+        g.take_sfx();
+        if (f & F_LISTEN) g.listen_req = LREQ_NONE;
+    }
+}
+TEST(routine_question_due_mid_game_comes_late_not_at_bedtime) {
+    Game g = routine_game();                   // Saturday: water at 15:30-16:00, she is busy till 16:10
+    busy(g, at(2026, 11, 7, 15, 20), at(2026, 11, 7, 16, 10));
+    CHECK(g.r_waiting & 1 << Q_WATER);
+    CHECK(!(g.s.r_asked & 1 << Q_WATER));
+    g.scene = SC_HOME;
+    Asked a[8];
+    int n = live(g, at(2026, 11, 7, 16, 10), at(2026, 11, 7, 17, 30), ANS_YES, a, 8);
+    EQ(n, 1); EQ(a[0].q, Q_WATER); CHECK(a[0].minute >= 16 * 60 + 10 && a[0].minute < 17 * 60);
+    Game e = routine_game();                   // Tuesday evening, busy past bedtime (19:30): nothing late at night
+    busy(e, at(2026, 11, 3, 17, 55), at(2026, 11, 3, 19, 31));
+    CHECK(e.r_waiting != 0);
+    e.scene = SC_HOME;
+    n = live(e, at(2026, 11, 3, 19, 31), at(2026, 11, 3, 20, 31), ANS_YES, a, 8);
+    EQ(n, 0);
+}
+
+// A v8 save (before Q_BATH): the same bytes, its question bits move up past the new Q_BATH bit.
+TEST(save_v8_loads_with_the_bath_question_slotted_in) {
+    Game g = routine_game();
+    g.set_wall(at(2026, 11, 3, 8, 0)); g.tick(1000);
+    g.s.care_days = 33; g.s.week[2] = 5;
+    u8 buf[SAVE_SIZE];
+    g.save(buf);
+    Save v; std::memcpy(&v, buf, sizeof v);       // as v8 wrote it: Q_HAPPY = bit 11, the morning hello bit 12
+    v.version = 8;
+    v.old_r_asked = 1 << 0 | 1 << 11;             // TEETH_AM and HAPPY asked
+    v.old_r_done = 1 << 0 | 1 << 11 | 1 << 12;    // ... done, and the hello said
+    v.old_q_off = 1 << 3 | 1 << 11;               // SCHOOL_CLOTHES and HAPPY switched off
+    v.r_ans[0] = (u16)(ANS_YES << 11 | 420); v.r_ans[11] = (u16)(ANS_SAID << 11 | 1150);
+    u32 c = 2166136261u;
+    for (u32 i = 0; i < SAVE_V8_SIZE - 4; i++) c = (c ^ ((u8*)&v)[i]) * 16777619u;
+    std::memcpy((u8*)&v + SAVE_V8_SIZE - 4, &c, 4);
+    Game h; h.init(9);
+    CHECK(h.load((const u8*)&v, SAVE_V8_SIZE));
+    EQ(h.s.version, SAVE_VERSION); EQ(h.s.care_days, 33); EQ(h.s.week[2], 5);
+    EQ(h.s.r_asked, 1 << Q_TEETH_AM | 1 << Q_HAPPY);
+    EQ(h.s.r_done, 1 << Q_TEETH_AM | 1 << Q_HAPPY | 1 << Q_COUNT);
+    EQ(h.s.q_off, 1 << Q_SCHOOL_CLOTHES | 1 << Q_HAPPY);
+    EQ(h.ans(Q_TEETH_AM) >> 11, ANS_YES); EQ(h.ans(Q_HAPPY) >> 11, ANS_SAID); EQ(h.ans(Q_BATH), 0);
+    u8 again[SAVE_SIZE];                          // and a v9 save round-trips
+    h.s.bath_days[0] = 9800; h.set_ans(Q_BATH, (u16)(ANS_NO << 11 | 1000));
+    h.save(again);
+    Game k; k.init(3); CHECK(k.load(again, SAVE_SIZE));
+    EQ(k.s.bath_days[0], 9800); EQ(k.ans(Q_BATH) >> 11, ANS_NO);
+}
+
+// After her own bath she sometimes asks about the child's: never more than twice in 7 days, never at bedtime.
+static int baths_asked(Game& g, int y, int mo, int d, int h, int baths) {
+    int asked = 0;
+    for (int b = 0; b < baths; b++) {
+        g.set_wall(at(y, mo, d, h, 10 * b)); g.tick(1000); g.take_sfx();
+        g.scene = SC_WASH; g.scene_ms = WASH_MS; g.screen_on = 1;
+        g.tick(100);
+        if (g.scene == SC_ASK && g.r_q == Q_BATH) {
+            asked++;
+            g.listen_req = LREQ_NONE; g.listen_started(); g.listen_result(ANS_YES);
+            run(g, R_REPLY_MS + 200);
+        }
+        g.scene = SC_HOME; g.take_sfx();
+    }
+    return asked;
+}
+TEST(routine_bath_question_after_her_bath_twice_a_week_at_most) {
+    Game g = routine_game();
+    int week = 0;
+    for (int d = 2; d <= 8; d++) week += baths_asked(g, 2026, 11, d, 16, 3);   // three baths a day for a week
+    CHECK(week >= 1); CHECK(week <= 2);
+    int any = 0;                                   // and over four weeks: never 3 in any 7 days
+    Game m = routine_game(77);
+    int per_day[29] = {0};
+    for (int d = 1; d <= 28; d++) { per_day[d] = baths_asked(m, 2026, 12, d, 16, 2); any += per_day[d]; CHECK(per_day[d] <= 1); }
+    for (int d = 1; d + 6 <= 28; d++) { int n = 0; for (int k = d; k < d + 7; k++) n += per_day[k]; CHECK(n <= 2); }
+    CHECK(any >= 4);
+    Game n = routine_game();                       // at bedtime (19:30-07:00): never
+    EQ(baths_asked(n, 2026, 11, 3, 20, 5), 0);
+    Game o = routine_game();                       // switched off on the parent page: never
+    o.s.q_off |= 1 << Q_BATH;
+    int off = 0;
+    for (int d = 2; d <= 8; d++) off += baths_asked(o, 2026, 11, d, 16, 3);
+    EQ(off, 0);
+}
+
+// A v9 save (16-bit masks, Q_HAPPY at bit 12, the hello at 13): its bits land in v10's 32-bit masks unchanged,
+// the hello moves to bit Q_COUNT, and it saves and loads again to the same game.
+TEST(save_v9_loads_into_v10) {
+    Game g = routine_game();
+    g.set_wall(at(2026, 11, 3, 8, 0)); g.tick(1000);
+    g.s.care_days = 41;
+    u8 buf[SAVE_SIZE];
+    g.save(buf);
+    Save v; std::memcpy(&v, buf, sizeof v);
+    v.version = 9;
+    v.old_r_asked = 1 << Q_TEETH_AM | 1 << Q_BATH | 1 << Q_HAPPY;
+    v.old_r_done = 1 << Q_TEETH_AM | 1 << Q_HAPPY | 1 << 13;
+    v.old_q_off = 1 << Q_WATER | 1 << Q_BATH;
+    v.r_ans_bath = (u16)(ANS_YES << 11 | 600);
+    u32 c = 2166136261u;
+    for (u32 i = 0; i < SAVE_V9_SIZE - 4; i++) c = (c ^ ((u8*)&v)[i]) * 16777619u;
+    std::memcpy((u8*)&v + SAVE_V9_SIZE - 4, &c, 4);
+    Game h; h.init(4);
+    CHECK(h.load((const u8*)&v, SAVE_V9_SIZE));
+    EQ(h.s.version, SAVE_VERSION); EQ(h.s.care_days, 41);
+    EQ(h.s.r_asked, 1u << Q_TEETH_AM | 1u << Q_BATH | 1u << Q_HAPPY);
+    EQ(h.s.r_done, 1u << Q_TEETH_AM | 1u << Q_HAPPY | 1u << Q_COUNT);
+    EQ(h.s.q_off, 1u << Q_WATER | 1u << Q_BATH);
+    EQ(h.ans(Q_BATH) >> 11, ANS_YES); EQ(h.s.old_r_asked, 0); EQ(h.s.away_act, ACT_NONE);
+    u8 a[SAVE_SIZE], b[SAVE_SIZE];
+    h.s.away_act = ACT_LEGO; h.set_ans(Q_HOWAREYOU, (u16)(ANS_SAID << 11 | 900)); h.s.chat_days[0] = 9800;
+    h.save(a);
+    Game k; k.init(8); CHECK(k.load(a, SAVE_SIZE)); k.save(b);
+    CHECK(!std::memcmp(a, b, SAVE_SIZE));
+    EQ(k.s.away_act, ACT_LEGO); EQ(k.ans(Q_HOWAREYOU) >> 11, ANS_SAID); EQ(k.s.chat_days[0], 9800);
+}
+
+// Saturday and Sunday at 13:00 basketball, Sunday at 09:00 volleyball; weekdays (a holiday too) neither.
+TEST(routine_weekend_sports) {
+    Asked a[32];
+    Game sat = routine_game();                     // Saturday 7 November 2026
+    int n = live(sat, at(2026, 11, 7, 12, 30), at(2026, 11, 7, 14, 0), ANS_YES, a, 32);
+    EQ(n, 1); EQ(a[0].q, Q_BASKETBALL); CHECK(a[0].minute >= 13 * 60 && a[0].minute < 13 * 60 + 30);
+    EQ(sat.stars_today(), 0);                      // a plan, not a habit: no star
+    Game sun = routine_game();                     // Sunday 8 November
+    n = live(sun, at(2026, 11, 8, 8, 0), at(2026, 11, 8, 14, 0), ANS_NO, a, 32);
+    int volley = -1, basket = -1;
+    for (int i = 0; i < n; i++) { if (a[i].q == Q_VOLLEYBALL) volley = i; if (a[i].q == Q_BASKETBALL) basket = i; }
+    CHECK(volley >= 0 && a[volley].minute >= 9 * 60 && a[volley].minute < 9 * 60 + 30);
+    CHECK(basket >= 0 && a[basket].minute >= 13 * 60 && a[basket].minute < 13 * 60 + 30);
+    Game wed = routine_game();                     // a Wednesday in holiday mode: a free day, but not the weekend
+    wed.s.opts |= OPT_HOLIDAY;
+    n = live(wed, at(2026, 11, 4, 8, 0), at(2026, 11, 4, 14, 0), ANS_YES, a, 32);
+    for (int i = 0; i < n; i++) CHECK(a[i].q != Q_BASKETBALL && a[i].q != Q_VOLLEYBALL);
+}
+
+// A suggestion a day at most, only at home (the platform's answer to home_req); a yes sends her off to do it,
+// and her break keeps showing it. "How are you" at most twice in any 7 days.
+static int live_home(Game& g, u32 from, u32 to, bool home, int ans, Asked* log, int max, int* probes = 0) {
+    int n = 0;
+    for (u32 t = from; t < to; t += 60) {
+        g.set_wall(t);
+        for (int sec = 0; sec < 60; sec++) {
+            if (g.home_req) { if (probes) (*probes)++; g.home_result(home); }
+            u32 f = g.tick(1000);
+            g.take_sfx();
+            if ((f & F_LISTEN) && g.listen_req == LREQ_LISTEN) {
+                g.listen_req = LREQ_NONE;
+                if (log && n < max) log[n] = {g.r_q, (int)(t % 86400 / 60), 0};
+                n++;
+                g.listen_started(); g.listen_result(q_open(g.r_q) ? ANS_SAID : ans);
+            } else if (f & F_LISTEN) g.listen_req = LREQ_NONE;
+            if (g.scene == SC_AWAY && g.away_ms > 60000) g.away_ms = 60000;   // (short breaks, so the days go on)
+        }
+    }
+    return n;
+}
+TEST(routine_suggestions_at_home_and_how_are_you) {
+    Asked a[64];
+    int probes = 0;
+    Game away = routine_game();                    // not at home: never, and at most HOME_PROBES looks a day
+    for (int d = 2; d <= 8; d++)
+        for (int i = 0, n = live_home(away, at(2026, 11, d, 9, 0), at(2026, 11, d, 18, 0), false, ANS_YES, a, 64, &probes); i < n; i++)
+            CHECK(!q_activity(a[i].q) && a[i].q != Q_HOWAREYOU);
+    CHECK(probes <= 7 * HOME_PROBES);
+    Game g = routine_game();                       // at home for two weeks, saying no to everything
+    int sugg[15] = {0}, chats[15] = {0};
+    for (int d = 2; d <= 15; d++) {
+        int n = live_home(g, at(2026, 11, d, 9, 0), at(2026, 11, d, 18, 30), true, ANS_NO, a, 64);
+        for (int i = 0; i < n; i++) {
+            if (q_activity(a[i].q)) { sugg[d - 1]++; int free = calendar(at(2026, 11, d, 0, 0)).wday >= 5;
+                                      CHECK(a[i].minute >= (free ? 10 : 15) * 60 && a[i].minute < 18 * 60); }
+            if (a[i].q == Q_HOWAREYOU) chats[d - 1]++;
+        }
+    }
+    int total = 0;
+    for (int d = 1; d < 15; d++) { CHECK(sugg[d] <= 1); total += sugg[d]; CHECK(chats[d] <= 1); }
+    CHECK(total >= 10);                            // most days
+    for (int d = 1; d + 6 < 15; d++) { int c = 0; for (int k = d; k < d + 7; k++) c += chats[k]; CHECK(c <= 2); }
+    int chat_total = 0; for (int d = 1; d < 15; d++) chat_total += chats[d];
+    CHECK(chat_total >= 1);
+    Game y = routine_game(5);                      // a yes: off she goes to do it, and the break shows it
+    bool went = false;
+    for (int d = 2; d <= 6 && !went; d++)
+        for (u32 t = at(2026, 11, d, 10, 0); t < at(2026, 11, d, 18, 0) && !went; t += 60) {
+            y.set_wall(t);
+            for (int sec = 0; sec < 60 && !went; sec++) {
+                if (y.home_req) y.home_result(true);
+                u32 f = y.tick(1000); y.take_sfx();
+                if ((f & F_LISTEN) && y.listen_req == LREQ_LISTEN) {
+                    y.listen_req = LREQ_NONE; y.listen_started();
+                    y.listen_result(q_activity(y.r_q) ? ANS_YES : q_open(y.r_q) ? ANS_SAID : ANS_NO);
+                } else if (f & F_LISTEN) y.listen_req = LREQ_NONE;
+                if (y.scene == SC_LEAVE) went = true;
+            }
+        }
+    CHECK(went); CHECK(y.s.away_act > ACT_NONE && y.s.away_act < ACT_COUNT);
+    while (y.scene == SC_LEAVE) y.tick(100);
+    EQ(y.scene, SC_AWAY); CHECK(y.s.away_act != ACT_NONE);
+    u8 buf[SAVE_SIZE]; y.save(buf);                // a power cut keeps what she went off to do
+    Game z; z.init(2); z.set_wall(y.wall_s, true, y.utc_s); CHECK(z.load(buf, SAVE_SIZE)); EQ(z.s.away_act, y.s.away_act);
+    Game o = routine_game();                       // the parent switched them all off: never
+    for (int k = 0; k < Q_COUNT; k++) if (q_activity(k) || k == Q_HOWAREYOU) o.s.q_off |= 1u << k;
+    for (int d = 2; d <= 8; d++)
+        for (int i = 0, n = live_home(o, at(2026, 11, d, 9, 0), at(2026, 11, d, 18, 0), true, ANS_YES, a, 64); i < n; i++)
+            CHECK(!q_activity(a[i].q) && a[i].q != Q_HOWAREYOU);
 }
 
 TEST(routine_asks_again_once) {
@@ -3057,7 +3345,7 @@ TEST(routine_asks_again_once) {
     y.s.q_off = g.s.q_off;
     n = live(y, at(2026, 11, 3, 17, 50), at(2026, 11, 3, 19, 0), ANS_NO, a, 8);
     EQ(n, 1);                                  // a clear no is an answer
-    EQ(y.s.r_ans[Q_DINNER] >> 11, ANS_NO);
+    EQ(y.ans(Q_DINNER) >> 11, ANS_NO);
     Game p = routine_game();                   // a power cut right after the question: not asked again
     p.s.q_off = g.s.q_off;
     n = live(p, at(2026, 11, 3, 17, 50), at(2026, 11, 3, 18, 15), ANS_YES, a, 8);
@@ -3124,7 +3412,7 @@ TEST(routine_question_flow) {
     shot(g, "30_question_buttons");
     g.input(IN_NEXT, 0, 0); EQ(g.r_sel, 1); g.input(IN_NEXT, 0, 0);
     g.input(IN_TOUCH, 90, 400);                // the tick
-    EQ(g.r_stage, RS_REPLY); EQ(g.s.r_ans[Q_DINNER] >> 11, ANS_TAP_YES); EQ(g.stars_today(), 1);
+    EQ(g.r_stage, RS_REPLY); EQ(g.ans(Q_DINNER) >> 11, ANS_TAP_YES); EQ(g.stars_today(), 1);
     g.take_sfx(&line, &clip);
     CHECK(clip >= Q_YES[Q_DINNER] && clip < Q_YES[Q_DINNER] + R_VARIANTS);
     shot(g, "31_question_star");
@@ -3135,14 +3423,14 @@ TEST(routine_question_flow) {
     run(t, R_LISTEN_MS + 200);
     EQ(t.r_stage, RS_BUTTONS); EQ(t.listen_req, LREQ_CANCEL);   // the platform stops listening
     run(t, R_BUTTONS_MS + 200);
-    EQ(t.r_stage, RS_REPLY); EQ(t.s.r_ans[Q_DINNER] >> 11, ANS_SILENT);
+    EQ(t.r_stage, RS_REPLY); EQ(t.ans(Q_DINNER) >> 11, ANS_SILENT);
     CHECK(!(t.s.r_done & 1 << Q_DINNER));      // asked once more later
     run(t, R_REPLY_MS + 200); EQ(t.scene, SC_HOME);
     Game z = routine_game();                   // a late answer after the reply is ignored
     z.s.q_off = g.s.q_off;
     z.set_wall(at(2026, 11, 3, 18, 0)); z.tick(100);
     z.listen_result(ANS_NO); z.listen_result(ANS_YES);
-    EQ(z.s.r_ans[Q_DINNER] >> 11, ANS_NO); EQ(z.stars_today(), 0);
+    EQ(z.ans(Q_DINNER) >> 11, ANS_NO); EQ(z.stars_today(), 0);
     z.listen_result(99);                       // and nonsense from the platform does nothing
     EQ(z.r_stage, RS_REPLY);
 }
@@ -3177,7 +3465,7 @@ TEST(save_v7_loads_as_v8) {
     std::memcpy(buf + SAVE_V7_SIZE - 4, &c, 4);
     Game h; h.init(5);
     CHECK(h.load(buf, SAVE_V7_SIZE));
-    EQ(h.s.version, 8); EQ(h.s.care_days, 33); EQ(h.s.bed10, 120); EQ(h.s.lang, LANG_SV);
+    EQ(h.s.version, SAVE_VERSION); EQ(h.s.care_days, 33); EQ(h.s.bed10, 120); EQ(h.s.lang, LANG_SV);
     EQ(h.s.wake_we10, WAKE_WE_DEFAULT10); EQ(h.s.r_asked, 0); EQ(h.s.cfg_rev, 0u); EQ(h.s.q_off, 0);
     Game r = routine_game();                   // v8 keeps everything the routine writes
     r.s.q_off = (u16)~(1 << Q_DINNER) & ((1 << Q_COUNT) - 1);
@@ -3186,7 +3474,7 @@ TEST(save_v7_loads_as_v8) {
     r.s.hol[0][0] = 9800; r.s.hol[0][1] = 9810; r.s.cfg_rev = 77; r.s.cfg_dirty = 5;
     r.save(buf);
     Game k; k.init(6); CHECK(k.load(buf, SAVE_SIZE));
-    EQ(k.s.r_ans[Q_DINNER], r.s.r_ans[Q_DINNER]); EQ(k.s.week[k.s.r_day % 7], 1 << Q_DINNER);
+    EQ(k.ans(Q_DINNER), r.ans(Q_DINNER)); EQ(k.s.week[k.s.r_day % 7], 1 << Q_DINNER);
     EQ(k.s.hol[0][1], 9810); EQ(k.s.cfg_rev, 77u); EQ(k.s.cfg_dirty, 5);
     buf[96 + 2 * Q_DINNER + 1] = 0xF8;         // an answer code past the last one: refused
     c = 2166136261u;
@@ -3209,7 +3497,8 @@ TEST(settings_sync_with_the_parent_page) {
     g.set_wall(at(2026, 11, 3, 12, 0));
     Settings mine = g.settings();
     EQ(mine.v[K_WAKE_WEEKDAY], 7 * 60); EQ(mine.v[K_WAKE_WEEKEND], 8 * 60); EQ(mine.v[K_BEDTIME], 19 * 60 + 30);
-    EQ(mine.v[K_ROUTINES], 1); EQ(mine.v[K_QUESTIONS], (1 << Q_COUNT) - 1); EQ(mine.v[K_BRIGHTNESS], 180);
+    EQ(mine.v[K_ROUTINES], 1); EQ(mine.v[K_QUESTIONS], 0xFFFF); EQ(mine.v[K_QUESTIONS2], (1 << (Q_COUNT - 16)) - 1);
+    EQ(mine.v[K_BRIGHTNESS], 180);
     EQ(mine.v[K_PLAY_MIN], 10); EQ(mine.v[K_BREAK_MIN], 30); EQ(mine.v[K_SHAKE], 1);
     Settings page = mine;
     page.v[K_LANG] = LANG_DE; page.v[K_VOLUME] = VOL_LOW; page.v[K_WAKE_WEEKEND] = 9 * 60; page.v[K_TV_TEST] = 1;
@@ -3468,7 +3757,7 @@ TEST(review_fixes_routine_pass3) {
         g.apply_settings(14, page, 1 << K_QUESTIONS);
         CHECK(g.scene != SC_ASK); EQ(g.listen_req, LREQ_CANCEL);
         g.listen_result(ANS_YES);
-        EQ(g.stars_today(), 0); EQ(g.s.r_ans[Q_DINNER], 0);
+        EQ(g.stars_today(), 0); EQ(g.ans(Q_DINNER), 0);
         int line, clip;
         g.take_sfx(&line, &clip); EQ(clip, -1);
     }
@@ -3508,7 +3797,7 @@ TEST(review_fixes_routine_pass3) {
         g.apply_settings(13, page, 1 << K_VOLUME);
         CHECK(g.scene != SC_ASK); EQ(g.listen_req, LREQ_CANCEL);
         g.listen_result(ANS_YES);
-        EQ(g.stars_today(), 0); EQ(g.s.r_ans[Q_DINNER], 0);
+        EQ(g.stars_today(), 0); EQ(g.ans(Q_DINNER), 0);
     }
 }
 
@@ -3535,6 +3824,7 @@ int main() {
         T(hatching_in_the_dark_turns_the_screen_on), T(clock_wrap_keeps_petting_and_idle_alive),
         T(ten_minutes_of_play_and_she_goes_out), T(leaving_waits_for_the_activity_to_finish),
         T(a_break_resets_the_screen_time), T(away_freezes_needs_and_keeps_the_screen_short),
+        T(away_vignette_changes_on_each_look_and_a_tap_ends_nothing),
         T(she_comes_back_after_the_break), T(parent_can_call_her_back), T(power_cut_does_not_skip_the_break),
         T(version_1_saves_still_load), T(frames_are_interpolated_between_steps),
         T(rtc_counts_the_break_while_powered_off), T(rtc_partial_break_and_wall_ticking),
@@ -3558,7 +3848,7 @@ int main() {
         T(wifi_setup_from_the_toy), T(firmware_update_page), T(text_edge_cases), T(every_language_fits_the_screen),
         T(review_fixes_bug_hunt), T(review_fixes_third_pass), T(old_local_break_deadlines_are_not_read_as_utc), T(no_sound_at_bedtime), T(she_speaks_her_lines), T(her_voice_file_decodes), T(damaged_packs_never_read_outside), T(the_screen_dims_at_night), T(fifth_pass_fixes), T(album_opens_from_the_info_screen),
         T(settings_close_when_the_grown_up_walks_away), T(every_scene_renders_for_every_character),
-        T(one_good_morning_not_two), T(routine_school_morning), T(routine_weekend_and_holidays), T(routine_evening), T(routine_asks_again_once),
+        T(one_good_morning_not_two), T(routine_school_morning), T(routine_weekend_and_holidays), T(routine_evening), T(routine_asks_during_her_break_then_she_goes_back_out), T(routine_question_due_mid_game_comes_late_not_at_bedtime), T(save_v8_loads_with_the_bath_question_slotted_in), T(routine_bath_question_after_her_bath_twice_a_week_at_most), T(save_v9_loads_into_v10), T(routine_weekend_sports), T(routine_suggestions_at_home_and_how_are_you), T(routine_asks_again_once),
         T(routine_stays_quiet), T(routine_question_flow), T(routine_variants_never_repeat_early), T(save_v7_loads_as_v8),
         T(settings_sync_with_the_parent_page), T(tv_test_mode_listens_only_to_lasting_sound), T(radio_link_policy),
         T(review_fixes_routine_pass), T(review_fixes_routine_pass2), T(review_fixes_routine_pass3),

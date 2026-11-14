@@ -155,10 +155,10 @@ second and the battery level every 30 s. The emulator has a battery slider and a
 ### Screen time: she has things to do
 
 After **10 minutes** of screen-on play she finishes what she is doing, says "İŞİM VAR!" and walks
-off to play with her friends. A door with a **RAHATSIZ ETMEYİN** sign stays behind for
-**30 minutes**: the screen goes dark after 5 s, knocking only rattles the sign (it does not keep
-the screen on), her friends play below the door instead of a countdown to keep checking, and her needs
-are frozen while she is out. The next touch after the break brings her back ("GELDİM!"). A 15-minute
+off to play with her friends for **30 minutes**. A look at the screen shows a short game with them (a ball,
+the see-saw, bubbles, a skipping rope, a butterfly; fireflies at night), a different one each time, instead of
+a countdown to keep checking: it goes dark after 8 s, and a tap only sends a heart (it does not keep the screen
+on or bring her back early). Her needs are frozen while she is out. The next touch after the break brings her back ("GELDİM!"). A 15-minute
 break with the screen dark resets the counter. The state is saved the moment she leaves, so
 pulling the power is no shortcut. The break is timed by the board's **PCF85063 RTC** when it keeps
 running while the board is off, so a break that passed overnight is over in the morning; if there
@@ -232,18 +232,34 @@ day "what made you happy today?". The schedule is `SCHEDULE` in `tools/routines.
 - **Day:** water at 15:30 on weekends and holidays, dinner at 18:00 every day.
 - **Evening:** from 90 to 30 minutes before bedtime: teeth, toys and, always last, the toilet. Then, between
   19:00 and 5 minutes before bedtime, the open question.
+- **Weekend sports:** "are you going to basketball? Time to get ready!" at 13:00 on Saturdays and Sundays, and
+  the same for volleyball at 09:00 on Sundays (the weekdays themselves: a holiday weekday is not a weekend). A plan,
+  not a habit: no star.
+- **Now and then, at home:** one suggestion a day at most (coloring, Lego, a book, playing with her dolls; the
+  child's word for them, "çocukların"), at a moment planned per day in her free afternoon (school days 15:00-18:00,
+  weekends and holidays from 10:00), never in the half hour before a set-time question; and "how are you?" at most
+  twice in any 7 days (an open question like the day's last one). Only at home: the toy looks for one of its known
+  networks first (a scan on the net task, ~1.5 s, no join; at most 3 looks a day; connected already counts). A yes
+  to a suggestion: a short happy moment with that thing, then off she goes to do it too, and her break shows her at
+  it for its whole length (the child goes off to play meanwhile). No stars for these, and the parent page's week
+  table leaves them out (a "no" to Lego is no missed chore); each has its own switch there.
+- **After her own bath:** now and then (half the time) she asks whether the child had theirs too: once a day,
+  at most twice in any 7 days, one try, never at bedtime. Its clips sit at the end of the pack (`late` in
+  `tools/routines.py`), so a pack built before it keeps every other clip in place.
 - **Her day** runs from one wake-up to the next, not from midnight: with a wake-up or bedtime near midnight
   the whole morning or evening stays one day (the questions, their order, the second tries, the stars), even
   across 00:00. If the clock is set back across a wake-up, nothing is asked until it is past it again.
 - Each question once a day, at a random moment in its window (a new order every day), at least 8 minutes
   apart; asked once more 10 minutes later if the answer was unclear or silent. Never at bedtime, never with
   an untrusted clock, never with the volume off (any of these, or the page switching routines or that question
-  off, ends a question under way at once: she stops listening and stops speaking); she waits for a meal, a bath, the hatching or a game to end,
-  and lights a dark screen just for the question (dark again 5 s after). A question asked is saved at once,
+  off, ends a question under way at once: she stops listening and stops speaking); she waits for a meal, a bath, the hatching or a game to end
+  (a question that came due meanwhile stays open up to an hour longer, still never at bedtime), asks during her
+  break with friends too (she pops in, then goes back out), and lights a dark screen just for the question (dark
+  again 5 s after). A question asked is saved at once,
   so a power cut does not ask it again. Ten ways to ask and ten answers for every yes and no; the same clip
   never comes again until all ten were said.
 - **The card:** a big wordless picture (a toothbrush, a T-shirt, the school uniform, a comb, a vitamin, a
-  breakfast plate, a glass of water, a dinner plate, a toy box, a toilet, a heart for the open question), dots
+  breakfast plate, a glass of water, a dinner plate, a toy box, a toilet, a bathtub, a heart for the open question), dots
   while she asks, a listening ear while she listens. A yes is a star; the day's stars and a week table (a
   star per question and day) are in parent settings > GÜNLÜK RUTİN > BU HAFTA.
 - **Listening:** after her question the toy records from the microphone (ES8311 ADC, 16 kHz mono) until 0.8 s

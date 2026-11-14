@@ -88,6 +88,26 @@ bool wifi_join(const WifiNet* nets, int n) {
     return ok;
 }
 
+// Is she at home? One of the known networks in range, by a scan (~1.5 s, no join). Connected already: yes.
+bool wifi_home_scan(const WifiNet* nets, int n) {
+    if (!radio_mx || !n) return false;
+    xSemaphoreTake(radio_mx, portMAX_DELAY);
+    bool home = false;
+    if (!setup_owns) {
+        if (radio_users > 0 && WiFi.status() == WL_CONNECTED) home = true;
+        else {
+            WiFi.mode(WIFI_STA);
+            int found = WiFi.scanNetworks(false, false, false, 120);
+            for (int i = 0; i < found && !home; i++)
+                for (int k = 0; k < n && !home; k++) home = WiFi.SSID(i) == nets[k].ssid;
+            WiFi.scanDelete();
+            if (!radio_users) WiFi.mode(WIFI_OFF);
+        }
+    }
+    xSemaphoreGive(radio_mx);
+    return home;
+}
+
 void wifi_leave() {
     if (!radio_mx) return;
     xSemaphoreTake(radio_mx, portMAX_DELAY);

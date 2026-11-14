@@ -413,12 +413,31 @@ static void save_game() {
     prefs.putBytes("save", buf, sizeof buf);
 }
 
+// A save an older firmware could not read waits in "save_bad" (an update rolled back, then the older one
+// started a new egg and saved that). This firmware reads it back when it holds the longer life.
+static bool restore_bad_save(bool have_save) {
+    size_t m = prefs.isKey("save_bad") ? prefs.getBytesLength("save_bad") : 0;
+    if (!m) return false;
+    uint8_t* bad = (uint8_t*)malloc(m);
+    up::Game* t = bad ? new up::Game() : nullptr;
+    bool ok = t && prefs.getBytes("save_bad", bad, m) == m && (t->init(1), t->load(bad, m));
+    bool better = ok && (!have_save || t->s.age_s > game.s.age_s);
+    if (better && game.load(bad, m)) {
+        Serial.println("save restored from save_bad (written by a newer firmware)");
+        save_game();
+        prefs.remove("save_bad");
+    } else if (ok) prefs.remove("save_bad");   // readable but an older life: nothing to bring back
+    delete t;
+    free(bad);
+    return better;
+}
+
 static void load_game() {
     size_t len = prefs.getBytesLength("save");
-    if (!len) { Serial.println("no save: new egg"); return; }
+    if (!len) { if (!restore_bad_save(false)) Serial.println("no save: new egg"); return; }
     uint8_t* buf = (uint8_t*)malloc(len);     // any size: a newer firmware's save may be longer
     size_t n = buf ? prefs.getBytes("save", buf, len) : 0;
-    if (n && game.load(buf, n)) { Serial.println("save loaded"); free(buf); return; }
+    if (n && game.load(buf, n)) { Serial.println("save loaded"); free(buf); restore_bad_save(true); return; }
     Serial.println("unreadable save: new egg");
     // Keep it (a newer firmware's, or a bad write) instead of overwriting it with the new egg: a
     // later firmware can still read it back from "save_bad". If it cannot be kept, never overwrite.
@@ -829,11 +848,11 @@ void loop() {
     diag_poll();
     read_accel();
     if (shaken()) game.input(up::IN_SHAKE, 0, 0);
-    // tilt-a-cloud: sideways tilt at ~10 Hz, only while that game is open (VERIFY axis and sign)
+    // tilt-a-cloud: sideways tilt at ~20 Hz, only while that game is open
     static uint32_t last_tilt;
-    if (game.scene == up::SC_CLOUD && acc_fresh && now - last_tilt >= 100) {
+    if (game.scene == up::SC_CLOUD && acc_fresh && now - last_tilt >= 50) {
         last_tilt = now;
-        int t = (int)(acc_x * 200.0f);        // ~0.5 g of tilt = full deflection
+        int t = (int)(acc_x * 280.0f);        // ~0.35 g (about 20 degrees) of tilt = full deflection
         game.set_tilt(TILT_FLIP ? -t : t);
     }
     SECT(0);

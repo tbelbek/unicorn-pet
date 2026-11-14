@@ -17,4 +17,5 @@ int wifi_known(WifiNet* out, int max);    // saved + built-in networks, saved fi
 // The link is shared and counted: the radio goes off when the last task leaves. Refused (false) while the
 // parent's WiFi setup owns the radio; the setup starts only when nobody holds or is joining the link.
 bool wifi_join(const WifiNet* nets, int n);
+bool wifi_home_scan(const WifiNet* nets, int n);   // a known network in range (or connected): she is at home
 void wifi_leave();

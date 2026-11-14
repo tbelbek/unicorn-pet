@@ -484,6 +484,11 @@ static int arc(u32 p, u32 len, int height) {
     return -(int)(4 * (u32)height * p * (len - p) / (len * len));
 }
 
+static int ease(int p) { return p * p * (768 - 2 * p) / 65536; }   // smoothstep, 0..256 -> 0..256
+// how far p has got through [a, b): 0 before, 256 after, eased in between (slow in, slow out)
+static int seg(u32 p, u32 a, u32 b) { return p <= a ? 0 : p >= b ? 256 : ease((int)((p - a) * 256 / (b - a))); }
+static int lerp(int a, int b, int q) { return a + (b - a) * q / 256; }
+
 static u32 now(const Game& g) { return g.anim_ms + g.acc_ms; }          // ms into the scene, smooth
 static int ahead(int per_step, const Game& g) { return per_step * (int)g.acc_ms / STEP_MS; }
 
@@ -672,10 +677,39 @@ static int side_x(const Game& g) {
 }
 static int side_y(const Game& g) { return 346 - UP_SIDE_FEET * SC + burn_y(g); }
 
+// ---- a unicorn in parts: the head nods and reaches, the tail flicks -------------------------
+// Every standing pose shares one layout (checked over all characters, states and frames): the head is
+// rows 0-25 from column 10 on, the tail's tuft rows 15-25 up to column 10, the chest starts at row 25
+// or 26. Rows 21-25 of the neck are drawn fixed as well, so a lifted head leaves no hole over the chest.
+static bool standing(int state) { return state <= M_SAD || state == ST_WALK || state == ST_BLINK || state == ST_WALK2; }
+
+// sprite pixels [x0,x1) x [y0,y1) of a side sprite whose pixel (0,0) sits at (px, py), scale s
+static void part(const u8* spr, int x0, int y0, int x1, int y1, int s, int px, int py, const u16* pal, bool flip) {
+    if (off_band(py + y0 * s, py + y1 * s)) return;
+    for (int y = y0; y < y1; y++) {
+        if (off_band(py + y * s, py + (y + 1) * s)) continue;
+        for (int x = x0; x < x1; x++) {
+            u8 i = spr[y * UP_SIDE_W + x];
+            if (!i) continue;
+            int dx = flip ? UP_SIDE_W - 1 - x : x;
+            fill(px + dx * s, py + y * s, px + (dx + 1) * s, py + (y + 1) * s, pal[i]);
+        }
+    }
+}
+// hdx, hdy: the head's offset in sprite pixels (|hdx| <= 1: further, the neck seam shows); tdx: the tuft's
+static void rig(const u8* spr, int s, int px, int py, const u16* pal, bool flip, int hdx, int hdy, int tdx) {
+    if (flip) { hdx = -hdx; tdx = -tdx; }
+    part(spr, 0, 26, UP_SIDE_W, UP_SIDE_H, s, px, py, pal, flip);          // body and legs
+    part(spr, 11, 21, 26, 26, s, px, py, pal, flip);                       // the neck, fixed
+    part(spr, 0, 15, 11, 26, s, px + tdx * s, py, pal, flip);              // the tail's tuft
+    part(spr, 10, 0, UP_SIDE_W, 26, s, px + hdx * s, py + hdy * s, pal, flip);   // the head
+}
+
 // squash > 0: wider and lower (landing), < 0: taller and thinner (take-off); feet stay planted
 static int squash_now;
 static int turn = 1;                       // -1: drawn facing the other way (a twirl or dance)
 static int acc_draw = -1;                  // dress-up preview; -1 = what she is wearing
+static int head_dy;                        // a nod: her head drawn this many sprite rows lower (standing poses)
 
 static void unicorn_side(const Game& g, int state, bool night, int frame, int dy) {
     const int sz = UP_SIDE_W * UP_SIDE_H;
@@ -684,7 +718,9 @@ static void unicorn_side(const Game& g, int state, bool night, int frame, int dy
     bool flip = g.facing * turn < 0;
     int x0 = side_x(g) - (sx - SC) * UP_SIDE_W / 2, top = side_y(g) + UP_SIDE_FEET * SC + dy - UP_SIDE_FEET * sy;
     if (state != ST_SLEEP && dy < 0 && top < HEADER_Y1 - 3 * SC) top = HEADER_Y1 - 3 * SC;   // a high jump stops short of the name
-    blit2(spr, UP_SIDE_W, UP_SIDE_H, sx, sy, x0, top, night ? NIGHT : PAL, flip);
+    bool rigged = head_dy && !squash_now && standing(state);
+    if (rigged) rig(spr, SC, x0, top, night ? NIGHT : PAL, flip, 0, head_dy, 0);
+    else blit2(spr, UP_SIDE_W, UP_SIDE_H, sx, sy, x0, top, night ? NIGHT : PAL, flip);
     if (g.stage() >= STAGE_GROWN && state != ST_SLEEP && g.scene != SC_SLEEP) {   // her grown-up marks
         static const i8 FX[3] = {15, 11, 19}, FY[3] = {29, 32, 33};
         static const u16* const FC[3] = {&YELLOW, &PINK, &LILAC};
@@ -696,7 +732,7 @@ static void unicorn_side(const Game& g, int state, bool night, int frame, int dy
     }
     int acc = acc_draw >= 0 ? acc_draw : g.s.accessory;
     if (acc > ACC_NONE && acc < ACC_COUNT) {   // the accessory follows her head in every pose
-        int ax = UP_HEAD[state][frame][0], ay = UP_HEAD[state][frame][1];
+        int ax = UP_HEAD[state][frame][0], ay = UP_HEAD[state][frame][1] + (rigged ? head_dy : 0);
         if (flip) ax = UP_SIDE_W - 1 - ax;
         const int s4 = SC * 2 / 3;         // drawn a bit finer than her own pixels
         blit2(UP_ICONS + (IC_BOW + acc - 1) * UP_ICON_W * UP_ICON_H, UP_ICON_W, UP_ICON_H, s4, s4,
@@ -1014,7 +1050,9 @@ static void scene_cloud(const Game& g) {
     house_button();
     for (int i = 0; i < 3; i++) ellipse(64 + i * 120, CLOUD_Y + 50, 4, 4, TRACK);   // lane guides
     // the cloud, sliding smoothly toward where it is going
-    int cx = g.cloud_x;
+    int cx = g.cloud_x + ahead(g.cloud_vx, g);   // between steps too: 10 moves a second looked jerky
+    if (cx < 64) cx = 64;
+    if (cx > 304) cx = 304;
     static const u16 WHITE_CLOUD[2] = {rgb(0xF4, 0xF8, 0xFF), rgb(0xC9, 0xD8, 0xF0)};
     art(CLOUD, 11, "ws", WHITE_CLOUD, cx - 48, CLOUD_Y - 26, 4);
     int stacked = 0;
@@ -1914,6 +1952,21 @@ static const char* const ART_TOYBOX[12] = {
 static const char* const ART_TOILET[12] = {
     "wwwww.........", "wwwww.........", "wwwww.........", "wwwwwwwwwwwww.", "kkkkkkkkkkkkk.", ".wwwwwwwwwww..",
     "..wwwwwwwwww..", "...wwwwwwww...", "....wwwwww....", "....wwwwww....", "...wwwwwwww...", "..............."};
+static const char* const ART_BATH[10] = {   // a tub of water, bubbles rising
+    "..l....l...l..", ".l.l..l.l.l.l.", "..l....l...l..", "wwwwwwwwwwwwww", "wbbbbbbbbbbbbw", "wbbbbbbbbbbbbw",
+    ".wbbbbbbbbbbw.", ".wwwwwwwwwwww.", "..k........k..", ".kk........kk."};
+static const char* const ART_CRAYONS[8] = {   // the suggestions: crayons, bricks, a book, a doll
+    "..r...b...y...", ".rrr.bbb.yyy..", ".rrr.bbb.yyy..", ".rrr.bbb.yyy..", ".rrr.bbb.yyy..", ".www.www.www..",
+    ".rrr.bbb.yyy..", ".rrr.bbb.yyy.."};
+static const char* const ART_BRICKS[9] = {
+    ".y.y.y.y......", "yyyyyyyyy.....", "yyyyyyyyy.....", "..r.r.r.r.r...", ".rrrrrrrrrrr..", ".rrrrrrrrrrr..",
+    "g.g.g.g.g.g.g.", "gggggggggggggg", "gggggggggggggg"};
+static const char* const ART_BOOK[7] = {
+    "bbbbbbbbbbbbbb", "bwwwwwbbwwwwwb", "bwkkkwbbwkkkwb", "bwwwwwbbwwwwwb", "bwkkkwbbwkkkwb", "bwwwwwbbwwwwwb",
+    "bbbbbbbbbbbbbb"};
+static const char* const ART_DOLL[12] = {
+    "....yyyyyy....", "...yyyyyyyy...", "...ywwwwwwy...", "...wwkwwkww...", "...wwwwwwww...", "....wwppww....",
+    ".....pppp.....", "...pppppppp...", "..pppppppppp..", "..pppppppppp..", "....ww..ww....", "....ww..ww...."};
 static const char* const ART_EAR[12] = {
     "..pppppp..", ".pppppppp.", "ppp....ppp", "pp..pp..pp", "pp.p..p.pp", "....p..ppp", "....p.ppp.", "...pp.pp..",
     "...p..pp..", "..pp.pp...", ".ppppp....", "..ppp....."};
@@ -1925,11 +1978,15 @@ static const char QKEYS[] = "wkprbyglonh";
 
 // question q's picture centred on (cx, cy), s screen pixels per art pixel (the heart for the open one)
 static void q_picture(int q, int cx, int cy, int s) {
-    static const char* const* const ART[Q_YESNO] = {ART_BRUSH, ART_BRUSH, ART_SHIRT, ART_UNIFORM, ART_COMB, ART_PILL,
-                                                    ART_EGG_PLATE, ART_GLASS, ART_DINNER, ART_TOYBOX, ART_TOILET};
-    static const u8 H[Q_YESNO] = {13, 13, 12, 12, 9, 8, 9, 12, 10, 12, 12};
-    if (q < 0 || q >= Q_YESNO) { icon(IC_HEART, s * 14 / UP_ICON_W, cx - s * 7, cy - s * 6); return; }
-    art(ART[q], H[q], QKEYS, QCOL, cx - 7 * s, cy - H[q] * s / 2, s);
+    static const char* const* const ART[Q_HAPPY] = {ART_BRUSH, ART_BRUSH, ART_SHIRT, ART_UNIFORM, ART_COMB, ART_PILL,
+                                                    ART_EGG_PLATE, ART_GLASS, ART_DINNER, ART_TOYBOX, ART_TOILET, ART_BATH};
+    static const u8 H[Q_HAPPY] = {13, 13, 12, 12, 9, 8, 9, 12, 10, 12, 12, 10};
+    static const char* const* const ACT_ART[ACT_COUNT] = {0, ART_CRAYONS, ART_BRICKS, ART_BOOK, ART_DOLL};
+    static const u8 ACT_H[ACT_COUNT] = {0, 8, 9, 7, 12};
+    if (q >= 0 && q < Q_HAPPY) { art(ART[q], H[q], QKEYS, QCOL, cx - 7 * s, cy - H[q] * s / 2, s); return; }
+    if (int a = q >= 0 && q < Q_COUNT ? q_activity(q) : 0) { art(ACT_ART[a], ACT_H[a], QKEYS, QCOL, cx - 7 * s, cy - ACT_H[a] * s / 2, s); return; }
+    int ic = q == Q_BASKETBALL || q == Q_VOLLEYBALL ? IC_BALL : IC_HEART;   // the sports: a ball; the open ones: a heart
+    icon(ic, s * 14 / UP_ICON_W, cx - s * 7, cy - s * 6);
 }
 
 // SC_ASK: the card says what she asks, an ear while she listens, the big tick and cross when nobody can
@@ -1966,9 +2023,9 @@ static void scene_ask(const Game& g) {
         }
         break;
     case RS_REPLY: {
-        int a = g.s.r_ans[q < Q_COUNT ? q : 0] >> 11;
-        bool yes = a == ANS_YES || a == ANS_TAP_YES || (q == Q_HAPPY && a == ANS_SAID);
-        if (yes && q < Q_YESNO) {          // a star for today, and how many so far
+        int a = g.ans(q < Q_COUNT ? q : 0) >> 11;
+        bool yes = a == ANS_YES || a == ANS_TAP_YES || (q < Q_COUNT && q_open(q) && a == ANS_SAID);
+        if (yes && q < Q_COUNT && q_star(q)) {   // a star for today, and how many so far
             int pop = g.calm() ? 0 : arc(t % 1000, 1000, 10);
             icon(IC_STAR, 10, SCREEN_W / 2 - UP_ICON_W * 5, 318 - pop);
             char line[48];
@@ -2017,8 +2074,9 @@ static void scene_habits(const Game& g) {
         if (c.known) two(calendar(day * 86400u).mday, n);
         text(n, x + 12, 50, 1, d == 6 ? INK : DIM);
         bool kept = c.known && day <= g.s.r_day && day + 7 > g.s.r_day;   // only days the week still holds
-        for (int q = 0; q < Q_YESNO; q++) {
-            int y = 66 + q * 30;
+        for (int q = 0, row = 0; q < Q_COUNT; q++) {   // the habits only (a star is a yes to one of them)
+            if (!q_star(q)) continue;
+            int y = 66 + row++ * 30;
             if (d == 0) { q_picture(q, 32, y + 13, 2); fill(60, y + 28, SCREEN_W - 16, y + 29, TRACK); }
             if (kept && (g.s.week[day % 7] >> q & 1)) icon(IC_STAR, 2, x + 3, y + 6);
         }
@@ -2091,14 +2149,21 @@ static void scene_settings(const Game& g) {
     text(T(S_HINT_MAIN), SCREEN_W / 2, 428, 1, DIM);
 }
 
-// LEAVE / AWAY / RETURN: she goes out to play with friends and hangs a sign on the door.
+// LEAVE / AWAY / RETURN: she goes out to play with friends; the away screen shows them at it.
+static void act_yes(const Game& g, int t, int dy);   // or off to her own activity (below)
 static void walker(const Game& g, const char* sub, const char* says) {
-    bool walking = g.vel_x != 0;
+    bool walking = g.vel_x != 0, yes = g.scene == SC_LEAVE && g.s.away_act;
     u32 ph = now(g) / 120 % 4;
-    int state = walking ? (ph < 2 ? ST_WALK : ST_WALK2) : M_HAPPY;
-    home_like(g, state, sub, false, walking ? (int)(ph & 1) : 0, 0, false);
-    if (g.scene == SC_LEAVE) {             // a friend comes to pick her up (drawn smaller: further back)
-        int fc = (g.s.character + 1) % UP_CHARS, t = (int)now(g), arrive = 1200 + FRIEND_MS;
+    int t = (int)now(g), state = walking ? (ph < 2 ? ST_WALK : ST_WALK2) : M_HAPPY, dy = 0;
+    if (yes && !g.calm() && t >= 1200 && t < 1700) { state = ST_HOP; dy = arc(t - 1200, 500, 30); }   // "yes!"
+    if (yes && !g.calm() && t >= 1200 && t < 1700 + SQUASH_MS) squash_now = squash_for(t - 1200, 500);
+    if (yes) head_dy = t < 1200 ? 2 * seg(t, 600, 1000) / 256 : t < 1200 + FRIEND_MS ? wave(t, 700, 1) : 0;   // eyes them, then nods with her prize
+    home_like(g, state, sub, false, walking ? (int)(ph & 1) : 0, dy, false);
+    squash_now = 0;
+    if (yes) act_yes(g, t, dy);
+    head_dy = 0;
+    if (!yes && g.scene == SC_LEAVE) {        // a friend comes to pick her up (drawn smaller: further back)
+        int fc = (g.s.character + 1) % UP_CHARS, arrive = 1200 + FRIEND_MS;
         int fx;
         if (t < 1200) fx = SCREEN_W + 10;
         else if (t < arrive) {             // ease-out walk in from the right
@@ -2116,47 +2181,392 @@ static void walker(const Game& g, const char* sub, const char* says) {
     if (says && side_x(g) < SCREEN_W - 120 && now(g) < 1200) bubble(side_x(g) + P(200), side_y(g) - P(6), says);
 }
 
-static void scene_away(const Game& g) {
-    static const u16 WOOD = rgb(0x8B, 0x5A, 0x3C), WOOD2 = rgb(0x74, 0x48, 0x30), FRAME = rgb(0x4A, 0x30, 0x22);
-    int shake = g.wobbling ? wave(g.clock_ms + g.acc_ms, 120, 3) : 0;
-    text(T(S_NAME_0 + g.s.character), SCREEN_W / 2, 26, 2, PAL[UP_ACCENT[g.s.character]]);
-    text(T(S_OUT_PLAYING), SCREEN_W / 2, 48, 1, DIM);
-    ellipse(SCREEN_W / 2, 352, 130, 10, GROUND1);
-    int x0 = 108 + shake;
-    fill(x0 - 8, 76, x0 + 160, 352, FRAME);
-    fill(x0, 84, x0 + 152, 352, WOOD);
-    static const u16 LIT = rgb(0xB0, 0x78, 0x50);
-    for (int k = 0; k < 2; k++) {          // two raised panels: lit top-left, shaded bottom-right
-        int y0 = k ? 212 : 96, y1 = k ? 340 : 196;
-        fill(x0 + 12, y0, x0 + 140, y1, WOOD2);
-        fill(x0 + 16, y0 + 4, x0 + 136, y1 - 4, WOOD);
-        fill(x0 + 16, y0 + 4, x0 + 136, y0 + 8, LIT);
-        fill(x0 + 16, y0 + 4, x0 + 20, y1 - 4, LIT);
+// ---- out with friends: short looping vignettes -------------------------------------------------
+// Each one reads in a second and loops in 1-2.4 s: the screen is lit for 5 s only, and nothing here
+// is a reason to keep tapping. All motion comes from now(g), so every band draws the same picture.
+
+// a unicorn at play: character ch, side sprite, feet on y `feet`; she keeps her bow on out there.
+// hdx/hdy/tdx move her head and tail tuft (rig, above); ignored in poses that are one piece.
+static void playmate(const Game& g, int ch, int state, int frame, int x, int feet, int s, bool flip, bool night,
+                     int hdx = 0, int hdy = 0, int tdx = 0) {
+    const u8* spr = UP_SIDE + ((ch * UP_SIDE_STATES + state) * 2 + frame) * UP_SIDE_W * UP_SIDE_H;
+    const u16* pal = night ? NIGHT : PAL;
+    int top = feet - UP_SIDE_FEET * s;
+    if (!standing(state)) hdx = hdy = tdx = 0;
+    if (hdx | hdy | tdx) rig(spr, s, x, top, pal, flip, hdx, hdy, tdx);
+    else blit(spr, UP_SIDE_W, UP_SIDE_H, s, x, top, pal, flip);
+    int acc = g.s.accessory;
+    if (ch != g.s.character || acc <= ACC_NONE || acc >= ACC_COUNT) return;
+    int ax = UP_HEAD[state][frame][0] + hdx, ay = UP_HEAD[state][frame][1] + hdy, s4 = s * 2 / 3;
+    if (flip) ax = UP_SIDE_W - 1 - ax;
+    blit2(UP_ICONS + (IC_BOW + acc - 1) * UP_ICON_W * UP_ICON_H, UP_ICON_W, UP_ICON_H, s4, s4,
+          x + ax * s - UP_ICON_W * s4 / 2, top + ay * s - UP_ICON_H * s4 + s * 8 / 6, pal, flip);
+}
+// her muzzle in a standing pose (sprite pixel 35, 21): where she holds and touches things
+static int muzzle_x(int x, int s, int hdx, bool flip) { return x + (flip ? 4 - hdx : 35 + hdx) * s + s / 2; }
+static int muzzle_y(int feet, int s, int hdy) { return feet - (UP_SIDE_FEET - 21 - hdy) * s; }
+// a 160 ms blink every 3.3 s, out of step between friends (seed); only over a plain standing pose
+static int blink(int state, u32 t, u32 seed) {
+    return (state == M_IDLE || state == M_HAPPY) && (t + seed) % 3300 < 160 ? ST_BLINK : state;
+}
+
+// a friend watching from a step further back (smaller, feet a little higher), blinking now and then
+static void onlooker(const Game& g, int ch, int x, int gy, u32 t) {
+    playmate(g, ch, blink(M_IDLE, t, 1100), 0, x, gy - 16, 2, false, false);
+}
+
+static const u16 WOOD = rgb(0x8B, 0x5A, 0x3C), FRAME = rgb(0x4A, 0x30, 0x22);
+
+// 0: catch! the ball flies nose to nose (1 s each way): the hitter dips, then flicks it up off her nose
+// on the hit frame; the catcher watches it come, hops up and takes it on hers
+static void away_ball(const Game& g, int me, int f1, int f2, u32 t, int gy) {
+    u32 p = t % 2400;
+    bool back = p >= 1200;                 // back: from the right to the left
+    u32 q = back ? p - 1200 : p;
+    int hop = g.calm() ? 0 : 22, bx = burn_x(g);
+    int catching = q >= 800 ? arc(q - 800, 400, hop) : 0;
+    int hit = 2 - 4 * seg(q, 150, 260) / 256 + 2 * seg(q, 400, 700) / 256;   // the hitter's head: dip, flick, settle
+    int look = q >= 500 ? -2 + 2 * seg(q, 1000, 1200) / 256 : 0;             // the catcher's: up at the ball
+    int lx = 24 + bx, rx = 224 + bx, lh = back ? look : hit, rh = back ? hit : look;
+    onlooker(g, f2, 144 + bx, gy, t);
+    playmate(g, me, back && catching ? ST_HOP : blink(M_HAPPY, t, 0), (t / 300) & 1, lx, gy + (back ? catching : 0),
+             3, false, false, 0, lh);
+    playmate(g, f1, !back && catching ? ST_HOP : blink(M_HAPPY, t, 1700), (t / 300) & 1, rx, gy + (back ? 0 : catching),
+             3, true, false, 0, rh);
+    int lnx = muzzle_x(lx, 3, 0, false) + 12, rnx = muzzle_x(rx, 3, 0, true) - 12, ny = muzzle_y(gy, 3, 0) - 6;   // just off each nose
+    int x0 = back ? rnx : lnx, x1 = back ? lnx : rnx, x, y;
+    if (q < 200) { x = x0; y = muzzle_y(gy, 3, hit) - 6; }      // on the nose through the wind-up
+    else { int f = (int)((q - 200) * 256 / 1000); x = lerp(x0, x1, f); y = ny + arc(q - 200, 1000, g.calm() ? 40 : 70); }
+    icon(IC_BALL, 4, x - UP_ICON_W * 2, y - UP_ICON_H * 2);
+}
+
+// 1: see-saw: a plank on a block tips over 2.4 s; the rider coming down sinks into the plank and ducks
+// (her weight lands), the one going up lifts off it a little
+static void away_seesaw(const Game& g, int me, int f1, int f2, u32 t, int gy) {
+    int px = SCREEN_W / 2 + burn_x(g), py = gy - 50;
+    u32 ph = t % 2400;
+    int dy = wave(t, 2400, g.calm() ? 12 : 30);          // left end up by dy, right end down
+    onlooker(g, f2, px - 40, gy, t);
+    for (int k = 0; k < 9; k++) fill(px - 6 - k * 5, py + 6 + k * 5, px + 6 + k * 5, py + 11 + k * 5, FRAME);
+    for (int i = 0; i <= 40; i++) {
+        int x = px - 120 + i * 6, y = py - dy + 2 * dy * i / 40;
+        fill(x, y - 3, x + 6, y + 3, WOOD);
     }
-    static const char* const KNOB[4] = {".yy.", "yhyy", "yyyo", ".oo."};
-    static const u16 KNOB_COLS[3] = {YELLOW, rgb(0xFF, 0xF6, 0xC8), rgb(0xFF, 0x9F, 0x43)};
-    art(KNOB, 4, "yho", KNOB_COLS, x0 + 122, 198, 4);
-    // the sign hangs from the knob and swings when someone knocks
-    int sw = g.wobbling ? wave(g.clock_ms + g.acc_ms, 260, 10) : 0;
-    int kx = x0 + 130, ky = 206, sx = kx - 4 + sw, sy = 228;
-    for (int i = 0; i <= 30; i++)          // two cords to the knob, in 3 px steps
-        for (int e = -1; e <= 1; e += 2) {
-            int cx = kx + (sx + e * 50 - kx) * i / 30, cy = ky + (sy - ky) * i / 30;
-            cx -= cx % 3; cy -= cy % 3;
-            fill(cx, cy, cx + 3, cy + 3, INK);
+    int sinkR = ph >= 300 && ph < 900 ? -arc(ph - 300, 600, 3) : 0, liftL = ph >= 300 && ph < 900 ? arc(ph - 300, 600, 6) : 0;
+    int sinkL = ph >= 1500 && ph < 2100 ? -arc(ph - 1500, 600, 3) : 0, liftR = ph >= 1500 && ph < 2100 ? arc(ph - 1500, 600, 6) : 0;
+    bool up = dy > 6, down = dy < -6;
+    playmate(g, me, up ? ST_HOP : blink(M_HAPPY, t, 0), (t / 400) & 1, px - 160, py - dy - 3 + sinkL + liftL, 2, false, false,
+             0, sinkL > 2 ? 2 : sinkL);
+    playmate(g, f1, down ? ST_HOP : blink(M_HAPPY, t, 1500), (t / 400) & 1, px + 80, py + dy - 3 + sinkR + liftR, 2, true, false,
+             0, sinkR > 2 ? 2 : sinkR);
+}
+
+// 2: soap bubbles: a friend blows them, they drift up and grow, and she hops after them
+static void away_bubbles(const Game& g, int me, int f1, int f2, u32 t, int gy) {
+    int bx = burn_x(g);
+    onlooker(g, f2, 150 + bx, gy, t);
+    int fr = (t / 400) & 1;
+    playmate(g, f1, blink(M_HAPPY, t, 900), fr, 20 + bx, gy, 3, false, false);
+    int hop = g.calm() ? 0 : arc(t % 1200, 600, 24);
+    playmate(g, me, hop ? ST_HOP : blink(M_HAPPY, t, 0), fr, 228 + bx, gy + hop, 3, true, false);
+    static const u16 RING[2] = {rgb(0x6F, 0xD6, 0xFF), INK};
+    int mx = 20 + bx + (UP_HEAD[M_HAPPY][fr][0] + 6) * 3, my = gy - UP_SIDE_FEET * 3 + (UP_HEAD[M_HAPPY][fr][1] + 8) * 3;
+    for (int k = 0; k < 5; k++) {
+        u32 p = (t + k * 480) % 2400;
+        int s = 1 + (int)(p * 3 / 2400);
+        int x = mx + (int)(p * 150 / 2400) + wave(t + k * 500, 1100, 7), y = my - (int)(p * 170 / 2400);
+        art(BUBBLE_ART, 8, "ch", RING, x - 4 * s, y - 4 * s, s);
+    }
+}
+
+// 3: skipping rope: two friends swing it (1 s a turn), heads bobbing with it; she crouches as it comes
+// round, jumps as it passes under her feet, and lands with a dip
+static void away_rope(const Game& g, int me, int f1, int f2, u32 t, int gy) {
+    int bx = burn_x(g), fr = (t / 500) & 1;
+    u32 ph = (t + 250) % 1000;             // 0..500: in the air
+    int v = sin64(ph * 64 / 1000);         // +256: the rope is down in front, -256: up behind
+    int sag = v > 0 ? 56 * v / 256 : 112 * v / 256;
+    int hop = arc(ph, 500, g.calm() ? 10 : 44), swing = v > 0 ? 1 : 0;
+    playmate(g, f1, blink(M_HAPPY, t, 0), fr, 16 + bx, gy, 2, false, false, 0, swing);
+    playmate(g, f2, blink(M_HAPPY, t, 1600), fr, 272 + bx, gy, 2, true, false, 0, swing);
+    auto rope = [&]() {
+        for (int i = 0; i <= 52; i++) {
+            int x = 80 + bx + i * 4, y = gy - 58 + sag * 4 * i * (52 - i) / (52 * 52);
+            fill(x, y - 2, x + 4, y + 2, INK);
         }
-    rrect(sx - 60, sy, sx + 60, sy + 64, 12, rgb(0xFF, 0xC2, 0xE0), rgb(0x8A, 0x1F, 0x5C), 3);
-    text(T(S_SIGN_1), sx, sy + 14, 1, rgb(0x3A, 0x0F, 0x2B));
-    text(T(S_SIGN_2), sx, sy + 30, 1, rgb(0x3A, 0x0F, 0x2B));
-    icon(IC_MOON, 1, sx - 4, sy + 46);
-    // a calm picture of the friends playing: no countdown to keep checking (time is for grown-ups)
-    for (int i = 0; i < 3; i++) {
-        int fc = (g.s.character + 1 + i) % UP_CHARS;
-        const int sz = UP_FRONT_W * UP_FRONT_H;
-        int hop = g.calm() ? 0 : arc((now(g) + i * 500) % 1500, 600, 6);
-        blit(UP_FRONT + ((fc * UP_MOODS + M_HAPPY) * 2) * sz, UP_FRONT_W, UP_FRONT_H, 1,
-             SCREEN_W / 2 - 100 + i * 76, 362 + hop, PAL);
+    };
+    int crouch = ph >= 850 ? 3 * seg(ph, 850, 1000) / 256 : ph < 650 ? 2 - 2 * seg(ph, 500, 650) / 256 : 0;
+    if (g.calm()) crouch = (crouch + 1) / 2;
+    if (v <= 0) rope();
+    playmate(g, me, hop ? ST_HOP : M_HAPPY, fr, 124 + bx, gy + hop, 3, false, false, 0, crouch);
+    if (v > 0) rope();
+}
+
+// 4: a butterfly flits between them in a figure of eight; both follow it with their heads (straight up
+// when it is over them, forward when it is across), and each hops when it comes near
+static void away_butterfly(const Game& g, int me, int f1, int f2, u32 t, int gy) {
+    int bx = burn_x(g), hop = g.calm() ? 0 : 26;
+    int lh = arc(t % 2400, 500, hop), rh = arc((t + 1200) % 2400, 500, hop);
+    int x = SCREEN_W / 2 + bx - wave(t + 600, 2400, 110), y = 170 + wave(t, 1200, 24) + wave(t, 400, 6);
+    onlooker(g, f2, 144 + bx, gy, t);
+    playmate(g, me, lh ? ST_HOP : blink(M_HAPPY, t, 0), (t / 400) & 1, 24 + bx, gy + lh, 3, false, false,
+             x > 150 + bx, x > 220 + bx ? -1 : -2);
+    playmate(g, f1, rh ? ST_HOP : blink(M_HAPPY, t, 1900), (t / 400) & 1, 224 + bx, gy + rh, 3, true, false,
+             x < 210 + bx, x < 140 + bx ? -1 : -2);
+    bool open = g.calm() || ((t / 120) & 1);
+    static const u16 COLS[6] = {rgb(0x2B, 0x18, 0x40), rgb(0x4A, 0x2E, 0x6B), rgb(0xFF, 0x8C, 0x2E),
+                                rgb(0xFF, 0xC0, 0x4D), rgb(0x7A, 0x3A, 0x1A), rgb(0xF4, 0xEE, 0xFF)};
+    art(open ? BFLY_OPEN : BFLY_UP, 16, "okabvw", COLS, x - 31, y - 24, 3);
+}
+
+// night: fireflies drift and blink over the meadow; they watch, one friend has dozed off. No hops.
+static void away_fireflies(const Game& g, int me, int f1, int f2, u32 t, int gy) {
+    int bx = burn_x(g);
+    playmate(g, f2, ST_SLEEP, 0, 144 + bx, gy - 12, 2, false, true);
+    playmate(g, me, (t / 1500) % 4 == 3 ? ST_BLINK : M_IDLE, 0, 24 + bx, gy, 3, false, true);
+    playmate(g, f1, (t / 1500 + 2) % 4 == 3 ? ST_BLINK : M_IDLE, 0, 224 + bx, gy, 3, true, true);
+    static const u16 GLOW = rgb(0x7A, 0x6E, 0x22), DARK = rgb(0x4A, 0x44, 0x1E);
+    for (int i = 0; i < 7; i++) {
+        int x = 44 + i * 44 + wave(t + i * 700, 2600 + i * 200, 24), y = 150 + (i % 3) * 36 + wave(t + i * 900, 1900 + i * 150, 14);
+        x -= x % 3; y -= y % 3;
+        if ((t / 300 + i * 2) % 5 < 3) { fill(x - 3, y - 3, x + 6, y + 6, GLOW); fill(x, y, x + 3, y + 3, YELLOW); }
+        else fill(x, y, x + 3, y + 3, DARK);
     }
+}
+
+// ---- her own break: she said yes to colouring, bricks, a book or her dolls --------------------
+// The same props serve the "yes!" moment (walker: she grabs one and walks off with it) and the away
+// vignette (scene_away: her at it, instead of the friends' games). away_pick varies each look.
+
+static const u16 PAGE_INK = rgb(0x55, 0x4E, 0x7A), SKIN = rgb(0xFF, 0xD9, 0xB8), HAIR = rgb(0x5A, 0x33, 0x1E);
+static inline u16 shade(u16 c) { return (c >> 1) & 0x7BEF; }   // the same colour, half as bright
+
+static const char* const CRAYON[10] = {".c.", "ccc", "ccc", "www", "ccc", "ccc", "ccc", "ccc", "www", "ccc"};
+static const char* const DOLL[13] = {
+    ".hhhhh.", "hhhhhhh", "hfffffh", "hfefefh", ".fffff.", "..ddd..", ".ddddd.", ".ddddd.", "ddddddd",
+    "ddddddd", "..f.f..", "..f.f..", ".ss.ss."};
+
+static void crayon(int x, int y, int s, u16 c) {   // top-centre at (x, y)
+    const u16 cols[2] = {c, INK};
+    art(CRAYON, 10, "cw", cols, x - 3 * s / 2, y, s);
+}
+static void crayon_box(int x, int gy, int v) {     // four crayons standing in a box, bottom-centre at (x, gy)
+    for (int k = 0; k < 4; k++) crayon(x - 18 + k * 12, gy - 36, 3, RAINBOW[(k * 2 + v) % 7]);
+    fill(x - 27, gy - 18, x + 27, gy, WOOD);
+    fill(x - 27, gy - 18, x + 27, gy - 15, FRAME);
+}
+static void brick(int x, int y, int w, u16 c) {    // a toy brick, top-left (x, y) under two studs
+    fill(x, y - 3, x + w / 2 - 6, y, c); fill(x + w / 2 + 3, y - 3, x + w - 3, y, c);   // studs
+    fill(x, y, x + w, y + 12, c);
+    fill(x, y + 9, x + w, y + 12, shade(c));
+}
+static void doll(int x, int gy, u16 dress) {       // a little doll, bottom-centre at (x, gy)
+    const u16 cols[5] = {HAIR, SKIN, PAGE_INK, dress, shade(dress)};
+    art(DOLL, 13, "hfeds", cols, x - 10, gy - 39, 3);
+}
+static void book_closed(int x, int y, u16 cover) { // top-left (x, y), 36 x 27
+    fill(x, y, x + 36, y + 27, cover);
+    fill(x + 30, y + 3, x + 36, y + 24, INK);       // the page edges
+    fill(x, y, x + 3, y + 27, shade(cover));        // the spine
+}
+
+// each held thing hangs from its grab point (x, y): what she carries in her mouth
+static void held(int act, int x, int y, int v) {
+    switch (act) {
+    case ACT_COLOR: crayon(x, y, 3, RAINBOW[(v * 2) % 7]); break;
+    case ACT_LEGO:  brick(x - 18, y + 3, 36, RAINBOW[(v + 1) % 7]); break;
+    case ACT_READ:  book_closed(x - 18, y, RAINBOW[(v * 3 + 4) % 7]); break;
+    default:        doll(x, y + 39, RAINBOW[(v * 2) % 7]); break;
+    }
+}
+// what waits on the floor (the yes moment), bottom-centre at (x, gy); taken: she has her piece of it
+static void act_set(int act, int x, int gy, int v, bool taken) {
+    switch (act) {
+    case ACT_COLOR: crayon_box(x, gy, v); break;
+    case ACT_LEGO:
+        brick(x - 18, gy - 12, 36, RAINBOW[(v + 3) % 7]); brick(x + 6, gy - 12, 30, RAINBOW[(v + 5) % 7]);
+        if (!taken) brick(x - 12, gy - 27, 36, RAINBOW[(v + 1) % 7]);
+        break;
+    case ACT_READ:  if (!taken) book_closed(x - 18, gy - 27, RAINBOW[(v * 3 + 4) % 7]); break;
+    default:        if (!taken) doll(x - 14, gy, RAINBOW[(v * 2) % 7]); doll(x + 14, gy, RAINBOW[(v * 2 + 3) % 7]); break;
+    }
+}
+
+// SC_LEAVE, "yes!": the things wait at the right; at 1.2 s she hops and takes one up in her mouth,
+// sparkles, and from 1200 + FRIEND_MS step() walks her off with it. (A hug of hearts comes from step().)
+static void act_yes(const Game& g, int t, int dy) {
+    int v = g.away_pick % 3, gx = 330 + burn_x(g), gy = 346 + burn_y(g);
+    int mx = side_x(g) + P(210), my = side_y(g) + dy + P(126) + (squash_now ? 0 : head_dy) * SC;   // her mouth (sprite px 35, 21)
+    act_set(g.s.away_act, gx, gy, v, t >= 1200);
+    if (t < 1200) return;
+    int p = seg(t, 1200, 1700);
+    int x = lerp(gx, mx, p), y = lerp(gy - 39, my, p) + arc(p, 256, 40);
+    held(g.s.away_act, x, y, v);
+    if (t >= 1700 && t < 1200 + FRIEND_MS) {
+        sparkle(mx + 30 + wave(t, 700, 6), my - 20, 3, YELLOW);
+        sparkle(mx - 10, my + 40 + wave(t + 350, 700, 6), 3, PINK);
+    }
+}
+
+// a crayon held in the mouth: a thick stick from (x0, y0) to its tip at (x1, y1)
+static void stick(int x0, int y0, int x1, int y1, u16 c) {
+    for (int k = 0; k <= 20; k++) { int x = lerp(x0, x1, k * 256 / 20), y = lerp(y0, y1, k * 256 / 20); fill(x - 2, y - 2, x + 3, y + 3, c); }
+}
+
+// SC_AWAY, colouring: she stands at a low easel, the crayon in her mouth, and a drawing (sun, house or
+// flower) comes stroke by stroke: the crayon's tip runs along each line as it appears, her head dipping
+// into every stroke. Eight strokes at 300 ms, then she lifts her head and the picture sparkles (1.5 s).
+static void act_color(const Game& g, int me, u32 t, int gy, bool night) {
+    struct Stroke { i8 x0, y0, x1, y1; u8 c; };   // on the sheet, c: RAINBOW index
+    static const Stroke SUN[8] = {{21, 15, 39, 33, 2}, {27, 3, 33, 12, 2}, {27, 36, 33, 45, 2}, {6, 21, 18, 27, 2},
+                                  {42, 21, 54, 27, 2}, {12, 9, 18, 15, 1}, {42, 9, 48, 15, 1}, {12, 33, 18, 39, 1}};
+    static const Stroke HOUSE[8] = {{15, 24, 45, 48, 3}, {24, 15, 36, 24, 0}, {18, 21, 42, 24, 0}, {12, 24, 48, 27, 0},
+                                    {27, 36, 33, 48, 4}, {18, 30, 24, 36, 5}, {36, 30, 42, 36, 5}, {0, 48, 60, 54, 3}};
+    static const Stroke FLOWER[8] = {{27, 27, 33, 51, 3}, {33, 36, 42, 42, 3}, {24, 9, 36, 15, 0}, {15, 18, 24, 30, 0},
+                                     {36, 18, 45, 30, 0}, {24, 33, 36, 39, 0}, {27, 18, 33, 30, 2}, {0, 48, 60, 54, 3}};
+    static const Stroke* const PICS[3] = {SUN, HOUSE, FLOWER};
+    const Stroke* pic = PICS[g.away_pick % 3];
+    int bx = burn_x(g), ex = 196 + bx, ey = gy - 100;             // the easel board's top-left
+    for (int k = 0; k < 2; k++) fill(ex + 6 + k * 54, ey + 60, ex + 12 + k * 54, gy, FRAME);   // legs
+    fill(ex, ey, ex + 72, ey + 66, WOOD);
+    fill(ex + 6, ey + 6, ex + 66, ey + 60, INK);                  // the sheet
+    u32 p = t % 3900;
+    int n = (int)(p / 300), q = seg(p % 300, 30, 270);            // strokes done, and how far the next has got
+    int tx = 0, ty = 0;                                           // the crayon's tip on the sheet
+    for (int k = 0; k < 8 && k <= n; k++) {
+        const Stroke& st = pic[k];
+        bool along = st.x1 - st.x0 >= st.y1 - st.y0;              // a stroke grows along its longer side
+        int x1 = st.x1, y1 = st.y1;
+        if (k == n) {
+            if (along) x1 = st.x0 + (st.x1 - st.x0) * q / 256; else y1 = st.y0 + (st.y1 - st.y0) * q / 256;
+            tx = ex + 6 + (along ? x1 : (st.x0 + st.x1) / 2); ty = ey + 6 + (along ? (st.y0 + st.y1) / 2 : y1);
+        }
+        fill(ex + 6 + st.x0, ey + 6 + st.y0, ex + 6 + x1, ey + 6 + y1, RAINBOW[st.c]);
+    }
+    crayon_box(300 + bx, gy, g.away_pick % 3);
+    bool done = n >= 8;
+    int ux = 76 + bx, hdx = done ? 0 : 1, hdy = done ? -1 : 2 - 2 * seg(p % 300, 40, 260) / 256;   // dips into each stroke
+    playmate(g, me, blink(done ? M_HAPPY : M_IDLE, t, 0), (t / 500) & 1, ux, gy, 3, false, night, hdx, hdy);
+    int mx = muzzle_x(ux, 3, hdx, false), my = muzzle_y(gy, 3, hdy);
+    if (!done) stick(mx, my, tx, ty, RAINBOW[pic[n].c]);
+    else {                                                        // head up, crayon up: it is finished
+        stick(mx, my, mx + 24, my - 22, RAINBOW[pic[7].c]);
+        sparkle(ex + 18 + wave(t, 900, 8), ey + 14, 3, YELLOW);
+        sparkle(ex + 54, ey + 40 + wave(t + 400, 900, 6), 3, PINK);
+    }
+}
+
+// SC_AWAY, bricks: the tower stands under her nose, the pile beyond it. She dips to the pile and a
+// brick comes up to her mouth, she lifts it over and sets it down: the tower grows the moment it lands.
+// One brick every 2.4 s; after the fourth the tower is done (sparkles, a hop unless calm or at night)
+// and a new one starts. anim_ms runs for the whole break, so the start height changes with each look.
+static void act_lego(const Game& g, int me, u32 t, int gy, bool night) {
+    int bx = burn_x(g), v = g.away_pick % 3, ux = 40 + bx, tx = 150 + bx, px = 196 + bx;
+    int round = (int)(t / 2400 % 4), n = 2 + v + round;         // bricks standing as this one starts
+    u32 p = t % 2400;
+    bool placed = p >= 1500, quiet = g.calm() || night;
+    for (int k = 0; k < n + placed; k++) brick(tx, gy - 12 * (k + 1), 36, RAINBOW[(k + v) % 7]);
+    int top = gy - 12 * (n + 1), reach = (60 - 12 * (n + 1)) / 8;   // the head follows the brick down or up to the top
+    if (reach > 3) reach = 3; else if (reach < -3) reach = -3;
+    int hdy;
+    if (p < 700) hdy = 2 * seg(p, 0, 350) / 256 - 2 * seg(p, 350, 700) / 256;
+    else if (p < 1000) hdy = -seg(p, 700, 900) / 256;
+    else if (p < 1500) hdy = -1 + (reach + 1) * seg(p, 1000, 1500) / 256;
+    else hdy = reach - reach * seg(p, 1500, 1800) / 256;
+    int hdx = p >= 150 && p < 1700 ? 1 : 0;
+    bool done = round == 3 && placed;
+    int hop = done && !quiet && p < 1900 ? arc(p - 1500, 400, 20) : 0;
+    playmate(g, me, hop ? ST_HOP : blink(M_HAPPY, t, 0), (t / 400) & 1, ux, gy + hop, 3, false, night, hdx, hdy);
+    brick(px, gy - 12, 30, RAINBOW[(n + v + 1) % 7]); brick(px + 34, gy - 12, 30, RAINBOW[(n + v + 2) % 7]);   // the pile
+    int mx = muzzle_x(ux, 3, hdx, false), my = muzzle_y(gy, 3, hdy);
+    u16 c = RAINBOW[(n + v) % 7];
+    if (p < 350) brick(px + 14, gy - 24, 36, c);                  // the next one waits on the pile
+    else if (p < 1000) { int f = seg(p, 350, 700); brick(lerp(px + 32, mx, f) - 18, lerp(gy - 27, my, f) + 3, 36, c); }   // up to her mouth
+    else if (!placed) { int f = seg(p, 1000, 1500); brick(lerp(mx, tx + 18, f) - 18, lerp(my + 3, top, f), 36, c); }     // set on top
+    if (done) {
+        sparkle(tx + 6 + wave(t, 700, 6), top - 14, 3, YELLOW);
+        sparkle(tx + 34, top - 4 + wave(t + 350, 700, 5), 3, PINK);
+    }
+}
+
+// SC_AWAY, a book: she sits on her cushion with the book open on a stand under her nose, head low,
+// scanning two lines left to right (1.1 s each); then she comes forward and nudges the next page over
+// with her nose. The picture on the left page is this look's story.
+static void act_read(const Game& g, int me, u32 t, int gy, bool night) {
+    int bx = burn_x(g), v = g.away_pick % 3, ux = 196 + bx;
+    static const u16 CUSHION[3] = {PINK, rgb(0xE0, 0x6A, 0x98), rgb(0x9F, 0xD8, 0xFF)};
+    ellipse(256 + bx, gy - 6, 72, 14, CUSHION[v]);
+    ellipse(256 + bx, gy - 9, 60, 8, CUSHION[(v + 2) % 3]);
+    int bkx = 128 + bx, bky = gy - 98;                            // the open book, two pages, on its stand
+    fill(bkx + 33, bky + 36, bkx + 45, gy, FRAME); fill(bkx + 15, gy - 6, bkx + 63, gy, FRAME);
+    fill(bkx, bky, bkx + 78, bky + 36, PAGE_INK);
+    fill(bkx + 3, bky + 3, bkx + 39, bky + 33, INK); fill(bkx + 42, bky + 3, bkx + 78, bky + 33, INK);
+    static const int STORY[3] = {IC_STAR, IC_HEART, IC_FLOWER};
+    icon(STORY[v], 2, bkx + 12, bky + 9);                         // a picture on the left page
+    for (int k = 0; k < 4; k++) fill(bkx + 48, bky + 8 + k * 6, bkx + 72 - (k & 1) * 6, bky + 11 + k * 6, DIM);
+    u32 p = t % 3000, f = p >= 2300 && p < 2700 ? p - 2300 : 400;
+    if (f < 400) {                                                // a page flaps over, right to left
+        int w = f < 200 ? 36 * (200 - (int)f) / 200 : 36 * ((int)f - 200) / 200;
+        int x0 = f < 200 ? bkx + 42 : bkx + 39 - w;
+        fill(x0, bky + 2, x0 + w, bky + 33, INK);
+        fill(f < 200 ? x0 + w - 2 : x0, bky + 2, f < 200 ? x0 + w : x0 + 2, bky + 33, PAGE_INK);
+    }
+    int hdx = p < 2200 ? -1 + 2 * seg(p % 1100, 100, 1000) / 256 : 1 - 2 * seg(p, 2600, 2950) / 256;
+    int hdy = p < 2200 ? 2 : p < 2700 ? 1 : 1 + seg(p, 2700, 2900) / 256;
+    int tdx = p >= 1150 && p < 1350 ? 1 : 0;                      // a flick of the tail between the lines
+    playmate(g, me, blink(M_IDLE, t, 0), (t / 700) & 1, ux, gy - 12, 3, true, night, hdx, hdy, tdx);
+}
+
+// SC_AWAY, her dolls: one sits up on the toy box at her nose, one on the floor. She nuzzles the near
+// one (it bounces, a heart), rocks them both with a sway of her head, and the far one hops up to
+// answer while she looks down at it. Calm or night: no hops, the dolls only sway.
+static void act_dolls(const Game& g, int me, u32 t, int gy, bool night) {
+    int bx = burn_x(g), v = g.away_pick % 3, ux = 30 + bx;
+    bool quiet = g.calm() || night;
+    u32 p = t % 3000;
+    fill(150 + bx, gy - 24, 190 + bx, gy, WOOD); fill(150 + bx, gy - 24, 190 + bx, gy - 21, FRAME);   // the toy box
+    int nuzzle = seg(p, 0, 300) - seg(p, 600, 900);              // 0..256: the nose to the near doll and back
+    int sway = p >= 900 && p < 2100 ? wave(p - 900, 600, 3) : 0; // rocking, her head and the dolls together
+    int hdx = nuzzle > 128 ? 1 : sway > 1 ? 1 : sway < -1 ? -1 : 0, hdy = nuzzle > 128 || p >= 2100 ? 1 : 0;
+    playmate(g, me, blink(M_HAPPY, t, 0), (t / 600) & 1, ux, gy, 3, false, night, hdx, hdy);
+    int bounce = p >= 250 && p < 650 ? arc(p - 250, 400, 8) : 0;   // the near doll, nudged
+    int hop = !quiet && p >= 2100 && p < 2900 ? arc((p - 2100) % 400, 400, 16) : 0;
+    doll(164 + bx + sway, gy - 24 + bounce, RAINBOW[(v * 2) % 7]);
+    doll(232 + bx + sway + (quiet ? wave(t, 1200, 2) : 0), gy + hop, RAINBOW[(v * 2 + 3) % 7]);
+    if (p >= 300 && p < 900) icon(IC_HEART, 2, muzzle_x(ux, 3, 1, false) + 2, muzzle_y(gy, 3, 1) - 30 - (int)(p - 300) / 30);
+}
+
+static void act_away(const Game& g, int me, u32 t, int gy, bool night) {
+    switch (g.s.away_act) {
+    case ACT_COLOR: act_color(g, me, t, gy, night); break;
+    case ACT_LEGO:  act_lego(g, me, t, gy, night); break;
+    case ACT_READ:  act_read(g, me, t, gy, night); break;
+    default:        act_dolls(g, me, t, gy, night); break;
+    }
+}
+
+static void scene_away(const Game& g) {
+    bool night = g.phase() == PH_NIGHT;
+    int me = g.s.character, pick = night ? AWAY_PICKS : g.away_pick % AWAY_PICKS;
+    // the friends take turns at the front: never her own character
+    int f1 = (me + 1 + pick % 3) % UP_CHARS, f2 = (me + 1 + (pick + 1) % 3) % UP_CHARS;
+    u32 t = now(g);
+    int gy = 346 + burn_y(g);
+    text(T(S_NAME_0 + me), SCREEN_W / 2, 26, 2, PAL[UP_ACCENT[me]]);
+    if (!g.s.away_act) text(T(S_OUT_PLAYING), SCREEN_W / 2, 48, 1, DIM);
+    backdrop(g);                           // the day sun, the low evening sun, or the night sky
+    ground(g, night);
+    if (g.s.away_act) pick = -1;           // her own activity, by day and by night
+    switch (pick) {
+    case -1: act_away(g, me, t, gy, night); break;
+    case 0: away_ball(g, me, f1, f2, t, gy); break;
+    case 1: away_seesaw(g, me, f1, f2, t, gy); break;
+    case 2: away_bubbles(g, me, f1, f2, t, gy); break;
+    case 3: away_rope(g, me, f1, f2, t, gy); break;
+    case 4: away_butterfly(g, me, f1, f2, t, gy); break;
+    default: away_fireflies(g, me, f1, f2, t, gy); break;
+    }
+    particles(g, HEADER_Y1);               // hearts when someone taps: the friends wave back
     text(T(S_REST_TOO), SCREEN_W / 2, 422, 1, DIM);
 }
 
@@ -2400,7 +2810,7 @@ void render_band(const Game& g, u16* buf, int y0, int y1) {
     case SC_ALBUM: scene_album(g); break;
     case SC_LOUNGE: scene_lounge(g); break;
     case SC_SLEEP: scene_sleep(g); break;
-    case SC_LEAVE: walker(g, T(S_FRIEND_CALLS), T(S_BUSY)); break;
+    case SC_LEAVE: walker(g, g.s.away_act ? "" : T(S_FRIEND_CALLS), T(S_BUSY)); break;   // her own break: just her name
     case SC_RETURN: walker(g, T(S_BACK_HOME), g.vel_x ? (const char*)0 : T(S_IM_BACK)); break;
     case SC_AWAY:  scene_away(g); break;
     case SC_REFUSE: scene_refuse(g); break;

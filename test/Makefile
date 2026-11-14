@@ -75,6 +75,14 @@ record: out
 	./out/record
 	cd .. && uv run --quiet --with pillow python tools/make_gif.py
 
+# The away vignettes, 3 s each at 20 fps -> design/away_<name>.gif (needs ffmpeg)
+away: out
+	$(CXX) -std=c++17 -O2 away_gif.cpp ../core/game.cpp ../core/render.cpp ../core/sound.cpp ../core/qr.cpp -o out/away_gif
+	mkdir -p out/away && ./out/away_gif out/away
+	for d in out/away/*/; do n=$$(basename $$d); case $$n in act_*) o=$$n;; *) o=away_$$n;; esac; \
+	  ffmpeg -loglevel error -y -framerate 20 -i $$d/f%03d.ppm \
+	  -vf "split[a][b];[a]palettegen=max_colors=64[p];[b][p]paletteuse=dither=none" ../design/$$o.gif || exit 1; done
+
 # A captioned tour of every feature from the real core -> design/tour.gif
 tour: out
 	mkdir -p out/tour && rm -f out/tour/*.ppm out/tour/*.txt
@@ -88,4 +96,4 @@ listener:
 
 all: test monkey tz ota http vad release i18n portal assets voice emu wasm listener
 
-.PHONY: test monkey tz ota http vad release i18n portal assets emu wasm listener all record tour
+.PHONY: test monkey tz ota http vad release i18n portal assets emu wasm listener all record tour away

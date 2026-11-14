@@ -50,7 +50,7 @@ enum { MAX_STAT = 10000 };
 
 // New scenes are appended so existing scene numbers (emulator) stay put.
 // LEAVE/AWAY/RETURN: after PLAY_LIMIT_MS of screen time she has "things to do" and goes out,
-// leaving a do-not-disturb sign on the door, so the screen stays dark for a while.
+// the screen shows her playing with them, then stays dark for a while.
 enum Scene { SC_EGG, SC_HATCH, SC_HOME, SC_EAT, SC_PLAY, SC_WASH, SC_SLEEP, SC_INFO, SC_REFUSE, SC_GAME,
              SC_LEAVE, SC_AWAY, SC_RETURN, SC_FEED, SC_SETTINGS,     // FEED: pick a snack
              SC_EGG_PICK, SC_TOYS, SC_MUSIC, SC_CLOUD, SC_DRESS,     // choose an egg; Oyna's toy box
@@ -139,7 +139,8 @@ enum {
     PLAY_LIMIT_MS = 10 * 60000,          // screen-on play time before she goes out
     AWAY_MS = 30 * 60000,                // how long she stays out (powered time)
     REST_RESET_MS = 15 * 60000,          // this long with the screen dark counts as a break
-    AWAY_SCREEN_OFF_MS = 5000,           // the door screen goes dark quickly
+    AWAY_SCREEN_OFF_MS = 8000,           // the away screen goes dark quickly (a game with friends to watch, then rest)
+    AWAY_PICKS = 5,                      // day/evening vignettes of her playing out (night has one of its own)
     LEAVE_MS = 4600, RETURN_MS = 3000,
     STEP_MS = 100,                       // simulation step; render interpolates between steps
     WALK_RANGE = 40, WALK_SPEED = 2,     // px from centre / px per step (20 px/s)
@@ -158,7 +159,8 @@ enum {
     VISIT_FIRST_MS = 8000, VISIT_EVERY_MS = 12000, VISIT_MS = 4000,   // butterfly neighbour
     MUSIC_MS = 20000, NOTES = 6, ECHO_WAIT_MS = 1500, ECHO_GAP_MS = 300,   // music garden
     CLOUD_MS = 15000, FEATHERS = 6, FEATHER_EVERY_MS = 2000, FEATHER_FALL = 6,   // tilt-a-cloud
-    CLOUD_Y = 310, CLOUD_SPEED = 8, CLOUD_CATCH = 48, TILT_STALE_MS = 500,
+    CLOUD_Y = 310, CLOUD_SPEED = 24, CLOUD_CATCH = 48, TILT_STALE_MS = 500,   // speed: px a step at most
+    TILT_DEAD = 10,                      // |tilt| within this steers by touch (a toy held still is never level)
     GREET_MS = 2000,                     // after a real break she greets you (stretch or yawn)
     EVENING_MIN = 17 * 60, NIGHT_MIN = 20 * 60, MORNING_MIN = 7 * 60,   // minute of the day
     TUCK_MS = 4000,                      // bedtime: a blanket to tuck her in (or it happens by itself)
@@ -203,20 +205,39 @@ struct Save {
     u8 lang;                  //     screen language (Lang, 0 = Turkish: older saves stay Turkish)
     u8 wake_we10;             // v8 (was v7's spare): wake-up time at weekends and on holidays
     u16 r_day;                //     local day the routine fields below are about (0 = none yet)
-    u16 r_asked, r_done;      //     questions asked today (bit per Question), and finished (no re-ask)
-    u16 q_off;                //     questions the parent switched off (bit per Question)
+    u16 old_r_asked, old_r_done;   // v8-v9's 16-bit masks: read once by load() into r_asked, r_done, q_off
+    u16 old_q_off;            //     below, then zero
     u16 week[7];              //     yes answers (stars) per day: week[day % 7], cleared as days go by
     u16 cfg_dirty;            //     settings changed on the toy since the last sync (bit per SetKey)
     u32 cfg_rev;              //     the parent page's config revision the settings are based on
     u16 hol[4][2];            //     holiday ranges from the parent page: local days, first..last
-    u16 r_ans[Q_COUNT];       //     today's answers: Answer << 11 | minute of the day (0 = none)
+    u16 r_ans[12];            //     today's answers: Answer << 11 | minute of the day (0 = none); [11] is
+                              //     Q_HAPPY's (as in v8): Game::ans() maps a question to its slot
     u16 tv_day;               //     local day TV test mode was switched on (it ends after TV_DAYS)
     u16 min_ones;             //     the minutes past bed10, wake10, wake_we10 (4 bits each, 0..9): a page's 19:35
+    u16 r_ans_bath;           // v9: today's answer to Q_BATH (the bits of r_asked, r_done, q_off from Q_BATH on
+    u16 bath_days[2];         //     moved up one); the local days of the last two bath questions, newest first
+    u16 spare9;
+    u32 r_asked, r_done;      // v10: questions asked today (bit per Question), finished (no re-ask; bit Q_COUNT:
+    u32 q_off;                //      the morning hello), and switched off by the parent
+    u16 r_ans_x[Q_COUNT - Q_HAPPY - 1];   // today's answers to the questions after Q_HAPPY
+    u16 suggest_day;          //      local day of the last suggestion (one a day at most)
+    u16 chat_days[2];         //      local days of the last two "how are you"s, newest first
+    u8 away_act;              //      what she went off to do (Activity): her break shows it
+    u8 spare10[3];
     u32 check;                // FNV-1a over everything above
 };
-enum { SAVE_VERSION = 8, SAVE_SIZE = sizeof(Save), SAVE_V1_SIZE = 24, SAVE_V2_SIZE = 28, SAVE_V3_SIZE = 32,
-       SAVE_V4_SIZE = 40, SAVE_V5_SIZE = 40, SAVE_V6_SIZE = 52, SAVE_V7_SIZE = 56, BIRTH_CHOSEN = 1, HOL_MAX = 4 };
-static_assert(sizeof(Save) == 128, "the save layout is stored: change it only with a new version");
+enum { SAVE_VERSION = 10, SAVE_SIZE = sizeof(Save), SAVE_V1_SIZE = 24, SAVE_V2_SIZE = 28, SAVE_V3_SIZE = 32,
+       SAVE_V4_SIZE = 40, SAVE_V5_SIZE = 40, SAVE_V6_SIZE = 52, SAVE_V7_SIZE = 56, SAVE_V8_SIZE = 128,
+       SAVE_V9_SIZE = 136, BIRTH_CHOSEN = 1, HOL_MAX = 4 };
+static_assert(sizeof(Save) == 172, "the save layout is stored: change it only with a new version");
+static_assert(Q_BATH == 11 && Q_HAPPY == 12 && Q_COUNT <= 31, "the save's bits: Q_BATH, then Q_HAPPY, then the newer ones");
+enum Activity { ACT_NONE, ACT_COLOR, ACT_LEGO, ACT_READ, ACT_DOLLS, ACT_COUNT };   // Save::away_act
+inline bool q_open(int q) { return Q_KIND[q] == QK_OPEN; }
+inline bool q_star(int q) { return Q_STARS >> q & 1; }
+inline int q_activity(int q) {             // the suggestion questions, in Activity order
+    return q == Q_COLOR ? ACT_COLOR : q == Q_LEGO ? ACT_LEGO : q == Q_READ ? ACT_READ : q == Q_DOLLS ? ACT_DOLLS : ACT_NONE;
+}
 
 // ---- her daily routine ---------------------------------------------------------------------------
 // The core asks (F_LISTEN, listen_req) and the platform listens, then reports with listen_result(). Answers
@@ -229,7 +250,8 @@ enum Answer { ANS_NONE, ANS_YES, ANS_NO, ANS_UNCLEAR, ANS_SILENT, ANS_SAID, ANS_
               ANS_NO_LISTENER };
 enum RStage { RS_ASK, RS_LISTEN, RS_BUTTONS, RS_REPLY };
 enum {
-    Q_GAP_MIN = 8, Q_REASK_MIN = 10,       // questions at least 8 minutes apart; one more try 10 min later
+    Q_GAP_MIN = 8, Q_REASK_MIN = 10, Q_LATE_MIN = 60,   // a question that came due mid-game: up to an hour late
+    HOME_PROBES = 3, HOME_FRESH_MS = 10 * 60000,   // "at home" checks a day, and how long one holds       // questions at least 8 minutes apart; one more try 10 min later
     Q_AT_WINDOW_MIN = 30,                  // a question at a set time (dinner, water) may come this much later
     R_LISTEN_MS = 30000, R_BUTTONS_MS = 20000, R_REPLY_MS = 5000,   // so a question never wedges
     R_DARK_LINGER_MS = 5000,               // woke the screen for it: dark again this soon after
@@ -248,7 +270,9 @@ enum Link { LINK_OFF, LINK_NOW, LINK_STAY };
 // holiday 0/1, holiday range count (ranges in hol[]), tv test 0/1, lang (Lang), volume (Volume), brightness
 // 1..255, play and break minutes, calm 0/1, shake 0/1.
 enum SetKey { K_ROUTINES, K_QUESTIONS, K_WAKE_WEEKDAY, K_WAKE_WEEKEND, K_BEDTIME, K_HOLIDAY, K_HOLIDAY_RANGES,
-              K_TV_TEST, K_LANG, K_VOLUME, K_BRIGHTNESS, K_PLAY_MIN, K_BREAK_MIN, K_CALM, K_SHAKE, K_COUNT };
+              K_TV_TEST, K_LANG, K_VOLUME, K_BRIGHTNESS, K_PLAY_MIN, K_BREAK_MIN, K_CALM, K_SHAKE,
+              K_QUESTIONS2,             // the questions from bit 16 on (K_QUESTIONS holds bits 0-15)
+              K_COUNT };
 // tv_day: the local day TV test mode was switched on (the page's tv_test_since, 0 = today), taken with K_TV_TEST.
 struct Settings { u16 v[K_COUNT]; u16 hol[HOL_MAX][2]; u16 tv_day; };
 // What a sync carried: the keys changed on the toy (dirty) and each key's edit count then, so its acknowledgement
@@ -279,6 +303,7 @@ struct Game {
     u8 idle_act, treat, score, sel, wash_messes, celebrated;
     u32 idle_next, idle_end, pet_react_end, pet_gain_at, wobble_end;   // deadlines, see due()
     u8 petting, pet_cooling, wobbling;
+    u8 away_pick;                         // which vignette the away screen shows (runtime only: not saved)
     u8 hint_pet, napped, press_item, set_row, battery, batt_known;   // battery: % from the PMU
     u8 plugged, plug_raw, plug_known;     // USB power (debounced: two equal samples), raw sample
     u32 unplug_at;                        // when the cable last came out (0 = never)
@@ -288,7 +313,7 @@ struct Game {
     u16 foam_at[3], flower_at[3];          // scene_ms of the last pop / note per target
     u8 notes[NOTES];
     u32 visit_due, visit_start, last_note_ms, echo_next, tilt_at, dress_at, land_cue_at, voice_at, voice_line_at[V_COUNT];
-    i16 cloud_x, tilt, tilt_f;
+    i16 cloud_x, cloud_vx, tilt, tilt_f;   // cloud_vx: this step's move, so render() glides between steps
     struct Feather { i16 x, y; u8 state; } fea[FEATHERS];   // state: 0 waiting, 1 falling, 2 on cloud, 3 floor
     u32 play_ms, dark_ms, away_ms;        // screen time used, dark streak, time left out
     u32 wall_s;                           // local wall clock from the board's RTC, 0 = unknown
@@ -331,6 +356,12 @@ struct Game {
     u32 r_at;                             // when the stage started (stamp)
     u32 r_first[Q_COUNT];                 // minute (day * 1440 + minute) of the first ask, for the re-ask
     u32 r_last;                           // minute of the last question, for the spacing
+    u32 r_waiting;                        // questions that came due while she was busy: asked late (Q_LATE_MIN)
+    u8 home_req;                          // to the platform: is she at home? (a known network in range)
+    u8 home_probes;                       // probes today (at most HOME_PROBES), and the day they count for
+    u16 home_probe_day;
+    u32 home_at, home_req_at;             // clock_ms of the last "at home" (0: not known), and of the last probe
+    u8 r_act;                             // the activity a yes to a suggestion starts once her reply is said
     u16 bag[3 * Q_COUNT + 4];             // shuffle bags of variants: used bits per list
     u8 bag_last[3 * Q_COUNT + 4];         // and the variant said last + 1 (not first in a new round)
     // TV test mode (RAM)
@@ -404,6 +435,10 @@ struct Game {
     int years() const;                           // birthdays she has had (0 = unknown or none yet)
     int tricks() const;                          // tricks learned so far: 0..TRICKS
     bool quiet() const { return volume() == VOL_OFF || bedtime() != BED_NONE; }   // no sound: off, or bedtime
+    u32 dark_after(u32 lit) const {              // idle_ms that leaves the screen lit `lit` ms more (the away one goes dark sooner)
+        u32 off = scene == SC_AWAY ? (u32)AWAY_SCREEN_OFF_MS : (u32)SCREEN_OFF_MS;
+        return off > lit ? off - lit : 0;
+    }
     int bedtime() const;                         // Bedtime: none, drowsy hour, or time to sleep
     bool bed_locked() const { return bedtime() != BED_NONE; }   // asleep now = asleep till morning
 
@@ -442,6 +477,11 @@ struct Game {
     SyncMark sync_mark() const;
     void settings_synced(const SyncMark& sent);
     void bench_ask(int q) { if (q >= 0 && q < Q_COUNT && has_routines) ask(q); }   // the board's bench console
+    u16& ans_slot(int q) {                  // where today's answer to q is kept (the save grew around its slots)
+        return q == Q_BATH ? s.r_ans_bath : q > Q_HAPPY ? s.r_ans_x[q - Q_HAPPY - 1] : s.r_ans[q == Q_HAPPY ? 11 : q];
+    }
+    u16 ans(int q) const { return const_cast<Game*>(this)->ans_slot(q); }
+    void set_ans(int q, u16 v) { ans_slot(q) = v; }
 
 private:
     void go(u8 sc);
@@ -450,6 +490,7 @@ private:
     void hatch();
     void wake();
     void come_back();
+    void away_next();
     void step();
     void advance(u32 ms);
     void scene_timers();
@@ -496,6 +537,11 @@ private:
     int question_due(u32 abs_min, int day, int min);
     void ask(int q);
     void routine_done();
+    void bath_question();                        // after her bath, now and then: "did you have yours?"
+    bool now_and_then(int day, int m, bool free);   // a suggestion or a "how are you" due now (at home)
+public:
+    void home_result(bool at_home) { home_req = 0; if (at_home) home_at = clock_ms ? clock_ms : 1; }   // platform
+private:
     void routine_input(int type, int x, int y);
     void routine_page_input(int type, int x, int y);
     void check_tv();

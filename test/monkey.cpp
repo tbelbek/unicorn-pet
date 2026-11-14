@@ -120,8 +120,12 @@ static void check(u32 dt) {
     if (g.scene != S.scene) {
         if (trace) std::printf("  %llu scene %s -> %s  away_ms %u until %u utc %u wall %u cal %d\n", S.now,
                                S.scene >= 0 ? SCENES[S.scene] : "-", SCENES[g.scene], g.away_ms, g.s.away_until, g.utc_s, g.wall_s, g.cal_ok);
-        if (g.scene == SC_LEAVE || (g.scene == SC_AWAY && S.scene != SC_LEAVE)) { S.leave_at = S.now; S.rewound = 0; S.break_max = g.break_ms(); }
+        if (g.scene == SC_LEAVE || (g.scene == SC_AWAY && S.scene != SC_LEAVE && S.scene != SC_ASK)) {   // (back out after
+            S.leave_at = S.now; S.rewound = 0; S.break_max = g.break_ms();                             //  a question: the same break)
+        }
         if (g.scene <= SC_ASK) visits[g.scene]++;
+        // per routine day as the toy sees it: a clock set days back and then forward again starts that day afresh
+        if (g.s.r_day != S.q_day) { S.q_day = g.s.r_day; std::memset(S.q_count, 0, sizeof S.q_count); S.q_last_min = 0; }
         if (g.scene == SC_ASK) {               // her question: only when she may ask, never too often
             S.questions++;
             RULE(g.routines_on() && g.cal_ok && g.wall_s && !bedtime_now(g) && g.volume() != VOL_OFF,
@@ -129,10 +133,9 @@ static void check(u32 dt) {
             u64 natural = S.scene == SC_EAT || S.scene == SC_FEED ? ACTION_MS : S.scene == SC_WASH ? WASH_MS
                         : S.scene == SC_GAME ? GAME_MS : S.scene == SC_PLAY ? CELEBRATE_MS : S.scene == SC_HATCH ? HATCH_MS : 0;
             bool ended = S.now - S.scene_at + SLACK >= natural;   // it may follow an activity that just ended
-            RULE(ended && S.scene != SC_AWAY && S.scene != SC_LEAVE && S.scene != SC_EGG && S.scene != SC_EGG_PICK,
+            RULE(ended && S.scene != SC_LEAVE && S.scene != SC_EGG && S.scene != SC_EGG_PICK,   // (out with friends she may: she pops in)
                  "a question in the middle of something");
-            u32 day = g.s.r_day, min = g.wall_s / 60;   // her routine day: wake-up to wake-up
-            if (day != S.q_day) { S.q_day = day; std::memset(S.q_count, 0, sizeof S.q_count); S.q_last_min = 0; }
+            u32 min = g.wall_s / 60;
             RULE(++S.q_count[g.r_q] <= 2, "a question asked more than twice a day");
             RULE(!S.q_last_min || min < S.q_last_min || S.clock_back || min - S.q_last_min >= Q_GAP_MIN,
                  "two questions within 8 minutes");   // (a clock set back, then a power cut: the toy cannot know)

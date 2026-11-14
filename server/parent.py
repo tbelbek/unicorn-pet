@@ -21,6 +21,9 @@ import routines  # noqa: E402
 
 HOL_MAX = 4   # holiday ranges the toy keeps (core/unicorn.h HOL_MAX): more would be dropped at sync
 QKEYS = list(routines.QUESTIONS) + ["HAPPY"]
+# the week's table: the habits (a yes is a star), the sports and the day's open one; a "no" to Lego is no missed chore
+TABLE_KEYS = [k for k in QKEYS if k == "HAPPY" or routines.QUESTIONS[k].get("star", True) or
+              routines.QUESTIONS[k]["when"] not in ("suggest", "chat")]
 LANGS = ["tr", "en", "es", "fr", "de", "pt", "it", "ru", "sv", "id"]  # tools/i18n.py LANGS, the toy's order
 DEFAULTS = {  # the toy's own defaults (core/unicorn.h); its first report replaces whatever differs
     "routines": True, "questions": {k: True for k in QKEYS}, "wake_weekday": "07:00", "wake_weekend": "08:00",
@@ -335,7 +338,10 @@ def _check(name, on, text):
 
 QLABEL = {"TEETH_AM": "Diş (sabah)", "TEETH_PM": "Diş (akşam)", "DRESS": "Giyinme", "SCHOOL_CLOTHES": "Okul kıyafeti",
           "HAIR": "Saç", "VITAMIN": "Vitamin", "BREAKFAST": "Kahvaltı", "WATER": "Su", "DINNER": "Akşam yemeği",
-          "TOYS": "Oyuncak toplama", "TOILET": "Tuvalet", "HAPPY": "Günün güzel anı"}
+          "TOYS": "Oyuncak toplama", "TOILET": "Tuvalet", "BATH": "Banyo (banyosundan sonra)",
+          "HAPPY": "Günün güzel anı", "BASKETBALL": "Basketbol (hafta sonu 13:00)",
+          "VOLLEYBALL": "Voleybol (pazar 09:00)", "COLOR": "Öneri: boyama", "LEGO": "Öneri: lego",
+          "READ": "Öneri: kitap", "DOLLS": "Öneri: çocuklarıyla oynama", "HOWAREYOU": "Ara sıra: nasılsın?"}
 
 
 def _qlabel(k):
@@ -347,7 +353,7 @@ def tab_rutinler(state):
     qs = "".join(_check(f"q_{k}", s["questions"].get(k, True), _qlabel(k)) for k in QKEYS)
     ranges = "\n".join(f"{a} {b}" for a, b in s["holiday_ranges"])
     days = [(date.today() - timedelta(days=i)).isoformat() for i in range(7)]
-    head = "".join(f"<th>{E(_qlabel(k))}</th>" for k in QKEYS)
+    head = "".join(f"<th>{E(_qlabel(k))}</th>" for k in TABLE_KEYS)
     rows = ""
     for d in days:
         day = state["days"].get(d, {"answers": [], "stars": None})
@@ -356,7 +362,7 @@ def tab_rutinler(state):
             cell[a["q"]] = f'{E(ANSWER_TR.get(a["a"], str(a["a"])))} <span class="mut">{E(str(a["t"]))}</span>'
         stars = "★" * min(day["stars"], len(QKEYS)) if day.get("stars") else ("" if day.get("stars") is None else "0")
         rows += (f"<tr><td>{date.fromisoformat(d):%d.%m}</td>" + "".join(
-            f"<td>{cell.get(k, '')}</td>" for k in QKEYS) + f"<td>{stars}</td></tr>")
+            f"<td>{cell.get(k, '')}</td>" for k in TABLE_KEYS) + f"<td>{stars}</td></tr>")
     return f'''{_pending(state)}<form method="post" action="/settings"><input type="hidden" name="_tab" value="rutinler">
 <div class="card">{_check("routines", s["routines"], "Rutin soruları açık")}</div>
 <h2>Sorular</h2><div class="card">{qs}</div>
