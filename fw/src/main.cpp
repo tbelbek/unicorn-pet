@@ -32,7 +32,9 @@ static const int I2C_SDA = 15, I2C_SCL = 14, TP_INT = 21, KEY_BOOT = 0;
 static const uint8_t TCA9554_ADDR = 0x20, FT3168_ADDR = 0x38, CST820_ADDR = 0x15;
 static const uint8_t EXIO_PWR = 4;                        // PWR key reads HIGH while held
 static const bool TOUCH_SWAP_XY = false, TOUCH_FLIP_X = false, TOUCH_FLIP_Y = false;   // checked on a CO5300/CST820 board: corners read (1,1)..(360,447)
-static const bool TILT_FLIP = false;                      // VERIFY: tilting right moves the cloud right
+// The QMI8658's X is the screen's up-down here (upright it read x = 1 g), so a sideways tilt is Y; by the axes' handedness
+// a right side going down reads Y < 0 (VERIFY on the board: flip if the cloud goes the wrong way)
+static const bool TILT_FLIP = true;
 static const uint8_t BRIGHTNESS = 180;                    // indoor toy: no need for full AMOLED
 static const uint32_t SLEEP_POLL_US = 200000;             // light-sleep wake to poll PWR (no GPIO wake)
 static const float SHAKE_G = 1.2f;                        // |a| - 1 g beyond this counts as a jolt
@@ -852,7 +854,7 @@ void loop() {
     static uint32_t last_tilt;
     if (game.scene == up::SC_CLOUD && acc_fresh && now - last_tilt >= 50) {
         last_tilt = now;
-        int t = (int)(acc_x * 280.0f);        // ~0.35 g (about 20 degrees) of tilt = full deflection
+        int t = (int)(acc_y * 280.0f);        // ~0.35 g (about 20 degrees) of tilt = full deflection
         game.set_tilt(TILT_FLIP ? -t : t);
     }
     SECT(0);
