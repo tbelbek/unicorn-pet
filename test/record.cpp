@@ -54,7 +54,7 @@ int main() {
     play(g, ACTION_MS + 200);
     g.input(IN_TOUCH, 46 + MENU_STEP, 400);                   // Oyna: the toy box
     play(g, 900);
-    g.input(IN_TOUCH, 116, 148);                              // the star game
+    g.input(IN_TOUCH, 68, 148);                              // the star game
     for (int t = 0; t < GAME_MS; t += 100) {
         if (t % 900 == 500) {
             for (int i = 0; i < GAME_TARGETS; i++)
@@ -65,16 +65,16 @@ int main() {
     }
     play(g, CELEBRATE_MS);
     g.input(IN_TOUCH, 46 + MENU_STEP, 400); play(g, 600);     // toy box again: the music garden
-    g.input(IN_TOUCH, 252, 148); play(g, 500);
+    g.input(IN_TOUCH, 184, 148); play(g, 500);
     for (int i = 0; i < 4; i++) { g.input(IN_TOUCH, 64 + (i % 3) * 120, 270); play(g, 350); }
     play(g, 3200);                                            // ...she sings it back
     g.input(IN_TOUCH, 320, 40); play(g, 300);
     g.input(IN_TOUCH, 46 + MENU_STEP, 400); play(g, 400);     // the mirror: a tiara
-    g.input(IN_TOUCH, 252, 264); play(g, 600);
+    g.input(IN_TOUCH, 300, 148); play(g, 600);
     g.input(IN_TOUCH, 24 + 3 * 86 + 39, 390); play(g, 1200);
     g.input(IN_TOUCH, 320, 40); play(g, 300);
     g.input(IN_TOUCH, 46 + MENU_STEP, 400); play(g, 400);     // tilt-a-cloud
-    g.input(IN_TOUCH, 116, 264);
+    g.input(IN_TOUCH, 68, 264);
     for (int t = 0; t < 7000; t += 50) { g.set_tilt(t < 3000 ? -80 : 80); g.tick(50); dump(g); }
     g.input(IN_TOUCH, 320, 40); play(g, 300);
     g.set_stat(CLEAN, 800);

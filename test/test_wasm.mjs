@@ -71,7 +71,7 @@ test("play and refuse", () => {
   run(3100);
   w.up_set_stat(ST.ENERGY, 1000);
   tapMenu(1);
-  w.up_input(IN.TOUCH, 116, 148);
+  w.up_input(IN.TOUCH, 68, 148);
   assert.equal(w.up_scene(), SC.REFUSE);
 });
 
@@ -214,13 +214,13 @@ test("toy box: music, tilt-a-cloud and the mirror", () => {
   hatch();
   tapMenu(1);
   assert.equal(w.up_scene(), SC.TOYS);
-  w.up_input(IN.TOUCH, 252, 148);
+  w.up_input(IN.TOUCH, 184, 148);
   assert.equal(w.up_scene(), SC.MUSIC);
   w.up_input(IN.TOUCH, 64, 270);
   assert.ok(w.up_tick(0) & 8, "a flower sings");
   w.up_input(IN.TOUCH, 320, 40);
   tapMenu(1);
-  w.up_input(IN.TOUCH, 116, 264);
+  w.up_input(IN.TOUCH, 68, 264);
   assert.equal(w.up_scene(), SC.CLOUD);
   const x0 = w.up_cloud_x();
   for (let i = 0; i < 10; i++) { w.up_set_tilt(100); w.up_tick(100); }
@@ -229,7 +229,7 @@ test("toy box: music, tilt-a-cloud and the mirror", () => {
   assert.ok(right > x0 && w.up_cloud_x() < right, "tilting steers the cloud both ways");
   w.up_input(IN.TOUCH, 320, 40);
   tapMenu(1);
-  w.up_input(IN.TOUCH, 252, 264);
+  w.up_input(IN.TOUCH, 300, 148);
   assert.equal(w.up_scene(), SC.DRESS);
   w.up_input(IN.TOUCH, 24 + 3 * 86 + 39, 390);
   assert.equal(w.up_accessory(), 3, "wearing the tiara");

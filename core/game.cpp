@@ -200,7 +200,7 @@ void Game::go(u8 sc) {
     standing = 0;
     memory_at = 0;                         // a picture that was floating up starts again at home
     static const u8 DID_BY_SCENE[] = {0, 0, 0, DID_FEED, 0, DID_WASH, 0, 0, 0, DID_STARS, 0, 0, 0, 0, 0, 0, 0,
-                                      DID_MUSIC, DID_CLOUD, DID_DRESS, 0, 0};   // indexed by Scene
+                                      DID_MUSIC, DID_CLOUD, DID_DRESS, 0, 0, 0, 0, DID_CLOUD};   // indexed by Scene (a balloon ride: a sky dream)
     if (sc < sizeof DID_BY_SCENE) did |= DID_BY_SCENE[sc];
 }
 
@@ -1015,6 +1015,33 @@ void Game::open_toy(int toy) {             // Oyna's toy box
         go(SC_CLOUD);
         break;
     }
+    case TOY_MARBLE:                       // roll the ball into the glowing hole
+        cloud_x = SCREEN_W / 2;
+        roll_x = (i16)(cloud_x * 16);
+        walk_to = 0;                       // 0: nobody steers by touch (yet)
+        roll_v = lean = cloud_vx = 0;
+        tilt = tilt_f = 0;
+        tilt_at = 0;
+        landed = hole_rest = 0;
+        hole_x = (i16)(crandom() % 2 ? 64 : 304);
+        go(SC_MARBLE);
+        break;
+    case TOY_BALLOON: {                    // fly the balloon through the star rings
+        static const short LANES[3] = {64, 184, 304};
+        cloud_x = SCREEN_W / 2;
+        walk_to = 0;                       // (as the ball: nobody steers by touch yet)
+        cloud_vx = 0;
+        tilt = tilt_f = 0;
+        tilt_at = 0;
+        landed = 0;
+        for (int i = 0; i < FEATHERS; i++) {   // (the rings live where the cloud's feathers do)
+            fea[i].x = LANES[(i * 2 + (int)(crandom() % 2)) % 3];
+            fea[i].y = 104;
+            fea[i].state = 0;
+        }
+        go(SC_BALLOON);
+        break;
+    }
     case TOY_DRESS: preview = s.accessory; go(SC_DRESS); break;
     default: go(SC_HOME); return;
     }
@@ -1095,13 +1122,19 @@ void Game::set_tilt(int v) {
     tilt_at = clock_ms ? clock_ms : 1;
 }
 
+int Game::steer() {                        // light smoothing (it lagged ~400 ms), then a small dead zone
+    bool fresh = tilt_at && (u32)(clock_ms - tilt_at) <= TILT_STALE_MS;
+    tilt_f = (i16)((tilt_f + (fresh ? tilt : 0)) / 2);
+    return tilt_f > TILT_DEAD ? tilt_f - TILT_DEAD : tilt_f < -TILT_DEAD ? tilt_f + TILT_DEAD : 0;
+}
+
 void Game::mode_input(int type, int x, int y) {
     if (type == IN_TOUCH && x >= HOUSE_X0 && y <= HOUSE_Y1) { go(SC_HOME); cue(SFX_TAP); return; }   // house
     switch (scene) {
     case SC_TOYS:
         if (type == IN_TOUCH) {
             for (int i = 0; i < TOY_COUNT; i++) {
-                int cx = i == TOY_HOME ? SCREEN_W / 2 : 116 + (i % 2) * 136, cy = 148 + (i / 2) * 116;
+                int cx = i == TOY_HOME ? SCREEN_W / 2 : 68 + (i % 3) * 116, cy = 148 + (i / 3) * 116;
                 if (iabs(x - cx) <= 52 && iabs(y - cy) <= 52) { press(i); open_toy(i); return; }
             }
         } else if (type == IN_NEXT) { sel = (u8)((sel + 1) % TOY_COUNT); dirty = 1; cue(SFX_TAP); }
@@ -1115,11 +1148,11 @@ void Game::mode_input(int type, int x, int y) {
         else if (type == IN_SELECT) play_note(sel);
         else if (type == IN_SHAKE) { sel = (u8)((sel + 1) % 3); play_note(sel); }
         break;
-    case SC_CLOUD:
+    case SC_CLOUD: case SC_MARBLE: case SC_BALLOON:
         if (type == IN_TOUCH) walk_to = (i16)(x < 123 ? 64 : x > 245 ? 304 : 184);   // steer by thirds
-        else if (type == IN_NEXT) walk_to = (i16)(walk_to >= 304 ? 64 : walk_to + 120);
+        else if (type == IN_NEXT) walk_to = (i16)(walk_to >= 304 || walk_to < 64 ? 64 : walk_to + 120);
         else if (type == IN_SELECT) walk_to = SCREEN_W / 2;
-        else if (type == IN_SHAKE) burst(P_SPARKLE, cloud_x, CLOUD_Y, 3);   // a cosmetic puff
+        else if (type == IN_SHAKE) burst(P_SPARKLE, cloud_x, scene == SC_MARBLE ? MARBLE_Y - 30 : CLOUD_Y, 3);   // a cosmetic puff
         dirty = 1;
         break;
     case SC_DRESS:
@@ -1240,7 +1273,7 @@ void Game::input(int type, int x, int y) {
     case SC_ASK:
         routine_input(type, x, y);
         break;
-    case SC_TOYS: case SC_MUSIC: case SC_CLOUD: case SC_DRESS:
+    case SC_TOYS: case SC_MUSIC: case SC_CLOUD: case SC_DRESS: case SC_MARBLE: case SC_BALLOON:
         mode_input(type, x, y);
         break;
     case SC_WASH:                          // pop the foam puffs (the bath finishes either way)
@@ -1563,13 +1596,8 @@ void Game::step() {
         // Steered by touch/buttons, or by tilting the toy. Tilt maps continuously past a small dead zone (no
         // jump at its edge), the smoothing is light (it lagged ~400 ms), and the cloud closes half the gap a
         // step, up to CLOUD_SPEED (it crawled at 80 px/s, a feather could not be caught across the screen).
-        int target = walk_to;
-        bool fresh = tilt_at && (u32)(clock_ms - tilt_at) <= TILT_STALE_MS;
-        tilt_f = (i16)((tilt_f + (fresh ? tilt : 0)) / 2);
-        if (tilt_f > TILT_DEAD || tilt_f < -TILT_DEAD) {
-            int t = tilt_f > 0 ? tilt_f - TILT_DEAD : tilt_f + TILT_DEAD;
-            target = SCREEN_W / 2 + t * 120 / (100 - TILT_DEAD);
-        }
+        int target = walk_to, t = steer();
+        if (t) target = SCREEN_W / 2 + t * 120 / (100 - TILT_DEAD);
         int d = target - cloud_x, v = d / 2;
         if (!v && d) v = d > 0 ? 1 : -1;
         if (v > CLOUD_SPEED) v = CLOUD_SPEED;
@@ -1592,6 +1620,82 @@ void Game::step() {
             } else if (f.y >= 380) {
                 f.state = 3;               // drifts to the grass: no loss, just a feather on the floor
             }
+        }
+        changed = true;
+        break;
+    }
+    case SC_MARBLE: {
+        // The tilt is not where the ball goes but how hard it is pushed: it speeds up, rolls on, slows by
+        // friction and bounces softly off the ends. By touch, the plank leans by itself to roll it to that third.
+        changed = true;
+        if (hole_rest) {                   // resting in the hole: a moment to cheer, then the hole moves on
+            cloud_vx = 0;
+            steer();
+            if (--hole_rest) break;
+            static const short SPOTS[5] = {64, 124, 184, 244, 304};
+            hole_x = SPOTS[((hole_x - 64) / 60 + 2 + (int)(crandom() % 2)) % 5];   // two or three spots along
+            break;
+        }
+        int t = steer();
+        if (t) walk_to = 0;                // tilting takes over from the touched spot
+        else if (walk_to) {                // roll there and brake in time, as a careful hand would
+            t = walk_to - cloud_x - roll_v / 4;
+            if (t > 90) t = 90;
+            if (t < -90) t = -90;
+        }
+        lean = (i16)t;
+        int v = (roll_v + t * MARBLE_ACC / 90) * 7 / 8, was = cloud_x;
+        int nx = roll_x + v;
+        if (nx < MARBLE_X0 * 16 || nx > MARBLE_X1 * 16) {   // a soft bounce: half the speed back, or it just rests
+            nx = nx < MARBLE_X0 * 16 ? MARBLE_X0 * 16 : MARBLE_X1 * 16;
+            if (v > 96 || v < -96) burst(P_SPARKLE, nx / 16 + (v > 0 ? 14 : -14), MARBLE_Y - 20, 1);
+            v = -v / 2;
+            if (v > -48 && v < 48) v = 0;
+        }
+        int hx = hole_x;                   // rolled over the hole (however fast): in it goes
+        if (iabs(nx / 16 - hx) <= MARBLE_CATCH || (was < hx) != (nx / 16 < hx)) {
+            nx = hx * 16;
+            v = 0;
+            hole_rest = MARBLE_REST;
+            if (landed < 255) landed++;
+            burst(P_RING, hx, MARBLE_Y - 14, 1);
+            burst(P_SPARKLE, hx, MARBLE_Y - 30, 3);
+            cue(SFX_POP);
+        }
+        roll_x = (i16)nx;
+        roll_v = (i16)v;
+        cloud_x = (i16)(nx / 16);
+        cloud_vx = (i16)(cloud_x - was);
+        break;
+    }
+    case SC_BALLOON: {
+        // The tilt is the wind: it sets how fast the balloon drifts, and the balloon takes a moment to follow.
+        // Held level it hovers where it is (no drifting back), until a touch or a button names a third.
+        int t = steer(), want = 0, d = walk_to - cloud_x;
+        if (t) { want = t * BALLOON_SPEED / 90; walk_to = 0; }
+        else if (walk_to) want = d > 4 * BALLOON_SPEED ? BALLOON_SPEED : d < -4 * BALLOON_SPEED ? -BALLOON_SPEED : d / 4;
+        int v = (cloud_vx * 2 + want) / 3;
+        if (!v && want) v = want > 0 ? 1 : -1;
+        int nx = cloud_x + v;
+        if (nx < 64) nx = 64;
+        if (nx > 304) nx = 304;
+        cloud_vx = (i16)(nx - cloud_x);
+        cloud_x = (i16)nx;
+        for (int i = 0; i < FEATHERS; i++) {   // rings: 0 waiting, 1 coming down, 2 flown through, 3 drifting off, 4 gone
+            Feather& f = fea[i];
+            if (f.state == 0 && scene_ms >= (u32)i * FEATHER_EVERY_MS) f.state = 1;
+            if (f.state != 1 && f.state != 3) continue;
+            f.y = (i16)(f.y + FEATHER_FALL);
+            if (f.state == 1 && f.y >= RING_AT) {
+                if (iabs(f.x - cloud_x) <= CLOUD_CATCH) {
+                    f.state = 2;           // through the ring: its star comes along
+                    landed++;
+                    burst(P_RING, f.x, RING_AT, 1);
+                    burst(P_SPARKLE, f.x, RING_AT, 2);
+                    cue(SFX_NOTE1 + (landed - 1) % 3);
+                } else f.state = 3;        // no loss: the ring just drifts on down
+            }
+            if (f.y >= SCREEN_H + 20) f.state = 4;
         }
         changed = true;
         break;
@@ -1722,11 +1826,11 @@ void Game::scene_timers() {
         break;
     case SC_PLAY:   if (scene_ms >= CELEBRATE_MS) go(SC_HOME); break;
     case SC_FEED:   if (scene_ms >= FEED_PICK_MS) eat(sel); break;
-    case SC_TOYS: case SC_MUSIC: case SC_CLOUD: case SC_DRESS:
+    case SC_TOYS: case SC_MUSIC: case SC_CLOUD: case SC_DRESS: case SC_MARBLE: case SC_BALLOON:
         if (play_ms >= play_limit_ms() ||                                  // time's up / nobody playing
-            (scene != SC_CLOUD && idle_ms >= MODE_IDLE_MS) ||              // (tilting counts as playing)
+            (!tilt_game(scene) && idle_ms >= MODE_IDLE_MS) ||              // (tilting counts as playing)
             (scene == SC_MUSIC && scene_ms >= MUSIC_MS)) { go(SC_HOME); break; }
-        if (scene == SC_CLOUD && scene_ms >= CLOUD_MS) {                  // the same happy end for all
+        if (tilt_game(scene) && scene_ms >= CLOUD_MS) {                   // the same happy end for all
             burst(P_CONFETTI, cloud_x, CLOUD_Y - 20, 6);
             go(SC_HOME);
         }

@@ -49,7 +49,7 @@ static void tap_set(Game& g, int x, int row) {   // a settings row, turning to i
     g.input(IN_TOUCH, x, SET_Y0 + set_row_slot(n, row) * SET_ROW_H + 18);
 }
 // Oyna opens the toy box; the stars card is top left
-static void play_stars(Game& g) { tap_menu(g, MENU_PLAY); g.input(IN_TOUCH, 116, 148); }
+static void play_stars(Game& g) { tap_menu(g, MENU_PLAY); g.input(IN_TOUCH, 68, 148); }
 // feeding is two taps now: the menu, then one of three big snacks
 static void feed(Game& g, int t = TREAT_APPLE) { tap_menu(g, MENU_FEED); g.input(IN_TOUCH, 61 + t * 122, 200); }
 static void tap_pet(Game& g) { g.input(IN_TOUCH, SCREEN_W / 2 + g.pet_x, 230); }
@@ -451,6 +451,18 @@ TEST(render_band_matches_render) {
     g.input(IN_TOUCH, 61, 200); run(g, 600); CHECK(bands_match(g, 1)); // eating, one row at a time
     run(g, ACTION_MS);
     g.set_plugged(true); run(g, 15000); CHECK(bands_match(g, 22));     // on the lounger
+    for (int toy : {-1, 184, 300})                                     // the toy box, the ball, the balloon
+        for (int hour : {11, 18, 22}) {
+            Game m = hatched();
+            m.set_wall(at(2026, 7, 1, hour, 0));
+            tap_menu(m, MENU_PLAY);
+            if (toy > 0) m.input(IN_TOUCH, toy, 264);
+            for (int t = 0; t < 45; t++) {                             // tilted about, between steps too
+                m.set_tilt(t / 9 % 2 ? 80 : -80); m.tick(130);
+                if (t % 3 == 0) { CHECK(bands_match(m, 22)); CHECK(bands_match(m, 7)); }
+            }
+            CHECK(m.scene == (toy < 0 ? SC_TOYS : toy == 184 ? SC_MARBLE : SC_BALLOON));
+        }
 }
 
 TEST(event_info_from_the_header) {
@@ -1367,14 +1379,25 @@ TEST(toy_box_routes) {
     tap_menu(g, MENU_PLAY);
     EQ(g.scene, SC_TOYS);
     g.tick(100);
-    shot(g, "24_toy_box");
-    g.input(IN_TOUCH, 252, 148); EQ(g.scene, SC_MUSIC); g.input(IN_TOUCH, 320, 40); EQ(g.scene, SC_HOME);
+    for (int i = 0; i < TOY_COUNT; i++) { EQ(g.sel, i); g.input(IN_NEXT, 0, 0); }   // BOOT walks all seven tiles
+    EQ(g.sel, 0);
+    g.input(IN_TOUCH, 184, 148); EQ(g.scene, SC_MUSIC); g.input(IN_TOUCH, 320, 40); EQ(g.scene, SC_HOME);
     tap_menu(g, MENU_PLAY);
-    g.input(IN_TOUCH, 116, 264); EQ(g.scene, SC_CLOUD); g.input(IN_TOUCH, 320, 40);
+    g.input(IN_TOUCH, 68, 264); EQ(g.scene, SC_CLOUD); g.input(IN_TOUCH, 320, 40);
     tap_menu(g, MENU_PLAY);
-    g.input(IN_TOUCH, 252, 264); EQ(g.scene, SC_DRESS); g.input(IN_TOUCH, 320, 40);
+    g.input(IN_TOUCH, 184, 264); EQ(g.scene, SC_MARBLE); g.input(IN_TOUCH, 320, 40);
     tap_menu(g, MENU_PLAY);
-    g.input(IN_TOUCH, 252, 148);           // the house answers in the whole top-right corner
+    g.input(IN_TOUCH, 300, 264); EQ(g.scene, SC_BALLOON); g.input(IN_TOUCH, 320, 40);
+    tap_menu(g, MENU_PLAY);
+    for (int i = 0; i < 5; i++) g.input(IN_NEXT, 0, 0);
+    g.input(IN_SELECT, 0, 0); EQ(g.scene, SC_BALLOON);   // BOOT to the sixth tile, PWR opens it
+    g.input(IN_TOUCH, 320, 40);
+    tap_menu(g, MENU_PLAY);
+    g.input(IN_TOUCH, 184, 380); EQ(g.scene, SC_HOME);   // the home tile below
+    tap_menu(g, MENU_PLAY);
+    g.input(IN_TOUCH, 300, 148); EQ(g.scene, SC_DRESS); g.input(IN_TOUCH, 320, 40);
+    tap_menu(g, MENU_PLAY);
+    g.input(IN_TOUCH, 184, 148);           // the house answers in the whole top-right corner
     g.input(IN_TOUCH, HOUSE_X0 - 1, 40); EQ(g.scene, SC_MUSIC);
     g.input(IN_TOUCH, 320, HOUSE_Y1 + 1); EQ(g.scene, SC_MUSIC);
     g.input(IN_TOUCH, HOUSE_X0, HOUSE_Y1); EQ(g.scene, SC_HOME);
@@ -1385,14 +1408,14 @@ TEST(toy_box_routes) {
     EQ(g.scene, SC_HOME);                  // nobody chose: back home
     g.set_stat(ENERGY, 500);               // tired: music and the mirror still work
     tap_menu(g, MENU_PLAY);
-    g.input(IN_TOUCH, 252, 148);
+    g.input(IN_TOUCH, 184, 148);
     EQ(g.scene, SC_MUSIC);
 }
 
 TEST(music_garden_echoes_the_tune_once) {
     Game g = hatched();
     tap_menu(g, MENU_PLAY);
-    g.input(IN_TOUCH, 252, 148);
+    g.input(IN_TOUCH, 184, 148);
     for (int i = 0; i < 9; i++) g.input(IN_TOUCH, 64 + (i % 3) * 120, 270);
     EQ(g.note_count, NOTES);               // keeps the six newest
     EQ(g.notes[0], 0);                     // notes 3..8 -> flowers 0,1,2,0,1,2
@@ -1408,7 +1431,7 @@ TEST(music_garden_echoes_the_tune_once) {
     CHECK(m && m[0].hz == 523);            // the first remembered flower: C5
     EQ(g.note_count, 0);
     Game h = hatched();                    // a long tick does not swallow the tune
-    tap_menu(h, MENU_PLAY); h.input(IN_TOUCH, 252, 148);
+    tap_menu(h, MENU_PLAY); h.input(IN_TOUCH, 184, 148);
     for (int i = 0; i < 3; i++) h.input(IN_TOUCH, 64 + i * 120, 270);
     h.take_sfx();
     h.tick(3400);
@@ -1423,7 +1446,7 @@ TEST(music_garden_echoes_the_tune_once) {
 TEST(dress_up_roundtrip) {
     Game g = hatched();
     tap_menu(g, MENU_PLAY);
-    g.input(IN_TOUCH, 252, 264);
+    g.input(IN_TOUCH, 300, 148);
     EQ(g.scene, SC_DRESS);
     g.input(IN_NEXT, 0, 0);                // BOOT only previews...
     EQ(g.preview, ACC_BOW);
@@ -1467,7 +1490,7 @@ TEST(accessory_follows_every_pose) {
 TEST(tilt_a_cloud) {
     Game g = hatched();
     tap_menu(g, MENU_PLAY);
-    g.input(IN_TOUCH, 116, 264);
+    g.input(IN_TOUCH, 68, 264);
     EQ(g.scene, SC_CLOUD);
     int stats[NSTATS];
     for (int i = 0; i < NSTATS; i++) stats[i] = g.stat(i);
@@ -1495,10 +1518,116 @@ TEST(tilt_a_cloud) {
     for (int i = 0; i < NSTATS; i++) CHECK(g.stat(i) >= stats[i] - 2 * DECAY_HUNGER);   // no costs either
 }
 
+TEST(roll_the_ball) {
+    Game g = hatched();
+    tap_menu(g, MENU_PLAY);
+    g.tick(100);
+    shot(g, "24_toy_box");
+    g.input(IN_TOUCH, 184, 264);
+    EQ(g.scene, SC_MARBLE);
+    int stats[NSTATS];
+    for (int i = 0; i < NSTATS; i++) stats[i] = g.stat(i);
+    EQ(g.cloud_x, SCREEN_W / 2);
+    run(g, 1000);
+    EQ(g.cloud_x, SCREEN_W / 2);           // nobody tilts or touches: it lies still
+    g.hole_x = 304;                        // (the hole out of the way, on the right)
+    int v1 = 0, bounced = 0, lo = SCREEN_W;
+    for (int i = 0; i < 20; i++) {         // tilting left pushes it: faster and faster, then off the end stop
+        g.set_tilt(-100); g.tick(100);
+        if (i == 0) v1 = g.roll_v;
+        if (i == 3) CHECK(g.roll_v < 2 * v1 && v1 < 0);
+        if (g.roll_v > 0) bounced = 1;
+        if (g.cloud_x < lo) lo = g.cloud_x;
+        CHECK(g.lean < 0);                 // the plank leans the way the toy does
+    }
+    CHECK(bounced);
+    EQ(lo, MARBLE_X0);                     // across to the left end in two seconds, and never past it
+    EQ(g.landed, 0);
+    for (int i = 0; i < 4; i++) { g.set_tilt(100); g.tick(100); }
+    int x0 = g.cloud_x, v0 = g.roll_v;
+    CHECK(v0 > 0);
+    g.set_tilt(0); g.tick(100); g.set_tilt(0); g.tick(100);
+    CHECK(g.cloud_x > x0 && g.roll_v > 0 && g.roll_v < v0);   // level again: it rolls on, friction slows it
+    shot(g, "28b_ball");
+    for (int i = 0; i < 40 && !g.landed; i++) { g.set_tilt(100); g.tick(100); }
+    EQ(g.landed, 1);                       // over the glowing hole, however fast: in it goes
+    EQ(g.cloud_x, 304); EQ(g.roll_v, 0);
+    EQ(cue_after(g), SFX_POP);
+    run(g, MARBLE_REST * STEP_MS + 100);   // (no fresh samples: the tilt goes stale)
+    CHECK(g.hole_x <= 184);                // and the hole moves on, a good way off
+    EQ(g.landed, 1);
+    int hole = g.hole_x;
+    g.input(IN_TOUCH, 30, 200);            // steer by touch: the left third, straight through the hole
+    for (int i = 0; i < 30 && g.landed < 2; i++) g.tick(100);
+    EQ(g.landed, 2); EQ(g.cloud_x, hole);
+    g.hole_x = 304;
+    run(g, 3000);
+    CHECK(iabs(g.cloud_x - 64) <= 3 && g.roll_v == 0);   // it rolls to the touched third and stops there
+    g.input(IN_SELECT, 0, 0); run(g, 3000);
+    CHECK(iabs(g.cloud_x - 184) <= 3);     // PWR: the middle; BOOT: the next third
+    g.input(IN_NEXT, 0, 0); EQ(g.walk_to, 304);
+    run(g, CLOUD_MS);
+    EQ(g.scene, SC_HOME);                  // the round ends at home, as the cloud's does
+    for (int i = 0; i < NSTATS; i++) CHECK(g.stat(i) >= stats[i] - 2 * DECAY_HUNGER);   // no costs
+    Game h = hatched();                    // nobody plays at all: the same end, nothing lost
+    tap_menu(h, MENU_PLAY); h.input(IN_TOUCH, 184, 264);
+    for (int t = 0; t < CLOUD_MS / 100 - 1; t++) { h.set_tilt(60); h.tick(100); CHECK(h.cloud_x >= MARBLE_X0 && h.cloud_x <= MARBLE_X1); }
+    EQ(h.scene, SC_MARBLE);                // tilting alone keeps the round going to its end
+    h.tick(200);
+    EQ(h.scene, SC_HOME);
+}
+
+TEST(balloon_ride) {
+    Game g = hatched();
+    tap_menu(g, MENU_PLAY);
+    g.input(IN_TOUCH, 300, 264);
+    EQ(g.scene, SC_BALLOON);
+    int stats[NSTATS];
+    for (int i = 0; i < NSTATS; i++) stats[i] = g.stat(i);
+    g.set_tilt(100); g.tick(100);
+    int first = g.cloud_x - SCREEN_W / 2;
+    CHECK(first > 0 && first < BALLOON_SPEED);   // the tilt is the wind: the balloon takes a moment to follow
+    for (int i = 0; i < 12; i++) { g.set_tilt(100); g.tick(100); }
+    EQ(g.cloud_x, 304);                    // right across, and it stops softly at the edge
+    for (int i = 0; i < 8; i++) { g.set_tilt(0); g.tick(100); }
+    EQ(g.cloud_x, 304);                    // held level it hovers there: it does not drift back
+    for (int i = 0; i < 6; i++) { g.set_tilt(-30); g.tick(100); }
+    int slow = 304 - g.cloud_x;
+    CHECK(slow > 0 && slow < 6 * BALLOON_SPEED / 2);   // a slight tilt is a slow drift
+    run(g, 800);                           // no fresh samples: stale
+    g.input(IN_TOUCH, 30, 200);            // steer by touch: the left third
+    run(g, 2500);
+    CHECK(iabs(g.cloud_x - 64) <= 3);
+    g.input(IN_NEXT, 0, 0); EQ(g.walk_to, 184);   // BOOT: the next third; PWR: the middle
+    g.input(IN_NEXT, 0, 0); g.input(IN_SELECT, 0, 0); EQ(g.walk_to, 184);
+    run(g, CLOUD_MS);
+    EQ(g.scene, SC_HOME);                  // the round ends at home, as the cloud's does
+    for (int i = 0; i < FEATHERS; i++) CHECK(g.fea[i].state >= 2);   // every ring flown through or drifting off: no loss
+    Game r = hatched();                    // a whole round by touch: at each ring in turn
+    tap_menu(r, MENU_PLAY); r.input(IN_TOUCH, 300, 264);
+    for (int n = 0; r.scene == SC_BALLOON && n < 200; n++) {
+        for (int i = 0; i < FEATHERS; i++)
+            if (r.fea[i].state == 1) { r.input(IN_TOUCH, r.fea[i].x, 300); break; }
+        int was = r.landed;
+        r.tick(100);
+        if (r.landed > was) { int c = cue_after(r); CHECK(c >= SFX_NOTE1 && c <= SFX_NOTE3); }   // a note for each star
+        if (r.landed == 2 && r.scene_ms == 6500) shot(r, "28c_balloon");
+    }
+    EQ(r.scene, SC_HOME);
+    EQ(r.landed, FEATHERS);                // every ring can be reached in time
+    for (int i = 0; i < NSTATS; i++) CHECK(g.stat(i) >= stats[i] - 2 * DECAY_HUNGER);   // no costs either
+    Game h = hatched();                    // nobody steers: the rings off her path just drift away
+    tap_menu(h, MENU_PLAY); h.input(IN_TOUCH, 300, 264);
+    for (int t = 0; t < CLOUD_MS / 100 - 1; t++) { h.set_tilt(60); h.tick(100); }
+    EQ(h.scene, SC_BALLOON);
+    h.tick(200);
+    EQ(h.scene, SC_HOME);
+}
+
 TEST(modes_end_when_time_is_up) {
     Game g = hatched();
     tap_menu(g, MENU_PLAY);
-    g.input(IN_TOUCH, 252, 148);
+    g.input(IN_TOUCH, 184, 148);
     EQ(g.scene, SC_MUSIC);
     g.play_ms = PLAY_LIMIT_MS;
     g.tick(100);
@@ -1508,7 +1637,7 @@ TEST(modes_end_when_time_is_up) {
 
 TEST(review_fixes_feature_round) {
     Game g = hatched();
-    tap_menu(g, MENU_PLAY); g.input(IN_TOUCH, 116, 264);
+    tap_menu(g, MENU_PLAY); g.input(IN_TOUCH, 68, 264);
     for (int t = 0; t < CLOUD_MS / 100 - 1; t++) { g.set_tilt(60); g.tick(100); }
     EQ(g.scene, SC_CLOUD);                 // tilting alone keeps the round going to its end
     g.tick(200);
@@ -1706,7 +1835,7 @@ TEST(album_opens_from_the_info_screen) {
 
 TEST(dreams_follow_her_day_and_vary) {
     Game g = hatched();
-    tap_menu(g, MENU_PLAY); g.input(IN_TOUCH, 252, 148);  // the music garden
+    tap_menu(g, MENU_PLAY); g.input(IN_TOUCH, 184, 148);  // the music garden
     EQ(g.scene, SC_MUSIC);
     g.input(IN_TOUCH, 320, 44);
     tap_menu(g, MENU_SLEEP);
@@ -2723,7 +2852,7 @@ static int overflow_scan(int lang, char* where, int where_n) {
     g.s.care_days = 250; g.s.milestones = 15; g.s.tricks_seen = TRICKS;
     const int scenes[] = {SC_EGG, SC_HATCH, SC_HOME, SC_EAT, SC_PLAY, SC_WASH, SC_SLEEP, SC_INFO, SC_REFUSE, SC_GAME,
                           SC_LEAVE, SC_AWAY, SC_RETURN, SC_FEED, SC_EGG_PICK, SC_TOYS, SC_MUSIC, SC_CLOUD, SC_DRESS,
-                          SC_ALBUM, SC_LOUNGE};
+                          SC_ALBUM, SC_LOUNGE, SC_MARBLE, SC_BALLOON};
     for (int sc : scenes) {
         for (int t = 0; t < 4; t++) { g.scene = (u8)sc; g.scene_ms = (u32)t * 1300; g.anim_ms = g.scene_ms; check(g, "scene"); }
     }
@@ -3835,7 +3964,7 @@ int main() {
         T(egg_choice_persists), T(picker_does_not_age), T(legacy_egg_keeps_identity), T(foam_puffs_pop_once),
         T(wash_without_help_ends_the_same), T(butterfly_visits_quietly), T(toy_box_routes),
         T(music_garden_echoes_the_tune_once), T(dress_up_roundtrip), T(accessory_follows_every_pose),
-        T(tilt_a_cloud), T(modes_end_when_time_is_up), T(review_fixes_feature_round),
+        T(tilt_a_cloud), T(roll_the_ball), T(balloon_ride), T(modes_end_when_time_is_up), T(review_fixes_feature_round),
         T(calendar_reads_the_wall_clock), T(greeting_after_a_real_break), T(tuck_in_then_dreams),
         T(old_unix_return_time_falls_back), T(album_fills_one_picture_per_cared_day),
         T(garden_grows_with_cared_days), T(dreams_follow_her_day_and_vary),

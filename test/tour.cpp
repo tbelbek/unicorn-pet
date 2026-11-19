@@ -86,7 +86,7 @@ int main() {
     chapter("Oyna: oyuncak kutusu");
     tap_menu(g, MENU_PLAY); play(g, 1200);
     chapter("Yıldız yakala");
-    g.input(IN_TOUCH, 116, 148);
+    g.input(IN_TOUCH, 68, 148);
     for (int t = 0; t < 6000; t += 100) {
         if (t % 700 == 300)
             for (int i = 0; i < GAME_TARGETS; i++)
@@ -96,18 +96,18 @@ int main() {
     g.tick(GAME_MS); play(g, 1500);
     chapter("Müzik bahçesi: çal, o geri söylesin");
     tap_menu(g, MENU_PLAY); play(g, 300);
-    g.input(IN_TOUCH, 252, 148); play(g, 400);
+    g.input(IN_TOUCH, 184, 148); play(g, 400);
     for (int i = 0; i < 4; i++) { g.input(IN_TOUCH, 64 + (i % 3) * 120, 270); play(g, 300); }
     play(g, 3000);
     g.input(IN_TOUCH, 320, 40); play(g, 200);
     chapter("Ayna: fiyonk, çiçek ya da taç");
     tap_menu(g, MENU_PLAY); play(g, 300);
-    g.input(IN_TOUCH, 252, 264); play(g, 500);
+    g.input(IN_TOUCH, 300, 148); play(g, 500);
     g.input(IN_TOUCH, 24 + 3 * 86 + 39, 390); play(g, 1200);
     g.input(IN_TOUCH, 320, 40); play(g, 200);
     chapter("Bulut: cihazı eğ, tüyleri yakala");
     tap_menu(g, MENU_PLAY); play(g, 300);
-    g.input(IN_TOUCH, 116, 264);
+    g.input(IN_TOUCH, 68, 264);
     for (int t = 0; t < 6000; t += 100) { g.set_tilt(t < 2500 ? -80 : 80); g.tick(100); dump(g); }
     g.input(IN_TOUCH, 320, 40); play(g, 300);
 

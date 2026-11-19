@@ -83,6 +83,15 @@ away: out
 	  ffmpeg -loglevel error -y -framerate 20 -i $$d/f%03d.ppm \
 	  -vf "split[a][b];[a]palettegen=max_colors=64[p];[b][p]paletteuse=dither=none" ../design/$$o.gif || exit 1; done
 
+# The toy box and its two newer tilt games, played by a scripted tilt at 20 fps -> design/toybox.png,
+# design/game_<name>.gif (needs ffmpeg)
+games: out
+	$(CXX) -std=c++17 -O2 games_gif.cpp ../core/game.cpp ../core/render.cpp ../core/sound.cpp ../core/qr.cpp -o out/games_gif
+	rm -rf out/games && ./out/games_gif out/games
+	ffmpeg -loglevel error -y -i out/games/toybox/f000.ppm ../design/toybox.png
+	for n in marble balloon; do ffmpeg -loglevel error -y -framerate 20 -i out/games/$$n/f%03d.ppm \
+	  -vf "split[a][b];[a]palettegen=max_colors=64[p];[b][p]paletteuse=dither=none" ../design/game_$$n.gif || exit 1; done
+
 # A captioned tour of every feature from the real core -> design/tour.gif
 tour: out
 	mkdir -p out/tour && rm -f out/tour/*.ppm out/tour/*.txt
@@ -96,4 +105,4 @@ listener:
 
 all: test monkey tz ota http vad release i18n portal assets voice emu wasm listener
 
-.PHONY: test monkey tz ota http vad release i18n portal assets emu wasm listener all record tour away
+.PHONY: test monkey tz ota http vad release i18n portal assets emu wasm listener all record tour away games

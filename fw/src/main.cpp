@@ -850,9 +850,9 @@ void loop() {
     diag_poll();
     read_accel();
     if (shaken()) game.input(up::IN_SHAKE, 0, 0);
-    // tilt-a-cloud: sideways tilt at ~20 Hz, only while that game is open
+    // the tilt games (cloud, ball, balloon): sideways tilt at ~20 Hz, only while one of them is open
     static uint32_t last_tilt;
-    if (game.scene == up::SC_CLOUD && acc_fresh && now - last_tilt >= 50) {
+    if (up::tilt_game(game.scene) && acc_fresh && now - last_tilt >= 50) {
         last_tilt = now;
         int t = (int)(acc_y * 280.0f);        // ~0.35 g (about 20 degrees) of tilt = full deflection
         game.set_tilt(TILT_FLIP ? -t : t);

@@ -56,8 +56,10 @@ enum Scene { SC_EGG, SC_HATCH, SC_HOME, SC_EAT, SC_PLAY, SC_WASH, SC_SLEEP, SC_I
              SC_EGG_PICK, SC_TOYS, SC_MUSIC, SC_CLOUD, SC_DRESS,     // choose an egg; Oyna's toy box
              SC_ALBUM,                                               // memories and her garden
              SC_LOUNGE,                                              // plugged in: on the sun lounger
-             SC_ASK };                                               // a routine question: a picture, then listening
-enum Toy { TOY_STARS, TOY_MUSIC, TOY_CLOUD, TOY_DRESS, TOY_HOME, TOY_COUNT };
+             SC_ASK,                                                 // a routine question: a picture, then listening
+             SC_MARBLE, SC_BALLOON };                                // two more tilt games in the toy box
+inline bool tilt_game(int sc) { return sc == SC_CLOUD || sc == SC_MARBLE || sc == SC_BALLOON; }   // fed by set_tilt()
+enum Toy { TOY_STARS, TOY_MUSIC, TOY_DRESS, TOY_CLOUD, TOY_MARBLE, TOY_BALLOON, TOY_HOME, TOY_COUNT };   // the tilt games share a row
 enum Accessory { ACC_NONE, ACC_BOW, ACC_FLOWER, ACC_TIARA, ACC_COUNT };
 // What she dreams of. The first dream of a night comes from what she did that day.
 enum Dream { D_SNACK, D_BUBBLES, D_STARS, D_MUSIC, D_CLOUD, D_CROWN, D_HEARTS, D_BUTTERFLY,   // her day
@@ -160,6 +162,9 @@ enum {
     MUSIC_MS = 20000, NOTES = 6, ECHO_WAIT_MS = 1500, ECHO_GAP_MS = 300,   // music garden
     CLOUD_MS = 15000, FEATHERS = 6, FEATHER_EVERY_MS = 2000, FEATHER_FALL = 6,   // tilt-a-cloud
     CLOUD_Y = 310, CLOUD_SPEED = 24, CLOUD_CATCH = 48, TILT_STALE_MS = 500,   // speed: px a step at most
+    // roll-the-ball: speeds in 1/16 px a step; the tilt is the push, an eighth of the speed rubs off every step
+    MARBLE_Y = 300, MARBLE_X0 = 40, MARBLE_X1 = 328, MARBLE_ACC = 64, MARBLE_CATCH = 18, MARBLE_REST = 6,
+    BALLOON_Y = 290, BALLOON_SPEED = 20, RING_AT = BALLOON_Y - 8,   // balloon ride: the tilt is the wind (px a step)
     TILT_DEAD = 10,                      // |tilt| within this steers by touch (a toy held still is never level)
     GREET_MS = 2000,                     // after a real break she greets you (stretch or yawn)
     EVENING_MIN = 17 * 60, NIGHT_MIN = 20 * 60, MORNING_MIN = 7 * 60,   // minute of the day
@@ -315,6 +320,9 @@ struct Game {
     u32 visit_due, visit_start, last_note_ms, echo_next, tilt_at, dress_at, land_cue_at, voice_at, voice_line_at[V_COUNT];
     i16 cloud_x, cloud_vx, tilt, tilt_f;   // cloud_vx: this step's move, so render() glides between steps
     struct Feather { i16 x, y; u8 state; } fea[FEATHERS];   // state: 0 waiting, 1 falling, 2 on cloud, 3 floor
+    i16 roll_x, roll_v;                   // the ball's place and speed in 1/16 px (a step); cloud_x follows it
+    i16 lean, hole_x;                     // the plank's slope (-90..90) and where the glowing hole is
+    u8 hole_rest;                         // steps the ball still rests in the hole before the hole moves on
     u32 play_ms, dark_ms, away_ms;        // screen time used, dark streak, time left out
     u32 wall_s;                           // local wall clock from the board's RTC, 0 = unknown
     u32 utc_s;                            // the same moment in UTC: what break deadlines count in
@@ -391,7 +399,7 @@ struct Game {
         batt_known = percent >= 0;
         battery = (u8)(percent < 0 ? 0 : percent > 100 ? 100 : percent);
     }
-    void set_tilt(int v);                        // -100..100 from the IMU (or a slider); cloud game only
+    void set_tilt(int v);                        // -100..100 from the IMU (or a slider); tilt_game() scenes only
     void set_plugged(bool usb);                  // USB power present, sampled about once a second
     void set_boot(bool down);                    // the BOOT key, raw: call every loop (taps, gesture)
     // WiFi setup, platform -> core: the toy's own network is up; progress and results; saved networks
@@ -503,6 +511,7 @@ private:
     void start_leave();
     void eat(int t);
     void open_toy(int toy);
+    int steer();                                 // this step's tilt past the dead zone (-90..90), 0: by touch
     void start_stars();
     void choose_egg();
     void pop_foam(int i);

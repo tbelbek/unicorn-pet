@@ -17,13 +17,13 @@ enum { SEEDS = 300, DAYS = 3, SLACK = 400 };
 
 static const char* SCENES[] = {"EGG", "HATCH", "HOME", "EAT", "PLAY", "WASH", "SLEEP", "INFO", "REFUSE", "GAME",
                                "LEAVE", "AWAY", "RETURN", "FEED", "SETTINGS", "EGG_PICK", "TOYS", "MUSIC", "CLOUD",
-                               "DRESS", "ALBUM", "LOUNGE", "ASK"};
-static_assert(sizeof SCENES / sizeof *SCENES == SC_ASK + 1, "a scene name for every scene");
+                               "DRESS", "ALBUM", "LOUNGE", "ASK", "MARBLE", "BALLOON"};
+static_assert(sizeof SCENES / sizeof *SCENES == SC_BALLOON + 1, "a scene name for every scene");
 
 static u16* fb;                            // exactly one frame on the heap: ASan sees any write past it
 static Game G, FRESH;
 static bool trace;
-static u64 visits[SC_ASK + 1];       // every scene must be reached, or the monkey has gone blind
+static u64 visits[SC_BALLOON + 1];       // every scene must be reached, or the monkey has gone blind
 
 struct Rng {
     u32 x;
@@ -76,7 +76,7 @@ static void fail(const char* what) {
     if (k == nkinds && nkinds < 32) kinds[nkinds++] = what;
     if (k < 32 && kind_n[k]++ >= 3) return;   // the first three of each kind are enough to read
     std::printf("FAIL seed %u loop %llu (%s, t=%llus, scene %s, page %d, screen %d): %s\n", S.seed, S.loops,
-                S.action, S.now / 1000, G.scene <= SC_ASK ? SCENES[G.scene] : "?", G.set_page, G.screen_on, what);
+                S.action, S.now / 1000, G.scene <= SC_BALLOON ? SCENES[G.scene] : "?", G.set_page, G.screen_on, what);
 }
 #define RULE(cond, what) do { if (!(cond)) fail(what); } while (0)
 
@@ -98,7 +98,7 @@ static bool bedtime_now(const Game& g) {   // the bedtime window, worked out aga
 
 static void check(u32 dt) {
     const Game& g = G;
-    RULE(g.scene <= SC_ASK, "scene out of range");
+    RULE(g.scene <= SC_BALLOON, "scene out of range");
     for (int i = 0; i < NSTATS; i++) RULE(g.s.stat[i] <= MAX_STAT, "stat above MAX_STAT");
     RULE(g.scene != SC_ASK || g.r_q < Q_COUNT, "a question that does not exist");
     RULE(g.menu < MENU_COUNT && g.s.character < 4 && g.s.accessory < ACC_COUNT && g.s.lang < LANG_COUNT &&
@@ -123,7 +123,7 @@ static void check(u32 dt) {
         if (g.scene == SC_LEAVE || (g.scene == SC_AWAY && S.scene != SC_LEAVE && S.scene != SC_ASK)) {   // (back out after
             S.leave_at = S.now; S.rewound = 0; S.break_max = g.break_ms();                             //  a question: the same break)
         }
-        if (g.scene <= SC_ASK) visits[g.scene]++;
+        if (g.scene <= SC_BALLOON) visits[g.scene]++;
         // per routine day as the toy sees it: a clock set days back and then forward again starts that day afresh
         if (g.s.r_day != S.q_day) { S.q_day = g.s.r_day; std::memset(S.q_count, 0, sizeof S.q_count); S.q_last_min = 0; }
         if (g.scene == SC_ASK) {               // her question: only when she may ask, never too often
@@ -167,7 +167,7 @@ static void check(u32 dt) {
     case SC_RETURN: lim = RETURN_MS; break;
     case SC_FEED: lim = FEED_PICK_MS; break;
     case SC_MUSIC: lim = MUSIC_MS; lim_quiet = MODE_IDLE_MS; break;
-    case SC_CLOUD: lim = CLOUD_MS; break;
+    case SC_CLOUD: case SC_MARBLE: case SC_BALLOON: lim = CLOUD_MS; break;
     case SC_TOYS: case SC_DRESS: lim_quiet = MODE_IDLE_MS; break;
     case SC_ALBUM: lim_quiet = ALBUM_IDLE_MS; break;
     case SC_ASK: lim = R_LISTEN_MS + R_BUTTONS_MS + R_REPLY_MS; break;   // never wedged waiting for an answer
@@ -606,10 +606,10 @@ int main(int argc, char** argv) {
         days += S.now / 86400000;
     }
     if (first != last)
-        for (int sc = 0; sc <= SC_ASK; sc++)
+        for (int sc = 0; sc <= SC_BALLOON; sc++)
             if (!visits[sc]) { std::printf("  never reached scene %s\n", SCENES[sc]); bad++; }
     std::printf("  scenes entered:");
-    for (int sc = 0; sc <= SC_ASK; sc++) std::printf(" %s %llu", SCENES[sc], visits[sc]);
+    for (int sc = 0; sc <= SC_BALLOON; sc++) std::printf(" %s %llu", SCENES[sc], visits[sc]);
     std::printf("\n");
     for (int k = 0; k < nkinds; k++) std::printf("  %4d x %s\n", kind_n[k], kinds[k]);
     std::printf("  routine: %u questions, %u answers, %u level checks, %u TV samples\n", T.questions, T.answers, T.levels, T.samples);

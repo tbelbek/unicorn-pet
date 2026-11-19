@@ -1007,16 +1007,42 @@ static void butterfly(const Game& g) {
 
 // ---- Oyna's toy box and its modes -------------------------------------------------------------
 
+static const char* const BALLOON[16] = {   // her hot-air balloon: gores in her colour, light and dark, and a basket
+    "....waaaw....",
+    "..awwaaawwa..",
+    ".aawwaaawwaa.",
+    "waawwaaawwaaw",
+    "waawwaaawwaaw",
+    "waawwaaawwaaw",
+    "waawwaaawwaaw",
+    ".aawwaaawwaa.",
+    "..awwaaawwa..",
+    "...wwaaaww...",
+    "....waaaw....",
+    "....r...r....",
+    "....r...r....",
+    "....bbbbb....",
+    "....bdbdb....",
+    ".....bbb.....",
+};
+static void balloon(const Game& g, int cx, int top, int s) {
+    const u16 acc = PAL[UP_ACCENT[g.s.character]];
+    const u16 cols[5] = {acc, (u16)((acc >> 1) & 0x7BEF), DIM, rgb(0xC8, 0x8A, 0x4A), rgb(0x8B, 0x5A, 0x3C)};
+    art(BALLOON, 16, "awrbd", cols, cx - 13 * s / 2, top, s);
+}
+
+// Three to a row (the tilt games share the second), the way home below: 104 px tiles, clear of the round corners.
 static void scene_toys(const Game& g) {
-    static const int icons[TOY_COUNT] = {IC_STAR, IC_NOTE, IC_CLOUD, IC_MIRROR, IC_HOUSE};
+    static const int icons[TOY_COUNT] = {IC_STAR, IC_NOTE, IC_MIRROR, IC_CLOUD, IC_BALL, -1, IC_HOUSE};
     header(g, T(S_TOYS), true);
     for (int i = 0; i < TOY_COUNT; i++) {
-        int cx = i == TOY_HOME ? SCREEN_W / 2 : 116 + (i % 2) * 136, cy = 148 + (i / 2) * 116;
+        int cx = i == TOY_HOME ? SCREEN_W / 2 : 68 + (i % 3) * 116, cy = 148 + (i / 3) * 116;
         rrect(cx - 52, cy - 52, cx + 52, cy + 52, 18, SEL, i == g.sel ? PAL[UP_ACCENT[g.s.character]] : TRACK, 3);
         int scale = 6;
         if (i == g.press_item && (int)(g.press_end - (g.clock_ms + g.acc_ms)) > 0) scale = 7;
         int bob = (i == g.sel && !g.calm()) ? wave(now(g), 1200, 3) : 0;
-        icon(icons[i], scale, cx - UP_ICON_W * scale / 2, cy - UP_ICON_H * scale / 2 + bob);
+        if (icons[i] < 0) balloon(g, cx, cy - 8 * (scale - 2) + bob, scale - 2);
+        else icon(icons[i], scale, cx - UP_ICON_W * scale / 2, cy - UP_ICON_H * scale / 2 + bob);
     }
 }
 
@@ -1073,6 +1099,94 @@ static void scene_cloud(const Game& g) {
         u16 cols[4] = {v[2], v[0], v[1], INK};
         art(FEATHER, 16, "oabq", cols, fx - 15, fy - 24, 3, i & 1);
     }
+    particles(g, HEADER_Y1);
+}
+
+static void star_row(const Game& g) {       // what this round gathered: a row of little stars, never a number
+    int n = g.landed > 8 ? 8 : g.landed;
+    for (int i = 0; i < n; i++) icon(IC_STAR, 3, SCREEN_W / 2 - n * 16 + i * 32 + 2, 396);
+}
+
+static const char* const MARBLE[3][8] = {  // her ball's stripe upright, leaning and lying: it turns as it rolls
+    {"..oooo..", ".oassao.", "oaassaao", "oaassaao", "oaassaao", "oaassaao", ".oassao.", "..oooo.."},
+    {"..oooo..", ".oaaaso.", "oaaassao", "oaassaao", "oassaaao", "ossaaaao", ".osaaao.", "..oooo.."},
+    {"..oooo..", ".oaaaao.", "oaaaaaao", "osssssso", "osssssso", "oaaaaaao", ".oaaaao.", "..oooo.."},
+};
+
+// Roll the ball: the plank leans as the toy does (or by itself, to the touched third), the ball rolls down it
+// into the glowing hole, and the hole moves on. She watches from above and cheers.
+static void scene_marble(const Game& g) {
+    bool night = g.phase() == PH_NIGHT;
+    if (night) stars();
+    header(g, T(S_MARBLE), true);
+    house_button();
+    unicorn_front(g, g.hole_rest ? M_HAPPY : M_IDLE, 22, 2);
+    ground(g, night);
+    const int mid = SCREEN_W / 2, lean = g.lean;
+    int bx = g.cloud_x + ahead(g.cloud_vx, g);   // gliding between steps, as the cloud does
+    if (bx < MARBLE_X0) bx = MARBLE_X0;
+    if (bx > MARBLE_X1) bx = MARBLE_X1;
+    int by = MARBLE_Y + (bx - mid) * lean / 600 - 32, hy = MARBLE_Y + (g.hole_x - mid) * lean / 600;
+    static const u16 cols[3] = {rgb(0x1E, 0x4A, 0x8A), rgb(0x4C, 0xC9, 0xF0), YELLOW};   // the toy box's ball
+    int turn = (bx * 2 / 25) & 3;          // a quarter of the stripe's turn every 12 px rolled
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass == (g.hole_rest ? 0 : 1)) {   // in the hole she sinks behind the plank; else she rolls in front
+            art(MARBLE[turn == 3 ? 1 : turn], 8, "oas", cols, bx - 16, by + (g.hole_rest ? 12 : 0), 4, turn == 3);
+            continue;
+        }
+        const u16 top = night ? rgb(0x8A, 0x6A, 0x5E) : rgb(0xD8, 0xA0, 0x6A), wood = night ? rgb(0x4E, 0x38, 0x3A) : rgb(0x8B, 0x5A, 0x3C);
+        for (int k = 0; k < 7; k++) fill(mid - 4 - k * 4, MARBLE_Y + 12 + k * 4, mid + 4 + k * 4, MARBLE_Y + 16 + k * 4, wood);   // the stand
+        for (int x = 16; x < 352; x += 8) {    // the plank in 8 px steps on the 4 px grid, a bumper at each end
+            int y = MARBLE_Y + (x + 4 - mid) * lean / 600 / 4 * 4;
+            bool end = x == 16 || x == 344;
+            fill(x, y - (end ? 16 : 0), x + 8, y + 4, end ? wood : top);
+            fill(x, y + 4, x + 8, y + 12, wood);
+        }
+        bool blink = !g.calm() && (now(g) / 300 & 1);
+        ellipse(g.hole_x, hy + 2, 24, 8, blink ? rgb(0xFF, 0xB3, 0x47) : YELLOW);   // the glowing hole
+        ellipse(g.hole_x, hy + 2, 18, 5, rgb(0x3A, 0x1E, 0x5A));
+        if (!g.hole_rest) icon(IC_STAR, 3, g.hole_x - 13, hy - 66 + (g.calm() ? 0 : wave(now(g), 900, 4)));   // "in here"
+    }
+    star_row(g);
+    particles(g, HEADER_Y1);
+}
+
+// An ellipse's rim only, w thick at the sides and h at the top, so the sky shows through: two spans a row.
+static void hoop(int cx, int cy, int rx, int ry, int w, int h, u16 c) {
+    if (off_band(cy - ry, cy + ry + 1)) return;
+    const int ix = rx - w, iy = ry - h;
+    for (int y = -ry; y <= ry; y++) {
+        int xo = rx, xi = y < -iy || y > iy ? -1 : ix;
+        while (xo >= 0 && xo * xo * ry * ry + y * y * rx * rx > rx * rx * ry * ry) xo--;
+        while (xi >= 0 && xi * xi * iy * iy + y * y * ix * ix > ix * ix * iy * iy) xi--;
+        if (xi < 0) { fill(cx - xo, cy + y, cx + xo + 1, cy + y + 1, c); continue; }
+        fill(cx - xo, cy + y, cx - xi, cy + y + 1, c);
+        fill(cx + xi + 1, cy + y, cx + xo + 1, cy + y + 1, c);
+    }
+}
+
+// Balloon ride: the sky drifts by, rings with a star in them come down, and the tilt is the wind.
+static void scene_balloon(const Game& g) {
+    backdrop(g);
+    static const u16 FAR[2] = {rgb(0x2E, 0x29, 0x4C), rgb(0x24, 0x20, 0x3E)};
+    for (int k = 0; k < 2; k++)            // two far clouds sinking past: she is going up
+        art(CLOUD, 11, "ws", FAR, k ? 236 : 20, 60 + (int)(((g.calm() ? 0 : now(g) / 25) + k * 200 + 90) % 400), 3);
+    header(g, T(S_BALLOON), true);
+    house_button();
+    for (int i = 0; i < FEATHERS; i++) {
+        const Game::Feather& f = g.fea[i];
+        if (f.state != 1 && f.state != 3) continue;
+        int y = f.y + ahead(FEATHER_FALL, g);
+        if (y < HEADER_Y1 + 14) continue;
+        u16 c = RAINBOW[i % 7];
+        hoop(f.x, y, 44, 13, 8, 5, f.state == 3 ? (u16)((c >> 1) & 0x7BEF) : c);   // missed: it dims and drifts on
+        icon(IC_STAR, 3, f.x - 13, y - 12 + (g.calm() ? 0 : wave(now(g) + i * 300, 800, 3)));
+    }
+    int cx = g.cloud_x + ahead(g.cloud_vx, g);
+    if (cx < 64) cx = 64;
+    if (cx > 304) cx = 304;
+    balloon(g, cx, BALLOON_Y + (g.calm() ? 0 : wave(now(g), 2000, 3)), 4);
+    star_row(g);
     particles(g, HEADER_Y1);
 }
 
@@ -2806,6 +2920,8 @@ void render_band(const Game& g, u16* buf, int y0, int y1) {
     case SC_TOYS:  scene_toys(g); break;
     case SC_MUSIC: scene_music(g); break;
     case SC_CLOUD: scene_cloud(g); break;
+    case SC_MARBLE: scene_marble(g); break;
+    case SC_BALLOON: scene_balloon(g); break;
     case SC_DRESS: scene_dress(g); break;
     case SC_ALBUM: scene_album(g); break;
     case SC_LOUNGE: scene_lounge(g); break;
